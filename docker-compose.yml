@@ -1,0 +1,9 @@
+services:
+  morpho:
+    build: .
+    container_name: morpho
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./.env:/app/.env:ro

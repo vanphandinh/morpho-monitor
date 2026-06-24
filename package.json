@@ -1,0 +1,28 @@
+{
+  "name": "morpho",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --env-file=.env index.mjs",
+    "monitor": "node --env-file=.env monitor.mjs",
+    "webapp": "node --env-file=.env webapp-server.mjs",
+    "dev": "concurrently -n monitor,webapp -c blue,green \"npm run monitor\" \"npm run webapp\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@morpho-org/blue-sdk": "^6.2.0",
+    "@morpho-org/blue-sdk-viem": "^5.1.1",
+    "@morpho-org/morpho-ts": "^2.6.0",
+    "viem": "^2.53.1"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3",
+    "vitest": "^4.1.9"
+  }
+}

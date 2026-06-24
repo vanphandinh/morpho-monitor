@@ -1,0 +1,8 @@
+node_modules
+.env
+.git
+.codegraph
+.claude
+__tests__
+vitest.config.mjs
+*.md

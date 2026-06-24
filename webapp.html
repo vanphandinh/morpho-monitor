@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Morpho Blue — Rút Tiền</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --green: #3fb950;
+      --red: #f85149;
+      --blue: #58a6ff;
+      --yellow: #d2991d;
+      --accent: #238636;
+      --accent-hover: #2ea043;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 16px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.3rem; margin-bottom: 4px; }
+    h2 { font-size: 1.05rem; margin: 16px 0 8px; color: var(--blue); }
+    .subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 16px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 0.9rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .row:last-child { border-bottom: none; }
+    .label { color: var(--text-dim); }
+    .value { font-weight: 600; text-align: right; }
+    .value.green { color: var(--green); }
+    .value.red { color: var(--red); }
+    .value.yellow { color: var(--yellow); }
+
+    button {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      margin: 8px 0;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      font-family: inherit;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-connect {
+      background: var(--blue);
+      color: #fff;
+    }
+    .btn-danger {
+      background: var(--red);
+      color: #fff;
+    }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .input-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 8px 0;
+    }
+    .input-group input {
+      flex: 1;
+      padding: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1rem;
+      font-family: inherit;
+    }
+    .input-group button {
+      width: auto;
+      padding: 12px 16px;
+    }
+
+    .banner {
+      padding: 12px;
+      border-radius: 8px;
+      margin: 8px 0;
+      font-size: 0.9rem;
+    }
+    .banner.error { background: rgba(248, 81, 73, 0.15); border: 1px solid var(--red); color: var(--red); }
+    .banner.success { background: rgba(63, 185, 80, 0.15); border: 1px solid var(--green); color: var(--green); }
+    .banner.warn { background: rgba(210, 153, 29, 0.15); border: 1px solid var(--yellow); color: var(--yellow); }
+    .banner.info { background: rgba(88, 166, 255, 0.15); border: 1px solid var(--blue); color: var(--blue); }
+
+    a { color: var(--blue); word-break: break-all; }
+
+    .loading {
+      text-align: center;
+      padding: 24px;
+      color: var(--text-dim);
+    }
+    .spinner {
+      display: inline-block;
+      width: 24px; height: 24px;
+      border: 3px solid var(--border);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #tx-section { display: none; }
+    #tx-section.visible { display: block; }
+
+    .address {
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🏦 Morpho Blue — Rút Tiền</h1>
+  <p class="subtitle">dCOMP/USDC Market</p>
+
+  <!-- Loading -->
+  <div id="loading" class="loading">
+    <div class="spinner"></div>
+    <p>Đang tải dữ liệu market...</p>
+  </div>
+
+  <!-- Error banner -->
+  <div id="error-banner" class="banner error" style="display:none"></div>
+
+  <!-- Market Info -->
+  <div id="market-section" style="display:none">
+    <h2>📊 Thông Tin Market</h2>
+    <div class="card" id="market-info"></div>
+  </div>
+
+  <!-- Position -->
+  <div id="position-section" style="display:none">
+    <h2>👤 Vị Thế Của Bạn</h2>
+    <div class="card" id="position-info"></div>
+  </div>
+
+  <!-- Wallet -->
+  <div id="wallet-section" style="display:none">
+    <h2>🔐 Ví</h2>
+    <div class="card">
+      <div id="wallet-status">
+        <button class="btn-connect" id="btn-connect" onclick="connectWallet()">
+          🔗 Kết Nối Ví (MetaMask)
+        </button>
+      </div>
+      <div id="wallet-connected" style="display:none">
+        <div class="row">
+          <span class="label">Địa chỉ:</span>
+          <span class="value address" id="wallet-address">—</span>
+        </div>
+        <button class="btn-outline" onclick="disconnectWallet()" style="margin-top:8px">
+          Ngắt Kết Nối
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Withdraw -->
+  <div id="tx-section">
+    <h2>💸 Rút Tiền</h2>
+
+    <!-- Liquidity warning -->
+    <div id="liquidity-warning" class="banner warn" style="display:none"></div>
+
+    <div class="card">
+      <div class="row">
+        <span class="label">Có thể rút tối đa:</span>
+        <span class="value green" id="max-withdraw">—</span>
+      </div>
+      <div class="input-group">
+        <input type="number" id="withdraw-amount" placeholder="Số lượng" step="any" min="0">
+        <button class="btn-outline" id="btn-max" onclick="setMaxAmount()" disabled>MAX</button>
+      </div>
+      <button class="btn-primary" id="btn-withdraw" onclick="withdrawAmount()" disabled>
+        Rút Tiền
+      </button>
+      <button class="btn-danger" id="btn-withdraw-all" onclick="withdrawAll()" disabled>
+        Rút Toàn Bộ (Shares)
+      </button>
+    </div>
+
+    <!-- Transaction result -->
+    <div id="tx-result" style="display:none"></div>
+  </div>
+
+  <!-- Security note -->
+  <div class="banner info" style="margin-top:24px">
+    <strong>🔒 Bảo mật:</strong> Webapp này chỉ tương tác với Morpho Blue contract chính thức
+    (<span class="address">0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb</span>).
+    Tiền luôn được gửi về chính ví của bạn. Luôn kiểm tra kỹ transaction trên MetaMask trước khi ký.
+  </div>
+
+  <!-- viem from CDN -->
+  <script type="importmap">
+  {
+    "imports": {
+      "viem": "https://esm.sh/viem@2.53.1",
+      "viem/chains": "https://esm.sh/viem@2.53.1/chains"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import {
+      createPublicClient, createWalletClient, http, custom,
+      formatUnits, parseUnits,
+    } from "viem";
+    import { mainnet } from "viem/chains";
+
+    // ============================================================
+    // CONFIG
+    // ============================================================
+    const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
+    const RPC_URLS = [
+      "https://ethereum-rpc.publicnode.com",
+      "https://eth.drpc.org",
+      "https://1rpc.io/eth",
+      "https://rpc.mevblocker.io",
+      "https://cloudflare-eth.com",
+    ];
+
+    // Minimal ABI for Morpho Blue
+    const MORPHO_ABI = [
+      {
+        type: "function", name: "withdraw",
+        inputs: [
+          { name: "marketParams", type: "tuple", components: [
+            { name: "loanToken", type: "address" },
+            { name: "collateralToken", type: "address" },
+            { name: "oracle", type: "address" },
+            { name: "irm", type: "address" },
+            { name: "lltv", type: "uint256" },
+          ]},
+          { name: "assets", type: "uint256" },
+          { name: "shares", type: "uint256" },
+          { name: "onBehalf", type: "address" },
+          { name: "receiver", type: "address" },
+        ],
+        outputs: [{ type: "uint256" }, { type: "uint256" }],
+        stateMutability: "nonpayable",
+      },
+      {
+        type: "function", name: "idToMarketParams",
+        inputs: [{ type: "bytes32" }],
+        outputs: [
+          { name: "loanToken", type: "address" },
+          { name: "collateralToken", type: "address" },
+          { name: "oracle", type: "address" },
+          { name: "irm", type: "address" },
+          { name: "lltv", type: "uint256" },
+        ],
+        stateMutability: "view",
+      },
+      {
+        type: "function", name: "market",
+        inputs: [{ type: "bytes32" }],
+        outputs: [
+          { name: "totalSupplyAssets", type: "uint128" },
+          { name: "totalSupplyShares", type: "uint128" },
+          { name: "totalBorrowAssets", type: "uint128" },
+          { name: "totalBorrowShares", type: "uint128" },
+          { name: "lastUpdate", type: "uint128" },
+          { name: "fee", type: "uint128" },
+        ],
+        stateMutability: "view",
+      },
+      {
+        type: "function", name: "position",
+        inputs: [{ type: "bytes32" }, { type: "address" }],
+        outputs: [
+          { name: "supplyShares", type: "uint256" },
+          { name: "borrowShares", type: "uint128" },
+          { name: "collateral", type: "uint128" },
+        ],
+        stateMutability: "view",
+      },
+    ];
+
+    // ERC20 minimal ABI
+    const ERC20_ABI = [
+      { type: "function", name: "decimals", inputs: [], outputs: [{ type: "uint8" }], stateMutability: "view" },
+      { type: "function", name: "symbol", inputs: [], outputs: [{ type: "string" }], stateMutability: "view" },
+      { type: "function", name: "name", inputs: [], outputs: [{ type: "string" }], stateMutability: "view" },
+    ];
+
+    // ============================================================
+    // STATE
+    // ============================================================
+    let marketId = null;
+    let lenderAddress = null;
+    let publicClient = null;
+    let walletClient = null;
+    let currentAccount = null;
+
+    let marketParams = null;
+    let marketData = null;
+    let positionData = null;
+    let loanToken = { decimals: 6, symbol: "USDC" };
+    let collateralToken = { decimals: 18, symbol: "dCOMP" };
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+    function wadToPercent(wad) {
+      return (Number(wad) / 1e16).toFixed(2) + "%";
+    }
+
+    function shortenAddr(addr) {
+      return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+    }
+
+    function showError(msg) {
+      const el = document.getElementById("error-banner");
+      el.textContent = "❌ " + msg;
+      el.style.display = "block";
+    }
+
+    function hideError() {
+      document.getElementById("error-banner").style.display = "none";
+    }
+
+    function showTxResult(type, msg) {
+      const el = document.getElementById("tx-result");
+      el.style.display = "block";
+      el.innerHTML = `<div class="banner ${type}">${msg}</div>`;
+    }
+
+    // ============================================================
+    // RPC CLIENT
+    // ============================================================
+    async function createRpcClient() {
+      for (const url of RPC_URLS) {
+        const client = createPublicClient({
+          chain: mainnet,
+          transport: http(url, { timeout: 15000 }),
+        });
+        try {
+          await client.getChainId();
+          return client;
+        } catch { /* next */ }
+      }
+      throw new Error("Không thể kết nối đến bất kỳ RPC nào");
+    }
+
+    // ============================================================
+    // FETCH DATA
+    // ============================================================
+    async function fetchAllData() {
+      // Fetch market params
+      const params = await publicClient.readContract({
+        address: MORPHO_BLUE,
+        abi: MORPHO_ABI,
+        functionName: "idToMarketParams",
+        args: [marketId],
+      });
+      marketParams = {
+        loanToken: params[0],
+        collateralToken: params[1],
+        oracle: params[2],
+        irm: params[3],
+        lltv: params[4],
+      };
+
+      // Fetch market state + position + token metadata in parallel
+      const [market, position, cToken, lToken] = await Promise.all([
+        publicClient.readContract({
+          address: MORPHO_BLUE,
+          abi: MORPHO_ABI,
+          functionName: "market",
+          args: [marketId],
+        }),
+        publicClient.readContract({
+          address: MORPHO_BLUE,
+          abi: MORPHO_ABI,
+          functionName: "position",
+          args: [marketId, lenderAddress],
+        }),
+        publicClient.readContract({
+          address: marketParams.collateralToken,
+          abi: ERC20_ABI,
+          functionName: "decimals",
+        }).then(d => publicClient.readContract({
+          address: marketParams.collateralToken, abi: ERC20_ABI, functionName: "symbol",
+        }).then(s => ({ decimals: d, symbol: s }))).catch(() => ({ decimals: 18, symbol: "?" })),
+        publicClient.readContract({
+          address: marketParams.loanToken,
+          abi: ERC20_ABI,
+          functionName: "decimals",
+        }).then(d => publicClient.readContract({
+          address: marketParams.loanToken, abi: ERC20_ABI, functionName: "symbol",
+        }).then(s => ({ decimals: d, symbol: s }))).catch(() => ({ decimals: 6, symbol: "?" })),
+      ]);
+
+      marketData = {
+        totalSupplyAssets: market[0],
+        totalSupplyShares: market[1],
+        totalBorrowAssets: market[2],
+        totalBorrowShares: market[3],
+        lastUpdate: market[4],
+        fee: market[5],
+      };
+
+      positionData = {
+        supplyShares: position[0],
+        borrowShares: position[1],
+        collateral: position[2],
+      };
+
+      collateralToken = cToken;
+      loanToken = lToken;
+
+      // Compute derived values
+      const supplyAssets = marketData.totalSupplyShares > 0n
+        ? (positionData.supplyShares * marketData.totalSupplyAssets) / marketData.totalSupplyShares
+        : 0n;
+
+      const liquidity = marketData.totalSupplyAssets - marketData.totalBorrowAssets;
+      if (liquidity < 0n) marketData.liquidity = 0n;
+      else marketData.liquidity = liquidity;
+
+      marketData.supplyAssets = supplyAssets;
+      marketData.utilization = marketData.totalSupplyAssets > 0n
+        ? (marketData.totalBorrowAssets * BigInt(1e18)) / marketData.totalSupplyAssets
+        : 0n;
+    }
+
+    // ============================================================
+    // RENDER
+    // ============================================================
+    function renderMarketInfo() {
+      const liquidity = marketData.liquidity;
+      const liquidityClass = liquidity > 0n ? "green" : "red";
+
+      document.getElementById("market-info").innerHTML = [
+        row("Collateral", `${shortenAddr(marketParams.collateralToken)} (${collateralToken.symbol})`),
+        row("Loan Token", `${shortenAddr(marketParams.loanToken)} (${loanToken.symbol})`),
+        row("Oracle", shortenAddr(marketParams.oracle)),
+        row("IRM", shortenAddr(marketParams.irm)),
+        row("LLTV", wadToPercent(marketParams.lltv)),
+        row("Total Supply", formatToken(marketData.totalSupplyAssets, loanToken)),
+        row("Total Borrow", formatToken(marketData.totalBorrowAssets, loanToken)),
+        row("Liquidity",
+          `<span class="value ${liquidityClass}">${formatToken(liquidity, loanToken)}</span>`),
+        row("Utilization", wadToPercent(marketData.utilization)),
+      ].join("");
+
+      document.getElementById("market-section").style.display = "block";
+
+      // Show liquidity warning if 0
+      const warnEl = document.getElementById("liquidity-warning");
+      if (liquidity === 0n) {
+        warnEl.style.display = "block";
+        warnEl.textContent = "⚠️ Market đang 100% utilized. Giao dịch rút tiền sẽ thất bại cho đến khi có thanh khoản.";
+      } else {
+        warnEl.style.display = "none";
+      }
+    }
+
+    function renderPosition() {
+      const supplyAssets = marketData.supplyAssets;
+
+      document.getElementById("position-info").innerHTML = [
+        row("Supply Shares", positionData.supplyShares.toString()),
+        row("Supply Assets", formatToken(supplyAssets, loanToken)),
+        row("Borrow Shares", positionData.borrowShares.toString()),
+        row("Borrow Assets", formatToken(
+          marketData.totalBorrowShares > 0n
+            ? (positionData.borrowShares * marketData.totalBorrowAssets) / marketData.totalBorrowShares
+            : 0n,
+          loanToken
+        )),
+        row("Collateral", formatToken(positionData.collateral, collateralToken)),
+      ].join("");
+
+      document.getElementById("position-section").style.display = "block";
+
+      // MAX = min(supplyAssets, liquidity): chỉ rút được tối đa bằng thanh khoản hiện có
+      const maxWithdraw = supplyAssets < marketData.liquidity ? supplyAssets : marketData.liquidity;
+      document.getElementById("max-withdraw").textContent = formatToken(maxWithdraw, loanToken);
+    }
+
+    function row(label, value) {
+      return `<div class="row"><span class="label">${label}</span><span class="value">${value}</span></div>`;
+    }
+
+    function formatToken(amount, token) {
+      return `${formatUnits(amount, token.decimals)} ${token.symbol}`;
+    }
+
+    // ============================================================
+    // WALLET
+    // ============================================================
+    window.connectWallet = async function() {
+      try {
+        if (!window.ethereum) {
+          showError("Vui lòng cài đặt MetaMask hoặc ví tương thích EIP-1193.");
+          return;
+        }
+
+        const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+        currentAccount = accounts[0];
+
+        // Ensure mainnet
+        const chainId = await window.ethereum.request({ method: "eth_chainId" });
+        if (chainId !== "0x1") {
+          try {
+            await window.ethereum.request({
+              method: "wallet_switchEthereumChain",
+              params: [{ chainId: "0x1" }],
+            });
+          } catch (switchError) {
+            if (switchError.code === 4902) {
+              await window.ethereum.request({
+                method: "wallet_addEthereumChain",
+                params: [{
+                  chainId: "0x1",
+                  chainName: "Ethereum Mainnet",
+                  nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+                  rpcUrls: ["https://ethereum-rpc.publicnode.com"],
+                  blockExplorerUrls: ["https://etherscan.io"],
+                }],
+              });
+            } else {
+              throw new Error("Vui lòng chuyển sang Ethereum Mainnet trong ví.");
+            }
+          }
+        }
+
+        walletClient = createWalletClient({
+          chain: mainnet,
+          transport: custom(window.ethereum),
+        });
+
+        // Update UI
+        document.getElementById("wallet-status").style.display = "none";
+        document.getElementById("wallet-connected").style.display = "block";
+        document.getElementById("wallet-address").textContent = currentAccount;
+
+        // Enable buttons
+        document.getElementById("btn-withdraw").disabled = false;
+        document.getElementById("btn-withdraw-all").disabled = false;
+        document.getElementById("btn-max").disabled = false;
+
+        // Listen for account changes
+        window.ethereum.on("accountsChanged", (accts) => {
+          if (accts.length === 0) {
+            window.disconnectWallet();
+          } else {
+            currentAccount = accts[0];
+            document.getElementById("wallet-address").textContent = currentAccount;
+          }
+        });
+
+        // Listen for chain changes — re-fetch data if returning to mainnet
+        window.ethereum.on("chainChanged", (chainId) => {
+          if (chainId === "0x1") {
+            // Returned to Ethereum mainnet — refresh market data
+            fetchAllData().then(() => {
+              renderMarketInfo();
+              renderPosition();
+            }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
+          } else {
+            showTxResult("warn", "⚠️ Vui lòng chuyển về Ethereum Mainnet để sử dụng.");
+            document.getElementById("btn-withdraw").disabled = true;
+            document.getElementById("btn-withdraw-all").disabled = true;
+          }
+        });
+
+        // Listen for MetaMask disconnect
+        window.ethereum.on("disconnect", () => {
+          window.disconnectWallet();
+          showTxResult("error", "🔌 Ví đã ngắt kết nối.");
+        });
+
+        hideError();
+      } catch (err) {
+        showError("Lỗi kết nối ví: " + err.message);
+      }
+    };
+
+    window.disconnectWallet = function() {
+      walletClient = null;
+      currentAccount = null;
+      document.getElementById("wallet-status").style.display = "block";
+      document.getElementById("wallet-connected").style.display = "none";
+      document.getElementById("btn-withdraw").disabled = true;
+      document.getElementById("btn-withdraw-all").disabled = true;
+      document.getElementById("btn-max").disabled = true;
+    };
+
+    // ============================================================
+    // WITHDRAW
+    // ============================================================
+    window.setMaxAmount = async function() {
+      // Re-fetch both market state and position to get fresh data
+      // (cached data may be stale if page has been open for a while)
+      try {
+        const [position, market] = await Promise.all([
+          publicClient.readContract({
+            address: MORPHO_BLUE,
+            abi: MORPHO_ABI,
+            functionName: "position",
+            args: [marketId, lenderAddress],
+          }),
+          publicClient.readContract({
+            address: MORPHO_BLUE,
+            abi: MORPHO_ABI,
+            functionName: "market",
+            args: [marketId],
+          }),
+        ]);
+
+        // Update position
+        positionData.supplyShares = position[0];
+
+        // Update market state
+        marketData.totalSupplyAssets = market[0];
+        marketData.totalSupplyShares = market[1];
+        marketData.totalBorrowAssets = market[2];
+        marketData.totalBorrowShares = market[3];
+
+        // Recompute derived values
+        const supplyAssets = marketData.totalSupplyShares > 0n
+          ? (positionData.supplyShares * marketData.totalSupplyAssets) / marketData.totalSupplyShares
+          : 0n;
+        const rawLiquidity = marketData.totalSupplyAssets - marketData.totalBorrowAssets;
+        const liquidity = rawLiquidity < 0n ? 0n : rawLiquidity;
+
+        marketData.supplyAssets = supplyAssets;
+        marketData.liquidity = liquidity;
+
+        // MAX = min(supplyAssets, liquidity)
+        // Nếu thanh khoản < số tiền đã cung cấp, chỉ rút được tối đa = thanh khoản
+        const max = supplyAssets < liquidity ? supplyAssets : liquidity;
+
+        document.getElementById("withdraw-amount").value = formatUnits(max, loanToken.decimals);
+        document.getElementById("max-withdraw").textContent = formatToken(max, loanToken);
+      } catch (err) {
+        // Fallback to cached value if re-fetch fails
+        const supplyAssets = marketData.supplyAssets ?? 0n;
+        const liquidity = marketData.liquidity ?? 0n;
+        const max = supplyAssets < liquidity ? supplyAssets : liquidity;
+        document.getElementById("withdraw-amount").value = formatUnits(max, loanToken.decimals);
+        document.getElementById("max-withdraw").textContent = formatToken(max, loanToken);
+      }
+    };
+
+    window.withdrawAmount = async function() {
+      const amountStr = document.getElementById("withdraw-amount").value;
+      if (!amountStr || parseFloat(amountStr) <= 0) {
+        showError("Vui lòng nhập số lượng cần rút.");
+        return;
+      }
+
+      const assets = parseUnits(amountStr, loanToken.decimals);
+
+      // Client-side validation: catch obvious errors before sending on-chain
+      if (assets > marketData.supplyAssets) {
+        showError(
+          `Số lượng vượt quá số dư có thể rút (${formatToken(marketData.supplyAssets, loanToken)}).`
+        );
+        return;
+      }
+
+      if (assets > marketData.liquidity) {
+        showError(
+          `Thanh khoản market không đủ. Chỉ có ${formatToken(marketData.liquidity, loanToken)} khả dụng.`
+        );
+        return;
+      }
+
+      if (assets === 0n) {
+        showError("Số lượng rút không thể bằng 0.");
+        return;
+      }
+
+      await doWithdraw(assets, 0n);
+    };
+
+    window.withdrawAll = async function() {
+      const shares = positionData.supplyShares;
+      if (shares === 0n) {
+        showError("Bạn không có supply shares để rút.");
+        return;
+      }
+
+      // Re-fetch position to get up-to-date supply data
+      try {
+        const position = await publicClient.readContract({
+          address: MORPHO_BLUE,
+          abi: MORPHO_ABI,
+          functionName: "position",
+          args: [marketId, lenderAddress],
+        });
+        positionData.supplyShares = position[0];
+        const supplyAssets = marketData.totalSupplyShares > 0n
+          ? (positionData.supplyShares * marketData.totalSupplyAssets) / marketData.totalSupplyShares
+          : 0n;
+        marketData.supplyAssets = supplyAssets;
+      } catch {
+        // Continue with cached data if refresh fails
+      }
+
+      const supplyAssets = marketData.supplyAssets;
+
+      // Warn if market liquidity < supply assets (partial withdrawal may occur)
+      if (marketData.liquidity < supplyAssets) {
+        const confirmMsg =
+          `⚠️ Thanh khoản thị trường chỉ có ${formatToken(marketData.liquidity, loanToken)}, ` +
+          `thấp hơn vị thế ${formatToken(supplyAssets, loanToken)} của bạn.\n\n` +
+          `Giao dịch có thể chỉ rút được một phần hoặc thất bại.\n\n` +
+          `Tiếp tục?`;
+        if (!confirm(confirmMsg)) return;
+      }
+
+      // Confirm
+      const confirmMsg =
+        `Bạn sắp rút TOÀN BỘ vị thế:\n\n` +
+        `${formatToken(supplyAssets, loanToken)}\n` +
+        `(${shares.toString()} shares)\n\n` +
+        `Tiền sẽ được gửi về ví: ${currentAccount}\n\n` +
+        `Xác nhận?`;
+
+      if (!confirm(confirmMsg)) return;
+
+      await doWithdraw(0n, shares);
+    };
+
+    async function doWithdraw(assets, shares) {
+      if (!walletClient || !currentAccount) {
+        showError("Vui lòng kết nối ví trước.");
+        return;
+      }
+
+      hideError();
+      document.getElementById("tx-result").style.display = "none";
+
+      const btnWithdraw = document.getElementById("btn-withdraw");
+      const btnWithdrawAll = document.getElementById("btn-withdraw-all");
+      btnWithdraw.disabled = true;
+      btnWithdrawAll.disabled = true;
+      btnWithdraw.textContent = "⏳ Đang kiểm tra...";
+
+      try {
+        // Step 1: Simulate
+        const { request } = await publicClient.simulateContract({
+          address: MORPHO_BLUE,
+          abi: MORPHO_ABI,
+          functionName: "withdraw",
+          args: [marketParams, assets, shares, lenderAddress, currentAccount],
+          account: currentAccount,
+        });
+
+        btnWithdraw.textContent = "⏳ Chờ MetaMask xác nhận...";
+
+        // Step 2: Write
+        const hash = await walletClient.writeContract(request);
+
+        const etherscanLink = `https://etherscan.io/tx/${hash}`;
+        showTxResult("success",
+          `✅ Giao dịch đã gửi thành công!<br><br>` +
+          `<strong>Tx Hash:</strong> <a href="${etherscanLink}" target="_blank">${shortenAddr(hash)}</a><br>` +
+          `<a href="${etherscanLink}" target="_blank">📊 Xem trên Etherscan →</a>`
+        );
+      } catch (err) {
+        if (err.message?.includes("rejected") || err.message?.includes("denied")) {
+          showTxResult("error", "❌ Bạn đã từ chối giao dịch.");
+        } else if (err.message?.includes("revert") || err.message?.includes("reverted")) {
+          showTxResult("error", `❌ Giao dịch thất bại (revert):<br>${err.message}`);
+        } else {
+          showTxResult("error", `❌ Lỗi: ${err.message}`);
+        }
+      } finally {
+        btnWithdraw.textContent = "Rút Tiền";
+        btnWithdraw.disabled = false;
+        btnWithdrawAll.disabled = false;
+      }
+    }
+
+    // ============================================================
+    // INIT
+    // ============================================================
+    async function init() {
+      // Read query params
+      const params = new URLSearchParams(window.location.search);
+      marketId = params.get("market");
+      lenderAddress = params.get("lender");
+
+      if (!marketId || !lenderAddress) {
+        document.getElementById("loading").style.display = "none";
+        showError("Thiếu tham số. URL cần có: ?market=<marketId>&lender=<address>");
+        return;
+      }
+
+      try {
+        // Create RPC client
+        publicClient = await createRpcClient();
+
+        // Fetch all data
+        await fetchAllData();
+
+        // Render
+        renderMarketInfo();
+        renderPosition();
+        document.getElementById("wallet-section").style.display = "block";
+        document.getElementById("tx-section").classList.add("visible");
+
+        document.getElementById("loading").style.display = "none";
+      } catch (err) {
+        document.getElementById("loading").style.display = "none";
+        showError("Lỗi tải dữ liệu: " + err.message);
+      }
+    }
+
+    // Handle potential MetaMask not injected yet
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
+    }
+
+  </script>
+</body>
+</html>
