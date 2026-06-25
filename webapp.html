@@ -1219,7 +1219,7 @@
     function renderTierList() {
       const container = document.getElementById("tier-list");
       if (presignedTiers.length === 0) {
-        container.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">Chưa có mốc nào. Nhấn nút preset hoặc "Thêm Mốc".</p>';
+        container.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">Chưa có mốc nào. Nhấn nút "Thêm Mốc" để thêm mới.</p>';
       } else {
         container.innerHTML = presignedTiers.map((tier, i) => {
           const statusIcon = tier.status === "signed" ? "✅" :
