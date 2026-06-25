@@ -14,6 +14,7 @@ COPY *.html ./
 COPY docker-entrypoint.sh ./
 
 RUN chmod +x docker-entrypoint.sh
+RUN mkdir -p /app/data
 
 # Webapp + proxy ports
 EXPOSE 3000

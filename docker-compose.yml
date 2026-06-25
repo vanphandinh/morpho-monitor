@@ -8,3 +8,7 @@ services:
       - "8545:8545"   # proxy RPC (ký trước)
     volumes:
       - ./.env:/app/.env:ro
+      - presigned_data:/app/data
+
+volumes:
+  presigned_data:

@@ -54,7 +54,7 @@ export const WEBAPP_PORT = envNum("WEBAPP_PORT", 3000);
 export const WEBAPP_PASSWORD = env("WEBAPP_PASSWORD", "");
 
 // ---- Presigned Bundle ----
-export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./presigned.json");
+export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
 export const PROXY_PORT = envNum("PROXY_PORT", 8545);
 // Proxy URL: cùng host với webapp, port 8545
 export const PROXY_RPC_URL = (() => {
