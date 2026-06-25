@@ -6,6 +6,7 @@ import {
   PROXY_PORT,
   WEBAPP_URL,
   WEBAPP_PASSWORD,
+  verifySessionToken,
 } from "./shared.mjs";
 
 const PORT = PROXY_PORT || 8545;
@@ -217,11 +218,23 @@ function jsonRpcResult(id, result) {
 }
 
 /**
- * Check if the request has valid HTTP Basic Auth credentials.
- * Returns true if WEBAPP_PASSWORD is set and the password matches.
+ * Verify a Bearer token (HMAC-based, verifiable by both webapp-server and proxy-rpc).
+ * Returns { address, expiresAt } or null.
  */
-function checkBasicAuth(req) {
-  if (!WEBAPP_PASSWORD) return true; // no password = allow all
+function verifyToken(req) {
+  if (!WEBAPP_PASSWORD) return { address: "dev", expiresAt: Infinity }; // dev mode
+  const auth = req.headers["authorization"];
+  if (!auth || !auth.startsWith("Bearer ")) return null;
+  const token = auth.slice(7);
+  return verifySessionToken(token);
+}
+
+/**
+ * Check internal secret (Basic Auth with WEBAPP_PASSWORD).
+ * Used for webapp-server → proxy internal communication.
+ */
+function checkInternalSecret(req) {
+  if (!WEBAPP_PASSWORD) return true;
   const auth = req.headers["authorization"];
   if (!auth || !auth.startsWith("Basic ")) return false;
   try {
@@ -253,8 +266,10 @@ const server = http.createServer(async (req, res) => {
 
   // ---- API: POST /bundle — webapp gửi metadata, proxy ghép bundle → POST server ----
   if (req.method === "POST" && req.url === "/bundle") {
-    // Auth: require Basic Auth (browser auto-sends)
-    if (!checkBasicAuth(req)) {
+    // Accept either internal secret (webapp→proxy) or Bearer token (user→proxy)
+    const session = verifyToken(req);
+    const isInternal = checkInternalSecret(req);
+    if (!session && !isInternal) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -343,7 +358,9 @@ const server = http.createServer(async (req, res) => {
 
   // ---- API: GET /captured — xem danh sách tx đã capture ----
   if (req.method === "GET" && req.url === "/captured") {
-    if (!checkBasicAuth(req)) {
+    const session = verifyToken(req);
+    const isInternal = checkInternalSecret(req);
+    if (!session && !isInternal) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -355,7 +372,9 @@ const server = http.createServer(async (req, res) => {
 
   // ---- API: DELETE /captured — xóa tất cả tx đã capture ----
   if (req.method === "DELETE" && req.url === "/captured") {
-    if (!checkBasicAuth(req)) {
+    const session = verifyToken(req);
+    const isInternal = checkInternalSecret(req);
+    if (!session && !isInternal) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;

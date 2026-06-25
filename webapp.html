@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="presigned-proxy-url" content="REPLACE_AT_RUNTIME">
   <title>Morpho Blue — Rút Tiền</title>
   <style>
     :root {
@@ -322,6 +321,15 @@
           <button class="btn-outline" onclick="disconnectWallet()" style="margin-top:8px">
             Ngắt Kết Nối
           </button>
+          <button class="btn-primary" id="btn-sign-in" onclick="signIn()" style="margin-top:8px" disabled>
+            🔏 Xác Thực Bằng Ví
+          </button>
+          <button class="btn-outline" id="btn-sign-out" onclick="signOut()" style="margin-top:4px;display:none">
+            Đăng Xuất
+          </button>
+          <div id="auth-banner" class="banner info" style="display:none;margin-top:8px;font-size:0.85rem">
+            🔒 Trang này yêu cầu xác thực bằng chữ ký ví để sử dụng các chức năng presign.
+          </div>
         </div>
       </div>
     </div>
@@ -428,8 +436,13 @@
     import { mainnet } from "viem/chains";
 
     // ============================================================
-    // CONFIG
+    // CONFIG (injected by server via window.MORPHO_CONFIG)
     // ============================================================
+    const CFG = window.MORPHO_CONFIG || {};
+    const SERVER_MARKET_ID = CFG.marketId || null;
+    const SERVER_LENDER_ADDRESS = CFG.lenderAddress || null;
+    const SERVER_PROXY_RPC_URL = CFG.proxyRpcUrl || "http://127.0.0.1:8545";
+
     const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
     const RPC_URLS = [
       "https://ethereum-rpc.publicnode.com",
@@ -518,6 +531,10 @@
     let loanToken = { decimals: 6, symbol: "USDC" };
     let collateralToken = { decimals: 18, symbol: "dCOMP" };
 
+    // Auth state
+    let sessionToken = sessionStorage.getItem("morpho-session-token") || null;
+    let sessionExpiresAt = sessionStorage.getItem("morpho-session-expires") || null;
+
     // Presign state
     let currentTab = "withdraw";
     let presignedNonce = null;
@@ -551,6 +568,139 @@
       el.style.display = "block";
       el.innerHTML = `<div class="banner ${type}">${msg}</div>`;
     }
+
+    // ============================================================
+    // AUTH HELPERS (wallet signature)
+    // ============================================================
+    function isAuthenticated() {
+      if (!sessionToken || !sessionExpiresAt) return false;
+      if (Date.now() > parseInt(sessionExpiresAt, 10)) {
+        clearSession();
+        return false;
+      }
+      return true;
+    }
+
+    function getAuthHeaders() {
+      if (!sessionToken) return {};
+      return { "Authorization": "Bearer " + sessionToken };
+    }
+
+    function saveSession(token, expiresAt) {
+      sessionToken = token;
+      sessionExpiresAt = new Date(expiresAt).getTime().toString();
+      sessionStorage.setItem("morpho-session-token", token);
+      sessionStorage.setItem("morpho-session-expires", sessionExpiresAt);
+    }
+
+    function clearSession() {
+      sessionToken = null;
+      sessionExpiresAt = null;
+      sessionStorage.removeItem("morpho-session-token");
+      sessionStorage.removeItem("morpho-session-expires");
+      updateAuthUI();
+    }
+
+    function updateAuthUI() {
+      const authed = isAuthenticated();
+      // Sign-in button
+      const btnSignIn = document.getElementById("btn-sign-in");
+      if (btnSignIn) {
+        if (authed) {
+          btnSignIn.textContent = "✅ Đã Xác Thực";
+          btnSignIn.disabled = true;
+          btnSignIn.className = "btn-outline";
+        } else if (currentAccount && currentAccount.toLowerCase() === lenderAddress?.toLowerCase()) {
+          btnSignIn.textContent = "🔏 Xác Thực Bằng Ví";
+          btnSignIn.disabled = false;
+          btnSignIn.className = "btn-primary";
+        } else if (currentAccount) {
+          btnSignIn.textContent = "⚠️ Ví Không Khớp Với Lender";
+          btnSignIn.disabled = true;
+          btnSignIn.className = "btn-outline";
+        } else {
+          btnSignIn.textContent = "🔏 Xác Thực Bằng Ví";
+          btnSignIn.disabled = true;
+          btnSignIn.className = "btn-outline";
+        }
+      }
+      // Sign-out button
+      const btnSignOut = document.getElementById("btn-sign-out");
+      if (btnSignOut) {
+        btnSignOut.style.display = authed ? "" : "none";
+      }
+    }
+
+    /**
+     * Sign in with wallet: get challenge → personal_sign → submit to server.
+     */
+    window.signIn = async function () {
+      if (!currentAccount) {
+        showPresignError("Vui lòng kết nối ví trước.");
+        return;
+      }
+      if (currentAccount.toLowerCase() !== lenderAddress?.toLowerCase()) {
+        showPresignError(`Ví đang kết nối (${currentAccount}) không khớp với địa chỉ lender (${lenderAddress}).`);
+        return;
+      }
+
+      const btnSignIn = document.getElementById("btn-sign-in");
+      btnSignIn.disabled = true;
+      btnSignIn.textContent = "⏳ Đang lấy challenge...";
+
+      try {
+        // 1. Get challenge from server
+        const challengeResp = await fetch("/api/challenge");
+        const challengeData = await challengeResp.json();
+        if (!challengeData.ok) {
+          throw new Error(challengeData.error || "Failed to get challenge");
+        }
+
+        // 2. Sign challenge with wallet
+        btnSignIn.textContent = "⏳ Vui lòng ký trong ví...";
+        const signature = await walletClient.signMessage({
+          account: currentAccount,
+          message: challengeData.message,
+        });
+
+        // 3. Submit signature to server
+        btnSignIn.textContent = "⏳ Đang xác thực...";
+        const authResp = await fetch("/api/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            address: currentAccount,
+            signature,
+            challenge: challengeData.challenge,
+          }),
+        });
+        const authData = await authResp.json();
+
+        if (!authData.ok) {
+          throw new Error(authData.error || "Authentication failed");
+        }
+
+        // 4. Save session
+        saveSession(authData.token, authData.expiresAt);
+        updateAuthUI();
+        showPresignSuccess("✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.");
+
+        // Refresh existing bundle display if on presign tab
+        if (currentTab === "presign") {
+          fetchExistingBundle();
+        }
+      } catch (err) {
+        showPresignError("Xác thực thất bại: " + err.message);
+        btnSignIn.disabled = false;
+        btnSignIn.textContent = "🔏 Xác Thực Bằng Ví";
+        btnSignIn.className = "btn-primary";
+      }
+    };
+
+    window.signOut = function () {
+      clearSession();
+      showPresignSuccess("✅ Đã đăng xuất.");
+    };
 
     // ============================================================
     // RPC CLIENT
@@ -771,6 +921,7 @@
 
         // Update presign tab wallet UI
         updatePresignWalletUI();
+        updateAuthUI();
         renderWalletCompatibility();
 
         // Listen for account changes
@@ -824,6 +975,9 @@
       document.getElementById("btn-sign-all").disabled = true;
       document.getElementById("btn-fetch-nonce").disabled = true;
       document.getElementById("btn-auto-gas").disabled = true;
+      // Clear auth
+      clearSession();
+      updateAuthUI();
     };
 
     // ============================================================
@@ -847,9 +1001,7 @@
     };
 
     function getProxyUrl() {
-      const meta = document.querySelector('meta[name="presigned-proxy-url"]');
-      const url = meta ? meta.content : "http://127.0.0.1:8545";
-      return url === "REPLACE_AT_RUNTIME" ? "http://127.0.0.1:8545" : url;
+      return SERVER_PROXY_RPC_URL;
     }
 
     // ============================================================
@@ -898,6 +1050,7 @@
         if (presignedTiers.length > 0 && presignedNonce !== null && presignedGas.maxFeePerGas) {
           document.getElementById("btn-sign-all").disabled = false;
         }
+        updateAuthUI();
       } else {
         statusEl.style.display = "block";
         connectedEl.style.display = "none";
@@ -1218,6 +1371,11 @@
         return;
       }
 
+      if (!isAuthenticated()) {
+        showPresignError("Vui lòng xác thực bằng ví trước khi lưu.");
+        return;
+      }
+
       document.getElementById("btn-save-server").disabled = true;
       document.getElementById("btn-save-server").textContent = "⏳ Đang gửi đến proxy...";
 
@@ -1225,9 +1383,20 @@
         // Gửi metadata đến proxy (localhost:8545) — proxy ghép với signed tx đã capture
         const resp = await fetch("/api/bundle", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+          },
           body: JSON.stringify(bundle),
         });
+        if (resp.status === 401) {
+          clearSession();
+          updateAuthUI();
+          showPresignError("Phiên đăng nhập hết hạn. Vui lòng xác thực lại.");
+          document.getElementById("btn-save-server").disabled = false;
+          document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+          return;
+        }
         const result = await resp.json();
         if (result.ok) {
           showPresignSuccess(
@@ -1293,10 +1462,20 @@
     // PRESIGN: FETCH EXISTING BUNDLE
     // ============================================================
     async function fetchExistingBundle() {
+      if (!isAuthenticated()) {
+        document.getElementById("presign-existing").style.display = "none";
+        return;
+      }
       try {
         const resp = await fetch("/api/presign", {
-          credentials: "same-origin",
+          headers: { ...getAuthHeaders() },
         });
+        if (resp.status === 401) {
+          clearSession();
+          updateAuthUI();
+          document.getElementById("presign-existing").style.display = "none";
+          return;
+        }
         if (!resp.ok) return;
         const data = await resp.json();
         if (!data.ok || !data.exists) {
@@ -1346,8 +1525,14 @@
       try {
         const resp = await fetch(`/api/presign?tier=${index}`, {
           method: "DELETE",
-          credentials: "same-origin",
+          headers: { ...getAuthHeaders() },
         });
+        if (resp.status === 401) {
+          clearSession();
+          updateAuthUI();
+          showPresignError("Phiên đăng nhập hết hạn. Vui lòng xác thực lại.");
+          return;
+        }
         const result = await resp.json();
         if (result.ok) {
           showPresignSuccess(`✅ Đã xóa tier "${result.removed}" (còn ${result.remaining} tier).`);
@@ -1366,8 +1551,14 @@
       try {
         const resp = await fetch("/api/presign", {
           method: "DELETE",
-          credentials: "same-origin",
+          headers: { ...getAuthHeaders() },
         });
+        if (resp.status === 401) {
+          clearSession();
+          updateAuthUI();
+          showPresignError("Phiên đăng nhập hết hạn. Vui lòng xác thực lại.");
+          return;
+        }
         const result = await resp.json();
         if (result.ok) {
           showPresignSuccess(`✅ Đã xóa bundle (${result.deleted} files).`);
@@ -1573,14 +1764,14 @@
     // INIT
     // ============================================================
     async function init() {
-      // Read query params
+      // Read query params (optional — override server config for dev/testing)
       const params = new URLSearchParams(window.location.search);
-      marketId = params.get("market");
-      lenderAddress = params.get("lender");
+      marketId = params.get("market") || SERVER_MARKET_ID;
+      lenderAddress = params.get("lender") || SERVER_LENDER_ADDRESS;
 
       if (!marketId || !lenderAddress) {
         document.getElementById("loading").style.display = "none";
-        showError("Thiếu tham số. URL cần có: ?market=<marketId>&lender=<address>");
+        showError("Thiếu market hoặc lender address. Kiểm tra cấu hình server (.env).");
         return;
       }
 
@@ -1611,6 +1802,7 @@
         if (proxyUrlEl) proxyUrlEl.textContent = getProxyUrl();
 
         document.getElementById("loading").style.display = "none";
+        updateAuthUI();
       } catch (err) {
         document.getElementById("loading").style.display = "none";
         showError("Lỗi tải dữ liệu: " + err.message);

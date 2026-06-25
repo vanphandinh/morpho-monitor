@@ -1,8 +1,21 @@
 import http from "node:http";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { WEBAPP_PORT, PRESIGNED_FILE, PROXY_RPC_URL, WEBAPP_PASSWORD } from "./shared.mjs";
+import {
+  WEBAPP_PORT,
+  PRESIGNED_FILE,
+  PROXY_RPC_URL,
+  WEBAPP_PASSWORD,
+  MARKET_ID,
+  LENDER_ADDRESS,
+  SESSION_EXPIRY_MS,
+  CHALLENGE_EXPIRY_MS,
+  recoverSignerAddress,
+  createSessionToken,
+  verifySessionToken,
+} from "./shared.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = WEBAPP_PORT;
@@ -18,25 +31,56 @@ try {
   process.exit(1);
 }
 
-// Inject proxy URL into HTML (not a secret — just tells frontend where proxy is)
+// Inject config into HTML via a single <script> block before </head>
 htmlContent = htmlContent.replace(
-  '<meta name="presigned-proxy-url" content="REPLACE_AT_RUNTIME">',
-  `<meta name="presigned-proxy-url" content="${PROXY_RPC_URL}">`
+  "</head>",
+  `<script>window.MORPHO_CONFIG={marketId:"${MARKET_ID}",lenderAddress:"${LENDER_ADDRESS}",proxyRpcUrl:"${PROXY_RPC_URL}"}</script></head>`
 );
 
-// Log presign configuration
+// ============================================================
+// AUTH STATE (in-memory)
+// ============================================================
+const challenges = new Map(); // challenge → { address, createdAt, expiresAt }
+
+// Clean up expired challenges every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of challenges) {
+    if (now > val.expiresAt) challenges.delete(key);
+  }
+}, 10 * 60 * 1000);
+
+// Log configuration
 if (WEBAPP_PASSWORD) {
   console.log(`[presign] ✅ Presign endpoints configured. Proxy URL: ${PROXY_RPC_URL}`);
+  console.log(`[presign] 🔐 Auth mode: wallet signature (Bearer token). Internal secret: configured.`);
 } else {
   console.warn("[presign] ⚠️  WEBAPP_PASSWORD chưa được cấu hình. Tất cả endpoint sẽ không được bảo vệ (ai cũng truy cập được).");
 }
+console.log(`[presign] 👛 Lender address: ${LENDER_ADDRESS}`);
+
+// ============================================================
+// AUTH MIDDLEWARE
+// ============================================================
 
 /**
- * Check if the request has valid HTTP Basic Auth credentials.
- * Returns true if WEBAPP_PASSWORD is set and the password matches.
+ * Verify a Bearer token (HMAC-based, verifiable by both webapp-server and proxy-rpc).
+ * Returns { address, expiresAt } or null.
  */
-function checkBasicAuth(req) {
-  if (!WEBAPP_PASSWORD) return true; // no password = allow all
+function verifyToken(req) {
+  if (!WEBAPP_PASSWORD) return { address: LENDER_ADDRESS, expiresAt: Infinity }; // dev mode
+  const auth = req.headers["authorization"];
+  if (!auth || !auth.startsWith("Bearer ")) return null;
+  const token = auth.slice(7);
+  return verifySessionToken(token);
+}
+
+/**
+ * Check internal secret (Basic Auth with WEBAPP_PASSWORD).
+ * Used for proxy ↔ webapp internal communication.
+ */
+function checkInternalSecret(req) {
+  if (!WEBAPP_PASSWORD) return true;
   const auth = req.headers["authorization"];
   if (!auth || !auth.startsWith("Basic ")) return false;
   try {
@@ -49,32 +93,98 @@ function checkBasicAuth(req) {
 }
 
 const server = http.createServer((req, res) => {
-  // ---- Basic Auth cho webapp (không áp dụng cho API routes) ----
-  if (WEBAPP_PASSWORD && !req.url.startsWith("/api/")) {
-    const auth = req.headers["authorization"];
-    if (!auth || !auth.startsWith("Basic ")) {
-      res.writeHead(401, {
-        "WWW-Authenticate": 'Basic realm="Morpho Blue"',
-        "Content-Type": "text/plain; charset=utf-8",
-      });
-      res.end("Unauthorized");
-      return;
-    }
-    const [, encoded] = auth.split(" ");
-    const [user, pass] = Buffer.from(encoded, "base64").toString("utf-8").split(":");
-    if (pass !== WEBAPP_PASSWORD) {
-      res.writeHead(401, {
-        "WWW-Authenticate": 'Basic realm="Morpho Blue"',
-        "Content-Type": "text/plain; charset=utf-8",
-      });
-      res.end("Unauthorized");
-      return;
-    }
+  // ---- Auth: static HTML page is now public (auth via wallet in JS) ----
+  // No Basic Auth prompt on page load — the frontend handles sign-in.
+
+  // ---- API: GET /api/challenge — tạo challenge để user ký (không cần auth) ----
+  if (req.method === "GET" && req.url === "/api/challenge") {
+    const challenge = crypto.randomBytes(16).toString("hex");
+    const now = Date.now();
+    challenges.set(challenge, {
+      address: LENDER_ADDRESS,
+      createdAt: now,
+      expiresAt: now + CHALLENGE_EXPIRY_MS,
+    });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      ok: true,
+      challenge,
+      message: `Morpho Blue Monitor\n\nSign in with address: ${LENDER_ADDRESS}\nNonce: ${challenge}`,
+      expiresAt: new Date(now + CHALLENGE_EXPIRY_MS).toISOString(),
+    }));
+    return;
+  }
+
+  // ---- API: POST /api/auth — verify signature + issue session token (không cần auth) ----
+  if (req.method === "POST" && req.url === "/api/auth") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", async () => {
+      try {
+        const { address, signature, challenge: challengeStr } = JSON.parse(body);
+
+        if (!address || !signature || !challengeStr) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Missing address, signature, or challenge" }));
+          return;
+        }
+
+        // Verify challenge
+        const challengeData = challenges.get(challengeStr);
+        if (!challengeData || Date.now() > challengeData.expiresAt) {
+          challenges.delete(challengeStr);
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Challenge expired or invalid. Request a new one." }));
+          return;
+        }
+
+        // Verify address matches lender
+        if (address.toLowerCase() !== LENDER_ADDRESS.toLowerCase()) {
+          challenges.delete(challengeStr);
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: `Address ${address} is not the lender (${LENDER_ADDRESS})` }));
+          return;
+        }
+
+        // Recover signer from signature
+        const message = `Morpho Blue Monitor\n\nSign in with address: ${LENDER_ADDRESS}\nNonce: ${challengeStr}`;
+        const recovered = await recoverSignerAddress(message, signature);
+
+        if (!recovered || recovered !== LENDER_ADDRESS.toLowerCase()) {
+          challenges.delete(challengeStr);
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Signature verification failed" }));
+          return;
+        }
+
+        // Issue session token (HMAC-based — verifiable by both webapp and proxy)
+        challenges.delete(challengeStr);
+        const token = createSessionToken(recovered, SESSION_EXPIRY_MS);
+        const now = Date.now();
+        const expiresAt = new Date(now + SESSION_EXPIRY_MS).toISOString();
+
+        console.log(
+          `[${new Date().toISOString()}] 🔑 New session for ${recovered} ` +
+            `(expires ${new Date(now + SESSION_EXPIRY_MS).toLocaleString("vi-VN")})`
+        );
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          ok: true,
+          token,
+          expiresAt,
+        }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    });
+    return;
   }
 
   // ---- API: GET /api/presign — trả về summary bundle hiện tại (không signedTx) ----
   if (req.method === "GET" && req.url === "/api/presign") {
-    if (!checkBasicAuth(req)) {
+    if (!verifyToken(req)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -111,7 +221,7 @@ const server = http.createServer((req, res) => {
 
   // ---- API: POST /api/bundle — relay metadata từ frontend sang proxy ----
   if (req.method === "POST" && req.url === "/api/bundle") {
-    if (!checkBasicAuth(req)) {
+    if (!verifyToken(req)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -154,7 +264,7 @@ const server = http.createServer((req, res) => {
 
   // ---- API: DELETE /api/presign — xóa toàn bộ bundle hoặc 1 tier (?tier=N) ----
   if (req.method === "DELETE" && req.url.startsWith("/api/presign")) {
-    if (!checkBasicAuth(req)) {
+    if (!verifyToken(req)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -202,9 +312,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: POST /api/presign — nhận signed bundle từ webapp (merge với bundle cũ) ----
+  // ---- API: POST /api/presign — nhận signed bundle từ proxy (internal) hoặc user (Bearer) ----
   if (req.method === "POST" && req.url === "/api/presign") {
-    if (!checkBasicAuth(req)) {
+    // Accept either internal secret (proxy→webapp) or Bearer token (user→webapp)
+    const session = verifyToken(req);
+    const isInternal = checkInternalSecret(req);
+    if (!session && !isInternal) {
       console.warn(
         `[${new Date().toISOString()}] 🔒 POST /api/presign rejected: invalid credentials`
       );

@@ -1,5 +1,6 @@
-import { createPublicClient, http, formatUnits } from "viem";
+import { createPublicClient, http, formatUnits, recoverMessageAddress } from "viem";
 import { mainnet } from "viem/chains";
+import crypto from "node:crypto";
 
 // ============================================================
 // CONFIG — tất cả đọc từ biến môi trường (file .env)
@@ -51,7 +52,9 @@ export const WEBAPP_URL = env("WEBAPP_URL", "http://localhost:3000");
 export const WEBAPP_PORT = envNum("WEBAPP_PORT", 3000);
 
 // ---- Webapp Auth ----
-export const WEBAPP_PASSWORD = env("WEBAPP_PASSWORD", "");
+export const WEBAPP_PASSWORD = env("WEBAPP_PASSWORD", ""); // internal secret for proxy↔webapp
+export const SESSION_EXPIRY_MS = envNum("SESSION_EXPIRY_HOURS", 24) * 60 * 60 * 1000;
+export const CHALLENGE_EXPIRY_MS = envNum("CHALLENGE_EXPIRY_MINUTES", 5) * 60 * 1000;
 
 // ---- Presigned Bundle ----
 export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
@@ -128,6 +131,61 @@ export async function createClient(urls = RPC_URLS) {
     }
   }
   throw new Error("No RPC endpoints available");
+}
+
+/**
+ * Recover the Ethereum address that signed a message.
+ * Uses viem's recoverMessageAddress for standard personal_sign verification.
+ * Returns the recovered address (lowercase) or null on failure.
+ */
+export async function recoverSignerAddress(message, signature) {
+  try {
+    const address = await recoverMessageAddress({ message, signature });
+    return address.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create a self-verifiable session token using HMAC-SHA256.
+ * Both webapp-server and proxy-rpc can verify tokens independently
+ * because they share WEBAPP_PASSWORD as the HMAC secret.
+ *
+ * Token format: payload.hmac
+ *   payload = base64url(address:expiryTimestamp:randomHex)
+ *   hmac = hex(HMAC-SHA256(payload, WEBAPP_PASSWORD))
+ */
+export function createSessionToken(address, expiryMs) {
+  const secret = WEBAPP_PASSWORD || "dev-mode-no-secret";
+  const random = crypto.randomBytes(16).toString("hex");
+  const expiry = Date.now() + expiryMs;
+  const payload = Buffer.from(`${address}:${expiry}:${random}`).toString("base64url");
+  const hmac = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  return `${payload}.${hmac}`;
+}
+
+/**
+ * Verify a self-verifiable session token.
+ * Returns { address, expiresAt } or null if invalid/expired.
+ */
+export function verifySessionToken(token) {
+  if (!token) return null;
+  const secret = WEBAPP_PASSWORD || "dev-mode-no-secret";
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payload, hmac] = parts;
+  const expectedHmac = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  if (hmac !== expectedHmac) return null;
+  try {
+    const decoded = Buffer.from(payload, "base64url").toString("utf-8");
+    const [address, expiryStr] = decoded.split(":");
+    const expiry = parseInt(expiryStr, 10);
+    if (isNaN(expiry) || Date.now() > expiry) return null;
+    return { address, expiresAt: expiry };
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================

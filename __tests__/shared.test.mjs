@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   env,
   envNum,
@@ -7,6 +8,8 @@ import {
   formatApy,
   shortenAddress,
   shouldNotify,
+  createSessionToken,
+  verifySessionToken,
 } from "../shared.mjs";
 
 // ============================================================
@@ -247,5 +250,66 @@ describe("shouldNotify()", () => {
     // threshold check is strict less-than: liquidity < minLiquidityThreshold
     const result = shouldNotify({ ...base, liquidity: THRESHOLD });
     expect(result.shouldNotify).toBe(true); // equal is NOT less than
+  });
+});
+
+// ============================================================
+// createSessionToken() & verifySessionToken() — HMAC-based
+// ============================================================
+describe("createSessionToken() & verifySessionToken()", () => {
+  it("tạo token và verify thành công", () => {
+    const token = createSessionToken("0x1234567890abcdef", 3600000); // 1 hour
+    expect(token).toBeTruthy();
+    expect(token).toContain(".");
+
+    const result = verifySessionToken(token);
+    expect(result).not.toBeNull();
+    expect(result.address).toBe("0x1234567890abcdef");
+    expect(result.expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it("verify trả về null với token null/undefined/rỗng", () => {
+    expect(verifySessionToken(null)).toBeNull();
+    expect(verifySessionToken(undefined)).toBeNull();
+    expect(verifySessionToken("")).toBeNull();
+  });
+
+  it("verify trả về null với token sai format (không có dấu chấm)", () => {
+    expect(verifySessionToken("invalidtoken")).toBeNull();
+  });
+
+  it("verify trả về null với token bị chỉnh sửa payload", () => {
+    const token = createSessionToken("0xabc", 3600000);
+    const [payload, hmac] = token.split(".");
+    const tamperedToken = "tampered." + hmac;
+    expect(verifySessionToken(tamperedToken)).toBeNull();
+  });
+
+  it("verify trả về null với token bị chỉnh sửa HMAC", () => {
+    const token = createSessionToken("0xabc", 3600000);
+    const [payload] = token.split(".");
+    const tamperedToken = payload + ".deadbeef";
+    expect(verifySessionToken(tamperedToken)).toBeNull();
+  });
+
+  it("verify trả về null với token đã hết hạn", async () => {
+    const token = createSessionToken("0xabc", 1); // 1ms expiry
+    await new Promise(r => setTimeout(r, 10));
+    expect(verifySessionToken(token)).toBeNull();
+  });
+
+  it("token của các address khác nhau là khác nhau", () => {
+    const token1 = createSessionToken("0xaaa", 3600000);
+    const token2 = createSessionToken("0xbbb", 3600000);
+    expect(token1).not.toBe(token2);
+    expect(verifySessionToken(token1).address).toBe("0xaaa");
+    expect(verifySessionToken(token2).address).toBe("0xbbb");
+  });
+
+  it("token còn hạn thì verify thành công", () => {
+    const token = createSessionToken("0xlender", 60000); // 1 minute
+    const result = verifySessionToken(token);
+    expect(result).not.toBeNull();
+    expect(result.address).toBe("0xlender");
   });
 });
