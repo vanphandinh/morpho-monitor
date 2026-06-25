@@ -117,7 +117,7 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
   console.log(`   ── Transaction ──`);
   console.log(`   chainId:           ${tx.chainId}`);
   console.log(`   nonce:             ${tx.nonce}`);
-  console.log(`   to:                ${tx.to} ${tx.to === bundle.morphoBlueAddress ? "(Morpho Blue)" : "⚠️ KHÔNG PHẢI MORPHO"}`);
+  console.log(`   to:                ${tx.to} ${tx.to?.toLowerCase() === bundle.morphoBlueAddress?.toLowerCase() ? "(Morpho Blue)" : "⚠️ KHÔNG PHẢI MORPHO"}`);
   console.log(`   value:             ${tx.value?.toString() || "0"} wei`);
   console.log(`   gas:               ${tx.gas?.toString() || "N/A"}`);
   console.log(`   maxFeePerGas:      ${tx.maxFeePerGas?.toString() || "N/A"} (${tx.maxFeePerGas ? formatUnits(tx.maxFeePerGas, 9) + " gwei" : "N/A"})`);
