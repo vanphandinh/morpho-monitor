@@ -967,6 +967,16 @@
         });
         document.getElementById("presign-nonce").textContent = presignedNonce;
         document.getElementById("btn-fetch-nonce").textContent = "✅ Đã lấy Nonce";
+
+        // Gửi nonce cho proxy để ví dùng chung 1 nonce cho tất cả tier
+        try {
+          await fetch(`${getProxyUrl()}/nonce`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nonce: presignedNonce }),
+          });
+        } catch { /* proxy không reachable — vẫn ký được nhưng nonce có thể bị ví tự tăng */ }
+
         updateSignButton();
       } catch (err) {
         showPresignError("Lỗi lấy nonce: " + err.message);

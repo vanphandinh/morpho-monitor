@@ -14,6 +14,7 @@ const PORT = PROXY_PORT || 8545;
 // STATE
 // ============================================================
 const capturedTxs = []; // [{ hash: "0x...", signedTx: "0x...", capturedAt: ISO }]
+let cachedNonce = null; // nonce do frontend gửi — ví sẽ dùng nonce này thay vì tự tăng
 
 // ============================================================
 // FAKE RESPONSES
@@ -138,7 +139,8 @@ function handleRpc(method, params) {
       return null;
 
     case "eth_getTransactionCount":
-      return "0x0";
+      // Trả về nonce do frontend đã fetch, ví sẽ dùng nonce này cho tất cả tier
+      return cachedNonce != null ? "0x" + cachedNonce.toString(16) : "0x0";
 
     case "eth_getStorageAt":
       return "0x" + "00".repeat(32);
@@ -237,6 +239,35 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // ---- API: POST /nonce — frontend gửi nonce, proxy lưu để ví dùng chung ----
+  if (req.method === "POST" && req.url === "/nonce") {
+    if (!checkBasicAuth(req)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const { nonce } = JSON.parse(body);
+        if (nonce == null) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Missing nonce" }));
+          return;
+        }
+        cachedNonce = nonce;
+        console.log(`[proxy] 📌 Nonce set to ${nonce} (0x${nonce.toString(16)})`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, nonce }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    });
     return;
   }
 
