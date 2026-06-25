@@ -28,7 +28,7 @@ htmlContent = htmlContent.replace(
 if (WEBAPP_PASSWORD) {
   console.log(`[presign] ✅ Presign endpoints configured. Proxy URL: ${PROXY_RPC_URL}`);
 } else {
-  console.warn("[presign] ⚠️  WEBAPP_PASSWORD chưa được cấu hình. Tất cả endpoint sẽ không được bảo vệ.");
+  console.warn("[presign] ⚠️  WEBAPP_PASSWORD chưa được cấu hình. Tất cả endpoint sẽ không được bảo vệ (ai cũng truy cập được).");
 }
 
 /**
@@ -36,7 +36,7 @@ if (WEBAPP_PASSWORD) {
  * Returns true if WEBAPP_PASSWORD is set and the password matches.
  */
 function checkBasicAuth(req) {
-  if (!WEBAPP_PASSWORD) return false;
+  if (!WEBAPP_PASSWORD) return true; // no password = allow all
   const auth = req.headers["authorization"];
   if (!auth || !auth.startsWith("Basic ")) return false;
   try {

@@ -1,5 +1,4 @@
 import http from "node:http";
-import crypto from "node:crypto";
 import { createPublicClient, http as httpTransport, keccak256, toHex } from "viem";
 import { mainnet } from "viem/chains";
 import {
@@ -14,7 +13,7 @@ const PORT = PROXY_PORT || 8545;
 // ============================================================
 // STATE
 // ============================================================
-const capturedTxs = []; // [{ signedTx: "0x...", capturedAt: ISO }]
+const capturedTxs = []; // [{ hash: "0x...", signedTx: "0x...", capturedAt: ISO }]
 
 // ============================================================
 // FAKE RESPONSES
@@ -52,15 +51,16 @@ function handleRpc(method, params) {
     // === THE CAPTURE ===
     case "eth_sendRawTransaction": {
       const signedTx = params[0];
+      const txHash = keccak256(signedTx); // real tx hash — dùng để match tier sau này
       capturedTxs.push({
+        hash: txHash,
         signedTx,
         capturedAt: new Date().toISOString(),
       });
-      const fakeHash = "0x" + crypto.randomBytes(32).toString("hex");
       console.log(
-        `[proxy] 📝 Captured signed tx #${capturedTxs.length}: ${fakeHash.slice(0, 10)}...`
+        `[proxy] 📝 Captured signed tx #${capturedTxs.length}: ${txHash.slice(0, 10)}...`
       );
-      return fakeHash;
+      return txHash;
     }
 
     // === METHODS MOCKED FOR METAMASK ===
@@ -210,7 +210,7 @@ function jsonRpcResult(id, result) {
  * Returns true if WEBAPP_PASSWORD is set and the password matches.
  */
 function checkBasicAuth(req) {
-  if (!WEBAPP_PASSWORD) return false;
+  if (!WEBAPP_PASSWORD) return true; // no password = allow all
   const auth = req.headers["authorization"];
   if (!auth || !auth.startsWith("Basic ")) return false;
   try {
@@ -260,14 +260,26 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        // Match captured txs with tier metadata
-        const withdrawals = meta.tiers.map((tier, i) => ({
-          label: tier.label || `${tier.amount} ${meta.loanToken?.symbol || "tokens"}`,
-          amountWei: tier.amountWei,
-          amountFormatted: tier.amountFormatted,
-          nonce: meta.nonce,
-          signedTx: capturedTxs[i]?.signedTx || null,
-        })).filter(w => w.signedTx);
+        // Match captured txs with tier metadata by txHash
+        const txMap = new Map(capturedTxs.map(tx => [tx.hash, tx.signedTx]));
+        const withdrawals = meta.tiers.map((tier) => {
+          const signedTx = tier.txHash ? txMap.get(tier.txHash) : null;
+          if (!signedTx) return null;
+          return {
+            label: tier.label || `${tier.amount} ${meta.loanToken?.symbol || "tokens"}`,
+            amountWei: tier.amountWei,
+            amountFormatted: tier.amountFormatted,
+            nonce: meta.nonce,
+            signedTx,
+          };
+        }).filter(Boolean);
+
+        if (withdrawals.length < meta.tiers.length) {
+          console.warn(
+            `[proxy] ⚠️  ${meta.tiers.length - withdrawals.length}/${meta.tiers.length} tiers ` +
+            `không match được txHash (proxy đã restart?).`
+          );
+        }
 
         const bundle = {
           version: 1,

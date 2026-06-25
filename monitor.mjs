@@ -161,7 +161,6 @@ async function broadcastPresigned(liquidity, loanToken) {
 
   // 4. Select best tier: largest amount ≤ liquidity
   const sorted = [...bundle.withdrawals]
-    .map((w, i) => ({ ...w, _idx: i }))
     .filter(w => w.amountWei && w.signedTx)
     .sort((a, b) => {
       const diff = BigInt(a.amountWei) - BigInt(b.amountWei);

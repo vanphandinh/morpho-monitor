@@ -1053,9 +1053,10 @@
 
     window.updateTierAmount = function(index, value) {
       presignedTiers[index].amount = value;
-      // Reset signed state if amount changed
-      if (presignedTiers[index].signedTx) {
-        presignedTiers[index].signedTx = null;
+      // Reset signed state if amount changed (txHash bị vô hiệu vì amount cũ)
+      if (presignedTiers[index].status === "signed") {
+        presignedTiers[index].txHash = null;
+        presignedTiers[index].amountWei = null;
         presignedTiers[index].status = "pending";
         document.getElementById("btn-save-server").disabled = true;
       }
@@ -1144,7 +1145,7 @@
           });
 
           // sendTransaction → MetaMask ký + gửi eth_sendRawTransaction đến RPC
-          // Proxy (localhost:8545) bắt signed tx, trả fake hash
+          // Proxy trả về txHash thật (keccak256 của signedTx) để match tier sau này
           const txHash = await walletClient.sendTransaction({
             to: MORPHO_BLUE,
             data: calldata,
@@ -1189,11 +1190,12 @@
       const signedTiers = presignedTiers.filter(t => t.status === "signed");
       // Gửi metadata (không signedTx) — proxy sẽ ghép với signed tx đã capture
       return {
-        tiers: signedTiers.map((tier, i) => ({
+        tiers: signedTiers.map((tier) => ({
           amount: tier.amount,
           amountWei: tier.amountWei,
           amountFormatted: `${tier.amount} ${loanToken.symbol}`,
           label: `${tier.amount} ${loanToken.symbol}`,
+          txHash: tier.txHash,       // match với signedTx trong proxy
         })),
         morphoBlueAddress: MORPHO_BLUE,
         marketId: marketId,
