@@ -371,7 +371,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
+    req.on("end", async () => {
       res.setHeader("Content-Type", "application/json");
 
       let request;
@@ -385,14 +385,13 @@ const server = http.createServer(async (req, res) => {
 
       // Handle batch
       if (Array.isArray(request)) {
-        const responses = request.map((r) => {
+        const responses = await Promise.all(request.map(async (r) => {
           const result = await handleRpc(r.method, r.params);
           if (result instanceof Error) {
             return jsonRpcError(r.id, -32603, result.message);
           }
           return jsonRpcResult(r.id, result);
         }));
-        const responses = await Promise.all(batchPromises);
         res.writeHead(200);
         res.end(JSON.stringify(responses));
         return;
