@@ -79,12 +79,12 @@ async function sendNtfyNotification(
   const actions = [
     {
       action: "view",
-      label: "🔗 Mở Webapp Rút Tiền",
+      label: "Mo Webapp Rut Tien",
       url: webappLink,
     },
     {
       action: "view",
-      label: "📊 Xem trên Morpho App",
+      label: "Xem tren Morpho App",
       url: morphoAppLink,
     },
   ];
@@ -92,7 +92,7 @@ async function sendNtfyNotification(
   const response = await fetch(`${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`, {
     method: "POST",
     headers: {
-      "Title": `💰 Morpho Blue: Thanh khoản ${loanSymbol} khả dụng!`,
+      "Title": `Morpho Blue: Thanh khoan ${loanSymbol} kha dung!`,
       "Tags": "moneybag,chart_with_upwards_trend",
       "Priority": "4",
       "Markdown": "yes",
