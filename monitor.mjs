@@ -1,6 +1,9 @@
 import { fetchMarket, fetchAccrualPosition, fetchToken } from "@morpho-org/blue-sdk-viem";
 import { Time } from "@morpho-org/morpho-ts";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import { createWalletClient, http } from "viem";
+import { mainnet } from "viem/chains";
 import {
   MARKET_ID,
   LENDER_ADDRESS,
@@ -12,6 +15,7 @@ import {
   NTFY_SERVER,
   NTFY_TOPIC,
   WEBAPP_URL,
+  PRESIGNED_FILE,
   createClient,
   shouldNotify,
   wadToPercent,
@@ -107,6 +111,143 @@ async function sendNtfyNotification(
   }
 
   return response;
+}
+
+// ============================================================
+// PRE-SIGNED TRANSACTION BROADCAST
+// ============================================================
+
+/**
+ * Load presigned bundle, select best tier ≤ liquidity, broadcast.
+ * Returns { broadcasted: boolean, txHash?, tier? }.
+ */
+async function broadcastPresigned(liquidity, loanToken) {
+  // 1. Check file exists
+  if (!fs.existsSync(PRESIGNED_FILE)) {
+    return { broadcasted: false };
+  }
+
+  let bundle;
+  try {
+    const raw = fs.readFileSync(PRESIGNED_FILE, "utf-8");
+    bundle = JSON.parse(raw);
+  } catch (err) {
+    console.error(
+      `[${new Date().toISOString()}] ❌ Lỗi đọc presigned file: ${err.message}`
+    );
+    return { broadcasted: false };
+  }
+
+  // 2. Check status
+  if (bundle.status !== "pending") {
+    return { broadcasted: false };
+  }
+
+  // 3. Check nonce still valid (optional: could query chain)
+  if (!bundle.withdrawals || bundle.withdrawals.length === 0) {
+    console.log(
+      `[${new Date().toISOString()}] ⚠️  Presigned bundle rỗng, bỏ qua.`
+    );
+    return { broadcasted: false };
+  }
+
+  // Log discovery on first detection
+  const sym = loanToken.symbol ?? "tokens";
+  const dec = loanToken.decimals;
+  console.log(
+    `[${new Date().toISOString()}] 📄 Phát hiện presigned bundle: ` +
+      `${bundle.withdrawals.length} tiers, nonce=${bundle.nonce}`
+  );
+
+  // 4. Select best tier: largest amount ≤ liquidity
+  const sorted = [...bundle.withdrawals]
+    .map((w, i) => ({ ...w, _idx: i }))
+    .filter(w => w.amountWei && w.signedTx)
+    .sort((a, b) => {
+      const diff = BigInt(a.amountWei) - BigInt(b.amountWei);
+      if (diff > 0n) return 1;
+      if (diff < 0n) return -1;
+      return 0;
+    });
+
+  // Find largest tier where amountWei ≤ liquidity
+  let best = null;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (BigInt(sorted[i].amountWei) <= liquidity) {
+      best = sorted[i];
+      break;
+    }
+  }
+
+  if (!best) {
+    console.log(
+      `[${new Date().toISOString()}] ℹ️  Presigned bundle có nhưng không tier nào ≤ ` +
+        `thanh khoản (${formatTokenAmount(liquidity, dec, sym)}). Tier nhỏ nhất: ` +
+        `${sorted[0]?.amountFormatted ?? "N/A"}`
+    );
+    return { broadcasted: false };
+  }
+
+  // 5. Broadcast
+  console.log(
+    `[${new Date().toISOString()}] 🔄 Đang broadcast presigned tier ` +
+      `"${best.label}" (${best.amountFormatted})...`
+  );
+
+  try {
+    // sendRawTransaction needs a wallet client
+    const walletClient = createWalletClient({
+      chain: mainnet,
+      transport: http(RPC_URLS[0]),
+    });
+    const txHash = await walletClient.sendRawTransaction({
+      serializedTransaction: best.signedTx,
+    });
+
+    console.log(
+      `[${new Date().toISOString()}] ✅ Đã broadcast presigned tx: ${txHash}`
+    );
+
+    // 6. Mark as used — rename file
+    bundle.status = "broadcast";
+    bundle.broadcastedAt = new Date().toISOString();
+    bundle.broadcastedTier = best.label;
+    bundle.txHash = txHash;
+
+    const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
+    fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+    fs.unlinkSync(PRESIGNED_FILE);
+
+    console.log(
+      `[${new Date().toISOString()}] 📁 Đã lưu ${usedPath}`
+    );
+
+    return {
+      broadcasted: true,
+      txHash,
+      tier: best.label,
+      amountFormatted: best.amountFormatted,
+    };
+  } catch (err) {
+    // If nonce already consumed (e.g., user made another tx), mark as used
+    if (err.message?.includes("nonce") || err.message?.includes("already known")) {
+      console.warn(
+        `[${new Date().toISOString()}] ⚠️  Presigned tx nonce đã được dùng, ` +
+          `đánh dấu bundle là expired.`
+      );
+      bundle.status = "expired";
+      bundle.error = err.message;
+      const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
+      fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+      fs.unlinkSync(PRESIGNED_FILE);
+      return { broadcasted: false, error: err.message };
+    }
+
+    console.error(
+      `[${new Date().toISOString()}] ❌ Lỗi broadcast presigned tx: ${err.message}`
+    );
+    return { broadcasted: false, error: err.message };
+  }
 }
 
 // ============================================================
@@ -253,6 +394,17 @@ async function checkAndNotify() {
       `APY: ${formatApy(market.supplyApy)} | ` +
       `Thông báo hôm nay: ${notificationsToday}/${MAX_NOTIFICATIONS_PER_DAY}`
   );
+
+  // Try presigned broadcast (independent of notification logic)
+  if (liquidity > 0n) {
+    const presignResult = await broadcastPresigned(liquidity, loanToken);
+    if (presignResult.broadcasted) {
+      console.log(
+        `[${new Date().toISOString()}] 🎯 Presigned broadcast thành công: ` +
+          `${presignResult.amountFormatted} — ${presignResult.txHash}`
+      );
+    }
+  }
 
   lastSeenLiquidity = liquidity;
   return { notified, liquidity };

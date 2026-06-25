@@ -50,6 +50,26 @@ export const NTFY_TOPIC = env("NTFY_TOPIC", ""); // empty = auto-generate
 export const WEBAPP_URL = env("WEBAPP_URL", "http://localhost:3000");
 export const WEBAPP_PORT = envNum("WEBAPP_PORT", 3000);
 
+// ---- Webapp Auth ----
+export const WEBAPP_PASSWORD = env("WEBAPP_PASSWORD", "");
+
+// ---- Presigned Bundle ----
+export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./presigned.json");
+export const PROXY_PORT = envNum("PROXY_PORT", 8545);
+// Proxy URL: cùng host với webapp, port 8545
+export const PROXY_RPC_URL = (() => {
+  const explicit = env("PROXY_RPC_URL", "");
+  if (explicit) return explicit;
+  // Derive from WEBAPP_URL: http://host:3000 → http://host:8545
+  const webappUrl = env("WEBAPP_URL", "http://127.0.0.1:3000");
+  try {
+    const u = new URL(webappUrl);
+    return `${u.protocol}//${u.hostname}:${PROXY_PORT}`;
+  } catch {
+    return `http://127.0.0.1:${PROXY_PORT}`;
+  }
+})();
+
 // ---- Misc ----
 export const ETHERSCAN_BASE_URL = "https://etherscan.io";
 

@@ -15,7 +15,8 @@ COPY docker-entrypoint.sh ./
 
 RUN chmod +x docker-entrypoint.sh
 
-# Webapp port
+# Webapp + proxy ports
 EXPOSE 3000
+EXPOSE 8545
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

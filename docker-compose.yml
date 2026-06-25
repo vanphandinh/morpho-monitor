@@ -4,6 +4,7 @@ services:
     container_name: morpho
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3000:3000"   # webapp
+      - "8545:8545"   # proxy RPC (ký trước)
     volumes:
       - ./.env:/app/.env:ro

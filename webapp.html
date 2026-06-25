@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="presigned-proxy-url" content="REPLACE_AT_RUNTIME">
   <title>Morpho Blue — Rút Tiền</title>
   <style>
     :root {
@@ -147,12 +148,65 @@
       color: var(--text-dim);
       word-break: break-all;
     }
+
+    /* Tabs */
+    .tab-bar { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
+    .tab {
+      padding: 10px 24px; cursor: pointer; font-weight: 600; font-size: 0.95rem;
+      border-bottom: 2px solid transparent; margin-bottom: -2px; color: var(--text-dim);
+      transition: all 0.2s; user-select: none;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Presign tier rows */
+    .tier-row {
+      display: flex; gap: 8px; align-items: center; margin: 8px 0;
+    }
+    .tier-row input {
+      flex: 1; padding: 10px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 0.95rem;
+    }
+    .tier-row .tier-label { min-width: 48px; font-size: 0.85rem; color: var(--text-dim); }
+    .tier-row .tier-status { width: 28px; text-align: center; font-size: 1.1rem; }
+    .tier-row .btn-remove { width: auto; padding: 10px 12px; }
+
+    .preset-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+    .preset-buttons button {
+      width: auto; padding: 8px 16px; font-size: 0.85rem;
+      background: transparent; border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; cursor: pointer; font-family: inherit;
+    }
+    .preset-buttons button:hover { border-color: var(--blue); color: var(--blue); }
+
+    .nonce-display {
+      font-family: monospace; font-size: 1.1rem; color: var(--blue); font-weight: 700;
+    }
+
+    .progress-container { margin: 8px 0; }
+    .progress-bar {
+      width: 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; background: var(--blue); border-radius: 2px; transition: width 0.3s;
+    }
+    .progress-text { font-size: 0.85rem; color: var(--text-dim); margin-top: 4px; }
+
+    #presign-result { margin-top: 12px; }
   </style>
 </head>
 <body>
 
-  <h1>🏦 Morpho Blue — Rút Tiền</h1>
+  <h1>🏦 Morpho Blue</h1>
   <p class="subtitle">dCOMP/USDC Market</p>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <div class="tab active" data-tab="withdraw" onclick="switchTab('withdraw')">💸 Rút Tiền</div>
+    <div class="tab" data-tab="presign" onclick="switchTab('presign')">✍️ Ký Trước</div>
+  </div>
 
   <!-- Loading -->
   <div id="loading" class="loading">
@@ -163,72 +217,197 @@
   <!-- Error banner -->
   <div id="error-banner" class="banner error" style="display:none"></div>
 
-  <!-- Market Info -->
-  <div id="market-section" style="display:none">
-    <h2>📊 Thông Tin Market</h2>
-    <div class="card" id="market-info"></div>
-  </div>
+  <!-- ============================================ -->
+  <!-- TAB: Rút Tiền                                -->
+  <!-- ============================================ -->
+  <div id="tab-withdraw" class="tab-content active">
 
-  <!-- Position -->
-  <div id="position-section" style="display:none">
-    <h2>👤 Vị Thế Của Bạn</h2>
-    <div class="card" id="position-info"></div>
-  </div>
+    <!-- Market Info -->
+    <div id="market-section" style="display:none">
+      <h2>📊 Thông Tin Market</h2>
+      <div class="card" id="market-info"></div>
+    </div>
 
-  <!-- Wallet -->
-  <div id="wallet-section" style="display:none">
-    <h2>🔐 Ví</h2>
-    <div class="card">
-      <div id="wallet-status">
-        <button class="btn-connect" id="btn-connect" onclick="connectWallet()">
-          🔗 Kết Nối Ví (MetaMask)
-        </button>
-      </div>
-      <div id="wallet-connected" style="display:none">
-        <div class="row">
-          <span class="label">Địa chỉ:</span>
-          <span class="value address" id="wallet-address">—</span>
+    <!-- Position -->
+    <div id="position-section" style="display:none">
+      <h2>👤 Vị Thế Của Bạn</h2>
+      <div class="card" id="position-info"></div>
+    </div>
+
+    <!-- Wallet -->
+    <div id="wallet-section" style="display:none">
+      <h2>🔐 Ví</h2>
+      <div class="card">
+        <div id="wallet-status">
+          <button class="btn-connect" id="btn-connect" onclick="connectWallet()">
+            🔗 Kết Nối Ví
+          </button>
         </div>
-        <button class="btn-outline" onclick="disconnectWallet()" style="margin-top:8px">
-          Ngắt Kết Nối
+        <div id="wallet-connected" style="display:none">
+          <div class="row">
+            <span class="label">Địa chỉ:</span>
+            <span class="value address" id="wallet-address">—</span>
+          </div>
+          <button class="btn-outline" onclick="disconnectWallet()" style="margin-top:8px">
+            Ngắt Kết Nối
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Withdraw -->
+    <div id="tx-section">
+      <h2>💸 Rút Tiền</h2>
+
+      <!-- Liquidity warning -->
+      <div id="liquidity-warning" class="banner warn" style="display:none"></div>
+
+      <div class="card">
+        <div class="row">
+          <span class="label">Có thể rút tối đa:</span>
+          <span class="value green" id="max-withdraw">—</span>
+        </div>
+        <div class="input-group">
+          <input type="number" id="withdraw-amount" placeholder="Số lượng" step="any" min="0">
+          <button class="btn-outline" id="btn-max" onclick="setMaxAmount()" disabled>MAX</button>
+        </div>
+        <button class="btn-primary" id="btn-withdraw" onclick="withdrawAmount()" disabled>
+          Rút Tiền
+        </button>
+        <button class="btn-danger" id="btn-withdraw-all" onclick="withdrawAll()" disabled>
+          Rút Toàn Bộ (Shares)
+        </button>
+      </div>
+
+      <!-- Transaction result -->
+      <div id="tx-result" style="display:none"></div>
+    </div>
+
+  </div><!-- /tab-withdraw -->
+
+  <!-- ============================================ -->
+  <!-- TAB: Ký Trước                                -->
+  <!-- ============================================ -->
+  <div id="tab-presign" class="tab-content">
+
+    <!-- Wallet compatibility -->
+    <div id="presign-wallet-banner" class="banner info" style="display:none"></div>
+
+    <!-- Market info (read-only) -->
+    <div id="presign-market-section" style="display:none">
+      <h2>📊 Thông Tin Market</h2>
+      <div class="card" id="presign-market-info"></div>
+    </div>
+
+    <!-- Position (read-only) -->
+    <div id="presign-position-section" style="display:none">
+      <h2>👤 Vị Thế Của Bạn</h2>
+      <div class="card" id="presign-position-info"></div>
+    </div>
+
+    <!-- Wallet -->
+    <div id="presign-wallet-section" style="display:none">
+      <h2>🔐 Ví</h2>
+      <div class="card">
+        <div id="presign-wallet-status">
+          <button class="btn-connect" onclick="connectWallet()">
+            🔗 Kết Nối Ví
+          </button>
+        </div>
+        <div id="presign-wallet-connected" style="display:none">
+          <div class="row">
+            <span class="label">Địa chỉ:</span>
+            <span class="value address" id="presign-wallet-address">—</span>
+          </div>
+          <button class="btn-outline" onclick="disconnectWallet()" style="margin-top:8px">
+            Ngắt Kết Nối
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Nonce & Gas -->
+    <div id="presign-setup" style="display:none">
+      <h2>⚙️ Thiết Lập Giao Dịch</h2>
+      <div class="card">
+        <button class="btn-outline" id="btn-add-proxy-network" onclick="addProxyNetwork()" style="width:auto;margin-bottom:8px">
+          🔌 Thêm Mạng Proxy Vào Ví
+        </button>
+        <div class="banner info" style="margin-bottom:8px;font-size:0.85rem">
+          <strong>🔧 Thêm thủ công:</strong><br>
+          <b>RPC URL:</b> <code id="presign-proxy-url-display">—</code><br>
+          <b>Chain ID:</b> 1 &nbsp;|&nbsp; <b>Symbol:</b> ETH &nbsp;|&nbsp; <b>Name:</b> Ethereum Proxy Sign<br>
+          <small>Sau khi ký xong, đổi lại RPC về mạng Ethereum thật.</small>
+        </div>
+        <div class="row">
+          <span class="label">Nonce:</span>
+          <span class="value nonce-display" id="presign-nonce">—</span>
+        </div>
+        <button class="btn-outline" id="btn-fetch-nonce" onclick="fetchNonce()" style="width:auto;margin-top:8px">
+          🔢 Lấy Nonce
+        </button>
+        <div class="row" style="margin-top:8px">
+          <span class="label">maxFeePerGas (Gwei):</span>
+        </div>
+        <input type="number" id="presign-gas-maxfee" placeholder="vd: 50" step="0.1" min="0"
+          onchange="onGasInputChange()" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.95rem;margin-top:4px">
+        <div class="row" style="margin-top:8px">
+          <span class="label">maxPriorityFeePerGas (Gwei):</span>
+        </div>
+        <input type="number" id="presign-gas-priority" placeholder="vd: 1" step="0.1" min="0"
+          onchange="onGasInputChange()" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.95rem;margin-top:4px">
+        <button class="btn-outline" id="btn-auto-gas" onclick="autoFillGas()" style="width:auto;margin-top:8px">
+          ⛽ Tự Động Gas
         </button>
       </div>
     </div>
-  </div>
 
-  <!-- Withdraw -->
-  <div id="tx-section">
-    <h2>💸 Rút Tiền</h2>
-
-    <!-- Liquidity warning -->
-    <div id="liquidity-warning" class="banner warn" style="display:none"></div>
-
-    <div class="card">
-      <div class="row">
-        <span class="label">Có thể rút tối đa:</span>
-        <span class="value green" id="max-withdraw">—</span>
+    <!-- Tier list -->
+    <div id="presign-tiers" style="display:none">
+      <h2>📋 Các Mốc Rút Tiền</h2>
+      <div class="card">
+        <div id="tier-list"></div>
+        <button class="btn-outline" onclick="addTier()" style="width:auto;margin-top:8px">
+          ➕ Thêm Mốc
+        </button>
+        <div class="row" style="margin-top:8px">
+          <span class="label">Tổng số mốc:</span>
+          <span class="value" id="tier-count">0</span>
+        </div>
       </div>
-      <div class="input-group">
-        <input type="number" id="withdraw-amount" placeholder="Số lượng" step="any" min="0">
-        <button class="btn-outline" id="btn-max" onclick="setMaxAmount()" disabled>MAX</button>
-      </div>
-      <button class="btn-primary" id="btn-withdraw" onclick="withdrawAmount()" disabled>
-        Rút Tiền
-      </button>
-      <button class="btn-danger" id="btn-withdraw-all" onclick="withdrawAll()" disabled>
-        Rút Toàn Bộ (Shares)
-      </button>
     </div>
 
-    <!-- Transaction result -->
-    <div id="tx-result" style="display:none"></div>
-  </div>
+    <!-- Existing bundle status -->
+    <div id="presign-existing" style="display:none">
+      <h2>📦 Bundle Hiện Tại Trên Server</h2>
+      <div class="card" id="presign-existing-info"></div>
+    </div>
+
+    <!-- Actions -->
+    <div id="presign-actions" style="display:none">
+      <h2>🚀 Ký & Lưu</h2>
+      <div class="card">
+        <button class="btn-primary" id="btn-sign-all" onclick="signAllTiers()">
+          ✍️ Ký Tất Cả
+        </button>
+        <div class="progress-container" id="sign-progress" style="display:none">
+          <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+          <div class="progress-text" id="progress-text"></div>
+        </div>
+        <button class="btn-primary" id="btn-save-server" onclick="saveToServer()" disabled style="margin-top:8px">
+          💾 Lưu Lên Server
+        </button>
+        <div id="presign-result"></div>
+      </div>
+    </div>
+
+  </div><!-- /tab-presign -->
 
   <!-- Security note -->
   <div class="banner info" style="margin-top:24px">
     <strong>🔒 Bảo mật:</strong> Webapp này chỉ tương tác với Morpho Blue contract chính thức
     (<span class="address">0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb</span>).
-    Tiền luôn được gửi về chính ví của bạn. Luôn kiểm tra kỹ transaction trên MetaMask trước khi ký.
+    Tiền luôn được gửi về chính ví của bạn. Luôn kiểm tra kỹ transaction trên ví trước khi ký.
   </div>
 
   <!-- viem from CDN -->
@@ -244,7 +423,7 @@
   <script type="module">
     import {
       createPublicClient, createWalletClient, http, custom,
-      formatUnits, parseUnits,
+      formatUnits, parseUnits, encodeFunctionData,
     } from "viem";
     import { mainnet } from "viem/chains";
 
@@ -338,6 +517,13 @@
     let positionData = null;
     let loanToken = { decimals: 6, symbol: "USDC" };
     let collateralToken = { decimals: 18, symbol: "dCOMP" };
+
+    // Presign state
+    let currentTab = "withdraw";
+    let presignedNonce = null;
+    let presignedTiers = [];       // { amount: string, amountWei: string, signedTx: string, status: 'pending'|'signing'|'signed'|'error' }
+    let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
+    let isSigningInProgress = false;
 
     // ============================================================
     // HELPERS
@@ -568,6 +754,7 @@
         }
 
         walletClient = createWalletClient({
+          account: currentAccount,
           chain: mainnet,
           transport: custom(window.ethereum),
         });
@@ -581,6 +768,10 @@
         document.getElementById("btn-withdraw").disabled = false;
         document.getElementById("btn-withdraw-all").disabled = false;
         document.getElementById("btn-max").disabled = false;
+
+        // Update presign tab wallet UI
+        updatePresignWalletUI();
+        renderWalletCompatibility();
 
         // Listen for account changes
         window.ethereum.on("accountsChanged", (accts) => {
@@ -627,6 +818,564 @@
       document.getElementById("btn-withdraw").disabled = true;
       document.getElementById("btn-withdraw-all").disabled = true;
       document.getElementById("btn-max").disabled = true;
+      // Presign tab
+      document.getElementById("presign-wallet-status").style.display = "block";
+      document.getElementById("presign-wallet-connected").style.display = "none";
+      document.getElementById("btn-sign-all").disabled = true;
+      document.getElementById("btn-fetch-nonce").disabled = true;
+      document.getElementById("btn-auto-gas").disabled = true;
+    };
+
+    // ============================================================
+    // TAB SWITCHING
+    // ============================================================
+    window.switchTab = function(tab) {
+      currentTab = tab;
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+      document.querySelector(`.tab[data-tab="${tab}"]`).classList.add("active");
+      document.getElementById(`tab-${tab}`).classList.add("active");
+
+      // Khi chuyển sang tab Ký Trước, render presign data nếu đã có
+      if (tab === "presign" && marketData) {
+        renderPresignMarketInfo();
+        renderPresignPosition();
+        renderWalletCompatibility();
+        updatePresignWalletUI();
+        fetchExistingBundle();
+      }
+    };
+
+    function getProxyUrl() {
+      const meta = document.querySelector('meta[name="presigned-proxy-url"]');
+      const url = meta ? meta.content : "http://127.0.0.1:8545";
+      return url === "REPLACE_AT_RUNTIME" ? "http://127.0.0.1:8545" : url;
+    }
+
+    // ============================================================
+    // PRESIGN: WALLET COMPATIBILITY
+    // ============================================================
+    function getWalletProviderName() {
+      const e = window.ethereum;
+      if (!e) return null;
+      if (e.isRabby) return "rabby";
+      if (e.isFrame) return "frame";
+      if (e.isCoinbaseWallet) return "coinbase";
+      if (e.isMetaMask) return "metamask";
+      if (e.isTrust) return "trust";
+      return "unknown";
+    }
+
+    function getCompatibilityMessage() {
+      const wallet = getWalletProviderName();
+      switch (wallet) {
+        case "rabby": return { ok: true, msg: "✅ Rabby được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "metamask": return { ok: true, msg: "✅ MetaMask được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "frame": return { ok: true, msg: "✅ Frame được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "coinbase": return { ok: true, msg: "✅ Coinbase Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "trust": return { ok: true, msg: "✅ Trust Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        default: return { ok: true, msg: "✅ Ví đã kết nối. Sẵn sàng ký giao dịch qua proxy RPC." };
+      }
+    }
+
+    function renderWalletCompatibility() {
+      const banner = document.getElementById("presign-wallet-banner");
+      const compat = getCompatibilityMessage();
+      banner.style.display = "block";
+      banner.innerHTML = compat.msg;
+      banner.className = "banner info";
+    }
+
+    function updatePresignWalletUI() {
+      const statusEl = document.getElementById("presign-wallet-status");
+      const connectedEl = document.getElementById("presign-wallet-connected");
+      if (currentAccount) {
+        statusEl.style.display = "none";
+        connectedEl.style.display = "block";
+        document.getElementById("presign-wallet-address").textContent = currentAccount;
+        document.getElementById("btn-fetch-nonce").disabled = false;
+        document.getElementById("btn-auto-gas").disabled = false;
+        if (presignedTiers.length > 0 && presignedNonce !== null && presignedGas.maxFeePerGas) {
+          document.getElementById("btn-sign-all").disabled = false;
+        }
+      } else {
+        statusEl.style.display = "block";
+        connectedEl.style.display = "none";
+        document.getElementById("btn-sign-all").disabled = true;
+      }
+    }
+
+    // ============================================================
+    // PRESIGN: ADD PROXY NETWORK TO WALLET
+    // ============================================================
+    window.addProxyNetwork = async function() {
+      if (!window.ethereum) {
+        showPresignError("Không tìm thấy ví.");
+        return;
+      }
+
+      const wallet = getWalletProviderName();
+      const PROXY_RPC = getProxyUrl();
+
+      try {
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: "0x1",
+            chainName: "Ethereum Proxy Sign",
+            nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+            rpcUrls: [PROXY_RPC],
+            blockExplorerUrls: ["https://etherscan.io"],
+          }],
+        });
+        showPresignSuccess("✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.");
+        document.getElementById("btn-add-proxy-network").textContent = "✅ Đã Thêm";
+        document.getElementById("btn-add-proxy-network").disabled = true;
+      } catch (err) {
+        const msg = err.message || "";
+        if (err.code === 4001) {
+          showPresignError("Bạn đã từ chối thêm mạng.");
+        } else if (msg.includes("chain ID") || msg.includes("already") || msg.includes("exist")) {
+          // Wallet từ chối thêm chainId trùng → hướng dẫn manual
+          showPresignError(
+            `${wallet === "rabby" ? "Rabby" : "Ví"} không cho thêm chainId=1 trùng lặp.<br><br>` +
+            `<b>Cách thủ công:</b><br>` +
+            `Vào Settings → Networks → Ethereum → đổi RPC thành:<br>` +
+            `<code>${PROXY_RPC}</code><br>` +
+            `<small>(ký xong nhớ đổi lại RPC cũ)</small>`
+          );
+        } else {
+          showPresignError(`Lỗi: ${msg}`);
+        }
+      }
+    };
+
+    // ============================================================
+    // PRESIGN: NONCE & GAS
+    // ============================================================
+    window.fetchNonce = async function() {
+      if (!currentAccount) {
+        showPresignError("Vui lòng kết nối ví trước.");
+        return;
+      }
+      try {
+        document.getElementById("btn-fetch-nonce").disabled = true;
+        document.getElementById("btn-fetch-nonce").textContent = "⏳ Đang lấy...";
+        presignedNonce = await publicClient.getTransactionCount({
+          address: currentAccount,
+          blockTag: "pending",
+        });
+        document.getElementById("presign-nonce").textContent = presignedNonce;
+        document.getElementById("btn-fetch-nonce").textContent = "✅ Đã lấy Nonce";
+        updateSignButton();
+      } catch (err) {
+        showPresignError("Lỗi lấy nonce: " + err.message);
+        document.getElementById("btn-fetch-nonce").disabled = false;
+        document.getElementById("btn-fetch-nonce").textContent = "🔢 Lấy Nonce";
+      }
+    };
+
+    window.autoFillGas = async function() {
+      try {
+        document.getElementById("btn-auto-gas").disabled = true;
+        document.getElementById("btn-auto-gas").textContent = "⏳ Đang lấy...";
+        const [priorityFee, block] = await Promise.all([
+          publicClient.estimateMaxPriorityFeePerGas(),
+          publicClient.getBlock({ blockTag: "latest" }),
+        ]);
+        const baseFee = block.baseFeePerGas ?? 10_000_000_000n;
+        // 2x multiplier để đảm bảo inclusion sau này
+        presignedGas.maxPriorityFeePerGas = priorityFee * 2n;
+        presignedGas.maxFeePerGas = (baseFee * 2n) + presignedGas.maxPriorityFeePerGas;
+        // Fill input fields (user có thể chỉnh sửa sau)
+        document.getElementById("presign-gas-maxfee").value =
+          formatUnits(presignedGas.maxFeePerGas, 9);
+        document.getElementById("presign-gas-priority").value =
+          formatUnits(presignedGas.maxPriorityFeePerGas, 9);
+        document.getElementById("btn-auto-gas").textContent = "✅ Đã lấy Gas";
+        updateSignButton();
+      } catch (err) {
+        showPresignError("Lỗi lấy gas: " + err.message);
+        document.getElementById("btn-auto-gas").disabled = false;
+        document.getElementById("btn-auto-gas").textContent = "⛽ Tự Động Gas";
+      }
+    };
+
+    window.onGasInputChange = function() {
+      const maxFeeVal = parseFloat(document.getElementById("presign-gas-maxfee").value);
+      const priorityVal = parseFloat(document.getElementById("presign-gas-priority").value);
+      if (!isNaN(maxFeeVal) && maxFeeVal > 0) {
+        presignedGas.maxFeePerGas = parseUnits(String(maxFeeVal), 9);
+      } else {
+        presignedGas.maxFeePerGas = null;
+      }
+      if (!isNaN(priorityVal) && priorityVal > 0) {
+        presignedGas.maxPriorityFeePerGas = parseUnits(String(priorityVal), 9);
+      } else {
+        presignedGas.maxPriorityFeePerGas = null;
+      }
+      // Reset signed state if gas changed (cần ký lại)
+      if (presignedTiers.some(t => t.status === "signed")) {
+        document.getElementById("btn-save-server").disabled = true;
+      }
+      updateSignButton();
+    };
+
+    function updateSignButton() {
+      const btn = document.getElementById("btn-sign-all");
+      if (currentAccount && presignedNonce !== null && presignedGas.maxFeePerGas && presignedTiers.length > 0) {
+        btn.disabled = false;
+      }
+    }
+
+    // ============================================================
+    // PRESIGN: TIER MANAGEMENT
+    // ============================================================
+    window.addPresetTier = function(amount) {
+      // Tránh trùng lặp
+      if (presignedTiers.some(t => t.amount === String(amount))) return;
+      presignedTiers.push({ amount: String(amount), amountWei: null, signedTx: null, status: "pending" });
+      renderTierList();
+      updateSignButton();
+    };
+
+    window.addTier = function() {
+      presignedTiers.push({ amount: "", amountWei: null, signedTx: null, status: "pending" });
+      renderTierList();
+    };
+
+    window.removeTier = function(index) {
+      presignedTiers.splice(index, 1);
+      document.getElementById("btn-save-server").disabled = true;
+      renderTierList();
+      updateSignButton();
+    };
+
+    window.updateTierAmount = function(index, value) {
+      presignedTiers[index].amount = value;
+      // Reset signed state if amount changed
+      if (presignedTiers[index].signedTx) {
+        presignedTiers[index].signedTx = null;
+        presignedTiers[index].status = "pending";
+        document.getElementById("btn-save-server").disabled = true;
+      }
+      updateSignButton();
+    };
+
+    function renderTierList() {
+      const container = document.getElementById("tier-list");
+      if (presignedTiers.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">Chưa có mốc nào. Nhấn nút preset hoặc "Thêm Mốc".</p>';
+      } else {
+        container.innerHTML = presignedTiers.map((tier, i) => {
+          const statusIcon = tier.status === "signed" ? "✅" :
+                             tier.status === "signing" ? "⏳" :
+                             tier.status === "error" ? "❌" : "⬜";
+          const statusTitle = tier.status === "signed" ? "Đã ký" :
+                              tier.status === "signing" ? "Đang ký..." :
+                              tier.status === "error" ? "Lỗi" : "Chưa ký";
+          return `<div class="tier-row">
+            <span class="tier-label">#${i + 1}</span>
+            <input type="number" value="${tier.amount}" placeholder="Số USDC"
+              onchange="updateTierAmount(${i}, this.value)" ${tier.status === "signed" ? "readonly" : ""}>
+            <span class="tier-status" title="${statusTitle}">${statusIcon}</span>
+            <button class="btn-outline btn-remove" onclick="removeTier(${i})" ${tier.status === "signing" ? "disabled" : ""}>✕</button>
+          </div>`;
+        }).join("");
+      }
+      document.getElementById("tier-count").textContent =
+        presignedTiers.filter(t => t.amount).length;
+    }
+
+    // ============================================================
+    // PRESIGN: SIGN ALL TIERS
+    // ============================================================
+    window.signAllTiers = async function() {
+      if (isSigningInProgress) return;
+
+      // Validate
+      if (!walletClient || !currentAccount) {
+        showPresignError("Vui lòng kết nối ví trước.");
+        return;
+      }
+      if (presignedNonce === null) {
+        showPresignError("Vui lòng lấy nonce trước.");
+        return;
+      }
+      // Read gas from input fields (user có thể đã chỉnh sửa)
+      onGasInputChange();
+      if (!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+        showPresignError("Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
+        return;
+      }
+      const validTiers = presignedTiers.filter(t => t.amount && parseFloat(t.amount) > 0);
+      if (validTiers.length === 0) {
+        showPresignError("Vui lòng thêm ít nhất 1 mốc tiền hợp lệ.");
+        return;
+      }
+
+      isSigningInProgress = true;
+      document.getElementById("btn-sign-all").disabled = true;
+      document.getElementById("btn-save-server").disabled = true;
+
+      const progressEl = document.getElementById("sign-progress");
+      const progressFill = document.getElementById("progress-fill");
+      const progressText = document.getElementById("progress-text");
+      progressEl.style.display = "block";
+
+      const total = validTiers.length;
+      let signed = 0;
+
+      for (let i = 0; i < presignedTiers.length; i++) {
+        const tier = presignedTiers[i];
+        if (!tier.amount || parseFloat(tier.amount) <= 0) continue;
+
+        tier.status = "signing";
+        renderTierList();
+        progressText.textContent = `Đang ký ${signed + 1}/${total}: ${tier.amount} USDC...`;
+        progressFill.style.width = `${((signed) / total) * 100}%`;
+
+        try {
+          const assets = parseUnits(tier.amount, loanToken.decimals);
+          const calldata = encodeFunctionData({
+            abi: MORPHO_ABI,
+            functionName: "withdraw",
+            args: [marketParams, assets, 0n, lenderAddress, currentAccount],
+          });
+
+          // sendTransaction → MetaMask ký + gửi eth_sendRawTransaction đến RPC
+          // Proxy (localhost:8545) bắt signed tx, trả fake hash
+          const txHash = await walletClient.sendTransaction({
+            to: MORPHO_BLUE,
+            data: calldata,
+            value: 0n,
+            nonce: presignedNonce,
+            gas: 200000n,
+            maxFeePerGas: presignedGas.maxFeePerGas,
+            maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas,
+            chain: mainnet,
+            account: currentAccount,
+          });
+
+          // Ghi nhận hash (proxy đã capture signed tx)
+          tier.txHash = txHash;
+          tier.amountWei = assets.toString();
+          tier.status = "signed";
+          signed++;
+        } catch (err) {
+          tier.status = "error";
+          tier.error = err.message;
+          renderTierList();
+          progressFill.style.width = `${(signed / total) * 100}%`;
+          progressText.textContent = `❌ Lỗi tier ${i + 1}: ${err.message}`;
+          isSigningInProgress = false;
+          document.getElementById("btn-sign-all").disabled = false;
+          return;
+        }
+
+        renderTierList();
+      }
+
+      progressFill.style.width = "100%";
+      progressText.textContent = `✅ Đã ký thành công ${signed}/${total} giao dịch`;
+      document.getElementById("btn-save-server").disabled = false;
+      document.getElementById("btn-sign-all").disabled = false;
+      isSigningInProgress = false;
+    };
+
+    function buildPresignedBundle() {
+      // Đọc gas mới nhất từ input (phòng trường hợp user sửa sau khi ký)
+      onGasInputChange();
+      const signedTiers = presignedTiers.filter(t => t.status === "signed");
+      // Gửi metadata (không signedTx) — proxy sẽ ghép với signed tx đã capture
+      return {
+        tiers: signedTiers.map((tier, i) => ({
+          amount: tier.amount,
+          amountWei: tier.amountWei,
+          amountFormatted: `${tier.amount} ${loanToken.symbol}`,
+          label: `${tier.amount} ${loanToken.symbol}`,
+        })),
+        morphoBlueAddress: MORPHO_BLUE,
+        marketId: marketId,
+        lenderAddress: currentAccount,
+        nonce: presignedNonce,
+        gas: "200000",
+        maxFeePerGas: presignedGas.maxFeePerGas?.toString(),
+        maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas?.toString(),
+        loanToken: { symbol: loanToken.symbol, decimals: loanToken.decimals },
+      };
+    }
+
+    // ============================================================
+    // PRESIGN: SAVE TO SERVER
+    // ============================================================
+    window.saveToServer = async function() {
+      const bundle = buildPresignedBundle();
+      if (bundle.tiers.length === 0) {
+        showPresignError("Không có giao dịch nào đã ký để lưu.");
+        return;
+      }
+
+      document.getElementById("btn-save-server").disabled = true;
+      document.getElementById("btn-save-server").textContent = "⏳ Đang gửi đến proxy...";
+
+      try {
+        // Gửi metadata đến proxy (localhost:8545) — proxy ghép với signed tx đã capture
+        const resp = await fetch("/api/bundle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(bundle),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+          showPresignSuccess(
+            `✅ Đã lưu ${result.tiers} giao dịch lên server!<br>` +
+            `Proxy đã capture signed tx + gửi bundle đến server.<br>` +
+            `Monitor sẽ tự động broadcast khi có thanh khoản.`
+          );
+          document.getElementById("btn-save-server").textContent = "✅ Đã Lưu";
+        } else if (result.error?.includes("No captured transactions")) {
+          showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier.");
+          document.getElementById("btn-save-server").disabled = false;
+          document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+        } else {
+          showPresignError("Lỗi proxy: " + (result.error || "Unknown"));
+          document.getElementById("btn-save-server").disabled = false;
+          document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+        }
+      } catch (err) {
+        showPresignError(`Không thể kết nối proxy (${getProxyUrl()}). Proxy đã chạy chưa? ` + err.message);
+        document.getElementById("btn-save-server").disabled = false;
+        document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+      }
+    };
+
+    // ============================================================
+    // PRESIGN: UI HELPERS
+    // ============================================================
+    function showPresignError(msg) {
+      const el = document.getElementById("presign-result");
+      el.style.display = "block";
+      el.innerHTML = `<div class="banner error">❌ ${msg}</div>`;
+    }
+
+    function showPresignSuccess(msg) {
+      const el = document.getElementById("presign-result");
+      el.style.display = "block";
+      el.innerHTML = `<div class="banner success">${msg}</div>`;
+    }
+
+    function renderPresignMarketInfo() {
+      const liquidity = marketData.liquidity;
+      const liquidityClass = liquidity > 0n ? "green" : "red";
+      document.getElementById("presign-market-info").innerHTML = [
+        row("Collateral", `${shortenAddr(marketParams.collateralToken)} (${collateralToken.symbol})`),
+        row("Loan Token", `${shortenAddr(marketParams.loanToken)} (${loanToken.symbol})`),
+        row("Liquidity", `<span class="value ${liquidityClass}">${formatToken(liquidity, loanToken)}</span>`),
+        row("Utilization", wadToPercent(marketData.utilization)),
+        row("Total Supply", formatToken(marketData.totalSupplyAssets, loanToken)),
+      ].join("");
+      document.getElementById("presign-market-section").style.display = "block";
+    }
+
+    function renderPresignPosition() {
+      const supplyAssets = marketData.supplyAssets;
+      document.getElementById("presign-position-info").innerHTML = [
+        row("Supply Assets", formatToken(supplyAssets, loanToken)),
+        row("Supply Shares", positionData.supplyShares.toString()),
+      ].join("");
+      document.getElementById("presign-position-section").style.display = "block";
+    }
+
+    // ============================================================
+    // PRESIGN: FETCH EXISTING BUNDLE
+    // ============================================================
+    async function fetchExistingBundle() {
+      try {
+        const resp = await fetch("/api/presign", {
+          credentials: "same-origin",
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!data.ok || !data.exists) {
+          document.getElementById("presign-existing").style.display = "none";
+          return;
+        }
+
+        const section = document.getElementById("presign-existing");
+        section.style.display = "block";
+
+        const statusBadge = data.status === "pending"
+          ? '<span style="color:var(--green)">pending</span>'
+          : '<span style="color:var(--text-dim)">' + data.status + '</span>';
+
+        const tiersHtml = data.tiers.length > 0
+          ? data.tiers.map((t, i) =>
+              `<div class="row"><span class="label">${t.label || t.amountFormatted}</span>` +
+              `<span class="value">${t.amountFormatted}` +
+              ` <button class="btn-outline" onclick="deleteTierFromBundle(${i})" style="padding:2px 8px;font-size:0.75rem;width:auto">✕</button></span></div>`
+            ).join("")
+          : '<p style="color:var(--text-dim);font-size:0.85rem">Không có tier nào</p>';
+
+        document.getElementById("presign-existing-info").innerHTML = [
+          `<div class="row"><span class="label">Trạng thái:</span><span class="value">${statusBadge}</span></div>`,
+          `<div class="row"><span class="label">Nonce:</span><span class="value nonce-display">${data.nonce ?? "—"}</span></div>`,
+          `<div class="row"><span class="label">Tạo lúc:</span><span class="value">${data.createdAt ? new Date(data.createdAt).toLocaleString("vi-VN") : "—"}</span></div>`,
+          `<div class="row"><span class="label">Số tier:</span><span class="value">${data.tiers.length}</span></div>`,
+        ].join("");
+        document.getElementById("presign-existing-info").innerHTML +=
+          `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">${tiersHtml}</div>`;
+
+        if (data.status === "pending") {
+          document.getElementById("presign-existing-info").innerHTML +=
+            `<div class="banner warn" style="margin-top:8px">⚠️ Bundle đang pending. Ký thêm tier mới sẽ merge vào bundle hiện tại (cùng nonce). Khác nonce sẽ thay thế toàn bộ.</div>`;
+        }
+        document.getElementById("presign-existing-info").innerHTML +=
+          `<button class="btn-danger" onclick="deleteBundle()" style="margin-top:8px">🗑️ Xóa Bundle Trên Server</button>`;
+      } catch {
+        // Server không reachable hoặc lỗi — bỏ qua
+        document.getElementById("presign-existing").style.display = "none";
+      }
+    }
+
+    window.deleteTierFromBundle = async function(index) {
+      if (!confirm(`Xóa tier #${index + 1} khỏi bundle trên server?`)) return;
+
+      try {
+        const resp = await fetch(`/api/presign?tier=${index}`, {
+          method: "DELETE",
+          credentials: "same-origin",
+        });
+        const result = await resp.json();
+        if (result.ok) {
+          showPresignSuccess(`✅ Đã xóa tier "${result.removed}" (còn ${result.remaining} tier).`);
+          fetchExistingBundle(); // Refresh display
+        } else {
+          showPresignError("Lỗi xóa tier: " + (result.error || "Unknown"));
+        }
+      } catch (err) {
+        showPresignError("Không thể kết nối server: " + err.message);
+      }
+    };
+
+    window.deleteBundle = async function() {
+      if (!confirm("Bạn có chắc muốn xóa toàn bộ bundle đã ký trên server?\n\nHành động này không thể hoàn tác.")) return;
+
+      try {
+        const resp = await fetch("/api/presign", {
+          method: "DELETE",
+          credentials: "same-origin",
+        });
+        const result = await resp.json();
+        if (result.ok) {
+          showPresignSuccess(`✅ Đã xóa bundle (${result.deleted} files).`);
+          document.getElementById("presign-existing").style.display = "none";
+        } else {
+          showPresignError("Lỗi xóa bundle: " + (result.error || "Unknown"));
+        }
+      } catch (err) {
+        showPresignError("Không thể kết nối server: " + err.message);
+      }
     };
 
     // ============================================================
@@ -845,6 +1594,19 @@
         renderPosition();
         document.getElementById("wallet-section").style.display = "block";
         document.getElementById("tx-section").classList.add("visible");
+
+        // Render presign tab data (in background, visible when user switches)
+        renderPresignMarketInfo();
+        renderPresignPosition();
+        document.getElementById("presign-wallet-section").style.display = "block";
+        document.getElementById("presign-setup").style.display = "block";
+        document.getElementById("presign-tiers").style.display = "block";
+        document.getElementById("presign-actions").style.display = "block";
+        renderTierList();
+        renderWalletCompatibility();
+        // Populate proxy URL
+        const proxyUrlEl = document.getElementById("presign-proxy-url-display");
+        if (proxyUrlEl) proxyUrlEl.textContent = getProxyUrl();
 
         document.getElementById("loading").style.display = "none";
       } catch (err) {

@@ -7,7 +7,8 @@
     "start": "node --env-file=.env index.mjs",
     "monitor": "node --env-file=.env monitor.mjs",
     "webapp": "node --env-file=.env webapp-server.mjs",
-    "dev": "concurrently -n monitor,webapp -c blue,green \"npm run monitor\" \"npm run webapp\"",
+    "proxy": "node --env-file=.env proxy-rpc.mjs",
+    "dev": "concurrently -n monitor,webapp,proxy -c blue,green,yellow \"npm run monitor\" \"npm run webapp\" \"npm run proxy\"",
     "test": "vitest run",
     "test:watch": "vitest"
   },
