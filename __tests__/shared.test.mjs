@@ -198,10 +198,22 @@ describe("shouldNotify()", () => {
     expect(result.reason).toBe("below_threshold");
   });
 
-  it("returns false when no 0-to-positive transition", () => {
-    const result = shouldNotify({ ...base, lastSeenLiquidity: 1_000_000n });
+  it("returns false when last liquidity was already above threshold (no new transition)", () => {
+    const result = shouldNotify({ ...base, lastSeenLiquidity: 2_000_000n }); // above threshold
     expect(result.shouldNotify).toBe(false);
     expect(result.reason).toBe("no_transition");
+  });
+
+  it("returns true when last liquidity was below threshold (crosses above threshold)", () => {
+    const result = shouldNotify({ ...base, lastSeenLiquidity: 500_000n }); // below threshold
+    expect(result.shouldNotify).toBe(true);
+    expect(result.reason).toBe("all_checks_passed");
+  });
+
+  it("returns true when last liquidity was 0 (0-to-positive transition)", () => {
+    const result = shouldNotify({ ...base, lastSeenLiquidity: 0n }); // was zero
+    expect(result.shouldNotify).toBe(true);
+    expect(result.reason).toBe("all_checks_passed");
   });
 
   it("returns false when already notified this cycle", () => {

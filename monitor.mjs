@@ -426,7 +426,7 @@ async function checkAndNotify() {
     if (decision.reason === "below_threshold")
       return `⚠️  Thanh khoản thấp (${formatTokenAmount(liquidity, dec, sym)} < ngưỡng)`;
     if (decision.reason === "no_transition")
-      return "ℹ️  Thanh khoản có sẵn nhưng không phải 0→dương transition";
+      return "ℹ️  Thanh khoản có sẵn nhưng đã trên ngưỡng từ chu kỳ trước (không phải transition mới)";
     if (decision.reason === "cooldown")
       return `⏱️  Cooldown còn ${Math.ceil(cooldownRemaining / 1000)}s`;
     if (decision.reason === "daily_limit")

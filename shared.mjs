@@ -215,8 +215,9 @@ export function shouldNotify({
     return { shouldNotify: false, reason: "below_threshold" };
   }
 
-  // 2. Transition check: only alert on 0-to-positive transition
-  if (lastSeenLiquidity !== 0n) {
+  // 2. Transition check: only alert when liquidity crosses above threshold.
+  // If it was already above threshold last cycle, this isn't a new event.
+  if (lastSeenLiquidity >= minLiquidityThreshold) {
     return { shouldNotify: false, reason: "no_transition" };
   }
 
