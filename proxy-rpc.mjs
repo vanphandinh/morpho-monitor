@@ -14,23 +14,24 @@ const PORT = PROXY_PORT || 8545;
 // STATE
 // ============================================================
 const capturedTxs = []; // [{ hash: "0x...", signedTx: "0x...", capturedAt: ISO }]
-let cachedNonce = null; // nonce do frontend gửi — ví sẽ dùng nonce này thay vì tự tăng
 
 // ============================================================
 // FAKE RESPONSES
 // ============================================================
+
+// Public client for forwarding eth_getTransactionCount + startup block fetch
+const publicClient = createPublicClient({
+  chain: mainnet,
+  transport: httpTransport(RPC_URLS[0]),
+});
 
 // Fetch real block number once at startup for realistic mock
 let blockNumber = "0x1400000";
 let blockHash = "0x" + "00".repeat(32);
 let baseFee = 10_000_000_000n; // 10 gwei fallback
 {
-  const client = createPublicClient({
-    chain: mainnet,
-    transport: httpTransport(RPC_URLS[0]),
-  });
   try {
-    const block = await client.getBlock({ blockTag: "latest" });
+    const block = await publicClient.getBlock({ blockTag: "latest" });
     blockNumber = "0x" + block.number.toString(16);
     blockHash = block.hash ?? blockHash;
     baseFee = block.baseFeePerGas ?? baseFee;
@@ -47,7 +48,7 @@ console.log(`[proxy] Block: ${parseInt(blockNumber, 16)} (${blockHash.slice(0, 1
 // ============================================================
 // JSON-RPC HANDLER
 // ============================================================
-function handleRpc(method, params) {
+async function handleRpc(method, params) {
   switch (method) {
     // === THE CAPTURE ===
     case "eth_sendRawTransaction": {
@@ -138,9 +139,17 @@ function handleRpc(method, params) {
     case "eth_getTransactionByHash":
       return null;
 
-    case "eth_getTransactionCount":
-      // Trả về nonce do frontend đã fetch, ví sẽ dùng nonce này cho tất cả tier
-      return cachedNonce != null ? "0x" + cachedNonce.toString(16) : "0x0";
+    case "eth_getTransactionCount": {
+      // Forward to real RPC để ví lấy nonce thực tế on-chain
+      try {
+        const address = params[0];
+        const blockTag = params[1] || "latest";
+        const count = await publicClient.getTransactionCount({ address, blockTag });
+        return "0x" + count.toString(16);
+      } catch {
+        return "0x0";
+      }
+    }
 
     case "eth_getStorageAt":
       return "0x" + "00".repeat(32);
@@ -239,35 +248,6 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
-    return;
-  }
-
-  // ---- API: POST /nonce — frontend gửi nonce, proxy lưu để ví dùng chung ----
-  if (req.method === "POST" && req.url === "/nonce") {
-    if (!checkBasicAuth(req)) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
-      return;
-    }
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      try {
-        const { nonce } = JSON.parse(body);
-        if (nonce == null) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: "Missing nonce" }));
-          return;
-        }
-        cachedNonce = nonce;
-        console.log(`[proxy] 📌 Nonce set to ${nonce} (0x${nonce.toString(16)})`);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, nonce }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-    });
     return;
   }
 
@@ -406,19 +386,20 @@ const server = http.createServer(async (req, res) => {
       // Handle batch
       if (Array.isArray(request)) {
         const responses = request.map((r) => {
-          const result = handleRpc(r.method, r.params);
+          const result = await handleRpc(r.method, r.params);
           if (result instanceof Error) {
             return jsonRpcError(r.id, -32603, result.message);
           }
           return jsonRpcResult(r.id, result);
-        });
+        }));
+        const responses = await Promise.all(batchPromises);
         res.writeHead(200);
         res.end(JSON.stringify(responses));
         return;
       }
 
       // Single request
-      const result = handleRpc(request.method, request.params);
+      const result = await handleRpc(request.method, request.params);
       if (result instanceof Error) {
         res.writeHead(200);
         res.end(JSON.stringify(jsonRpcError(request.id, -32603, result.message)));
