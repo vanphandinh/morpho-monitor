@@ -33,7 +33,7 @@ export const RPC_URLS = env("RPC_URLS",
 ).split(",").map(u => u.trim()).filter(Boolean);
 
 // ---- Monitor ----
-export const MONITOR_INTERVAL_MS = envNum("MONITOR_INTERVAL_MS", 60000);
+export const MONITOR_INTERVAL_MS = envNum("MONITOR_INTERVAL_MS", 30000);
 export const NOTIFICATION_COOLDOWN_MS =
   envNum("NOTIFICATION_COOLDOWN_MINUTES", 30) * 60 * 1000;
 export const MAX_NOTIFICATIONS_PER_DAY = envNum("MAX_NOTIFICATIONS_PER_DAY", 10);

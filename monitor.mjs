@@ -250,6 +250,52 @@ async function broadcastPresigned(liquidity, loanToken) {
 }
 
 // ============================================================
+// STALE BUNDLE CHECK (proactive nonce validation)
+// ============================================================
+
+/**
+ * Check if the pre-signed bundle's nonce is still valid.
+ * If the lender's on-chain nonce has increased beyond the bundle nonce,
+ * the bundle is stale and should be cleared.
+ */
+async function expireStaleBundle(client) {
+  if (!fs.existsSync(PRESIGNED_FILE)) return;
+
+  let bundle;
+  try {
+    const raw = fs.readFileSync(PRESIGNED_FILE, "utf-8");
+    bundle = JSON.parse(raw);
+  } catch {
+    return;
+  }
+
+  if (bundle.status !== "pending") return;
+
+  // Fetch current nonce for lender from chain
+  const currentNonce = await client.getTransactionCount({
+    address: LENDER_ADDRESS,
+    blockTag: "pending",
+  });
+
+  if (currentNonce > bundle.nonce) {
+    console.log(
+      `[${new Date().toISOString()}] 🧹 Nonce lender đã tăng ` +
+        `(${bundle.nonce} → ${currentNonce}), ` +
+        `pre-signed bundle đã hết hạn. Đang dọn dẹp...`
+    );
+    bundle.status = "expired";
+    bundle.error = `Nonce tăng: bundle=${bundle.nonce}, chain=${currentNonce}`;
+    bundle.expiredAt = new Date().toISOString();
+    const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
+    fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+    fs.unlinkSync(PRESIGNED_FILE);
+    console.log(
+      `[${new Date().toISOString()}] 📁 Đã lưu bundle expired → ${usedPath}`
+    );
+  }
+}
+
+// ============================================================
 // MONITORING LOGIC
 // ============================================================
 
@@ -264,6 +310,9 @@ async function checkAndNotify() {
     console.warn(`[${new Date().toISOString()}] ⚠️  Không thể kết nối RPC: ${err.message}`);
     return { notified: false, liquidity: null };
   }
+
+  // Check for stale presigned bundle (nonce mismatch with chain)
+  await expireStaleBundle(client);
 
   let market, position, loanToken, collateralToken;
   try {
