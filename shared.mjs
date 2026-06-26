@@ -34,7 +34,9 @@ export const RPC_URLS = env("RPC_URLS",
   "https://rpc.ankr.com/eth/0bda9fd26145d611152a6eec8b728bf7747688a87037d5da4a0bb1feb42977f8," +
   "https://rpc.ankr.com/eth/75c3d8f64c68d868b9e194da044b3f61849506bef26508a419985bfc5c46c338," +
   "https://mainnet.infura.io/v3/a8e97104e75046a58490a844b734c274," +
-  "https://mainnet.infura.io/v3/70c484519b7646d7820601e5071474e8"
+  "https://mainnet.infura.io/v3/70c484519b7646d7820601e5071474e8," +
+  "https://ethereum-mainnet.core.chainstack.com/ea59b26bd098e71a4ad2cf8292ae4f3a," +
+  "https://ethereum-mainnet.core.chainstack.com/9a4bbcc8b9369e3c7247274b75736e64"
 ).split(",").map(u => u.trim()).filter(Boolean);
 
 // ---- Monitor ----
