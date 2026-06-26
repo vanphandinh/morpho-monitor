@@ -1,6 +1,5 @@
 import http from "node:http";
-import { createPublicClient, http as httpTransport, keccak256, toHex } from "viem";
-import { mainnet } from "viem/chains";
+import { keccak256, toHex } from "viem";
 import {
   RPC_URLS,
   PROXY_PORT,
@@ -8,6 +7,10 @@ import {
   WEBAPP_PASSWORD,
   verifySessionToken,
 } from "./shared.mjs";
+import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
+
+// Install global error handlers so unhandled RPC rejections don't crash the process
+addGlobalErrorHandlers("proxy-rpc");
 
 const PORT = PROXY_PORT || 8545;
 
@@ -20,11 +23,10 @@ const capturedTxs = []; // [{ hash: "0x...", signedTx: "0x...", capturedAt: ISO 
 // FAKE RESPONSES
 // ============================================================
 
-// Public client for forwarding eth_getTransactionCount + startup block fetch
-const publicClient = createPublicClient({
-  chain: mainnet,
-  transport: httpTransport(RPC_URLS[0]),
-});
+// Robust public client with fallback across all RPC URLs,
+// retry with backoff, and circuit breaker per URL.
+// Used for forwarding eth_getTransactionCount + startup block fetch.
+const publicClient = createRobustPublicClient(RPC_URLS);
 
 // Fetch real block number once at startup for realistic mock
 let blockNumber = "0x1400000";
@@ -141,15 +143,14 @@ async function handleRpc(method, params) {
       return null;
 
     case "eth_getTransactionCount": {
-      // Forward to real RPC để ví lấy nonce thực tế on-chain
-      try {
-        const address = params[0];
-        const blockTag = params[1] || "latest";
-        const count = await publicClient.getTransactionCount({ address, blockTag });
-        return "0x" + count.toString(16);
-      } catch {
-        return "0x0";
-      }
+      // Forward to real RPC to get the actual on-chain nonce.
+      // The robust client handles retry + fallback across all URLs.
+      // If ALL URLs fail after retries, the error propagates to the
+      // JSON-RPC handler which returns a proper error response to the wallet.
+      const address = params[0];
+      const blockTag = params[1] || "latest";
+      const count = await publicClient.getTransactionCount({ address, blockTag });
+      return "0x" + count.toString(16);
     }
 
     case "eth_getStorageAt":
@@ -405,11 +406,16 @@ const server = http.createServer(async (req, res) => {
       // Handle batch
       if (Array.isArray(request)) {
         const responses = await Promise.all(request.map(async (r) => {
-          const result = await handleRpc(r.method, r.params);
-          if (result instanceof Error) {
-            return jsonRpcError(r.id, -32603, result.message);
+          try {
+            const result = await handleRpc(r.method, r.params);
+            if (result instanceof Error) {
+              return jsonRpcError(r.id, -32603, result.message);
+            }
+            return jsonRpcResult(r.id, result);
+          } catch (err) {
+            console.error(`[proxy] RPC error (${r.method}): ${err.message}`);
+            return jsonRpcError(r.id, -32603, `RPC error: ${err.message}`);
           }
-          return jsonRpcResult(r.id, result);
         }));
         res.writeHead(200);
         res.end(JSON.stringify(responses));
@@ -417,14 +423,20 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Single request
-      const result = await handleRpc(request.method, request.params);
-      if (result instanceof Error) {
+      try {
+        const result = await handleRpc(request.method, request.params);
+        if (result instanceof Error) {
+          res.writeHead(200);
+          res.end(JSON.stringify(jsonRpcError(request.id, -32603, result.message)));
+          return;
+        }
         res.writeHead(200);
-        res.end(JSON.stringify(jsonRpcError(request.id, -32603, result.message)));
-        return;
+        res.end(JSON.stringify(jsonRpcResult(request.id, result)));
+      } catch (err) {
+        console.error(`[proxy] RPC error (${request.method}): ${err.message}`);
+        res.writeHead(200);
+        res.end(JSON.stringify(jsonRpcError(request.id, -32603, `RPC error: ${err.message}`)));
       }
-      res.writeHead(200);
-      res.end(JSON.stringify(jsonRpcResult(request.id, result)));
     });
     return;
   }

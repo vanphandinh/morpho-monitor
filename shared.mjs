@@ -1,5 +1,4 @@
-import { createPublicClient, http, formatUnits, recoverMessageAddress } from "viem";
-import { mainnet } from "viem/chains";
+import { formatUnits, recoverMessageAddress } from "viem";
 import crypto from "node:crypto";
 
 // ============================================================
@@ -115,22 +114,16 @@ export function shortenAddress(address) {
 }
 
 /**
- * Create a viem public client, trying each RPC URL in order.
+ * Create a viem public client with fallback, retry, and circuit breaker.
+ * Delegates to the robust client factory in rpc-client.mjs.
+ *
+ * Unlike the old sequential-try approach, this client uses viem's
+ * `fallback` transport so that if one RPC URL fails mid-request,
+ * subsequent requests automatically try the next URL with backoff.
  */
 export async function createClient(urls = RPC_URLS) {
-  for (const url of urls) {
-    const client = createPublicClient({
-      chain: mainnet,
-      transport: http(url, { timeout: 15_000 }),
-    });
-    try {
-      await client.getChainId();
-      return client;
-    } catch {
-      // Try next URL
-    }
-  }
-  throw new Error("No RPC endpoints available");
+  const { createRobustPublicClient } = await import("./rpc-client.mjs");
+  return createRobustPublicClient(urls);
 }
 
 /**

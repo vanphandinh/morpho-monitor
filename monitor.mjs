@@ -1,9 +1,6 @@
 import { fetchMarket, fetchAccrualPosition, fetchToken } from "@morpho-org/blue-sdk-viem";
-import { Time } from "@morpho-org/morpho-ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { createWalletClient, http } from "viem";
-import { mainnet } from "viem/chains";
 import {
   MARKET_ID,
   LENDER_ADDRESS,
@@ -16,13 +13,20 @@ import {
   NTFY_TOPIC,
   WEBAPP_URL,
   PRESIGNED_FILE,
-  createClient,
   shouldNotify,
   wadToPercent,
   formatTokenAmount,
   formatApy,
   shortenAddress,
 } from "./shared.mjs";
+import {
+  createRobustPublicClient,
+  createRobustWalletClient,
+  addGlobalErrorHandlers,
+} from "./rpc-client.mjs";
+
+// Global error handlers — prevent crashes from unhandled RPC rejections
+addGlobalErrorHandlers("monitor");
 
 // ============================================================
 // CONFIG (resolved from .env or defaults)
@@ -194,11 +198,8 @@ async function broadcastPresigned(liquidity, loanToken) {
   );
 
   try {
-    // sendRawTransaction needs a wallet client
-    const walletClient = createWalletClient({
-      chain: mainnet,
-      transport: http(RPC_URLS[0]),
-    });
+    // Robust wallet client with fallback + retry for broadcasting
+    const walletClient = createRobustWalletClient(RPC_URLS);
     const txHash = await walletClient.sendRawTransaction({
       serializedTransaction: best.signedTx,
     });
@@ -303,11 +304,13 @@ async function expireStaleBundle(client) {
  * Single check cycle. Returns { notified, liquidity } for logging.
  */
 async function checkAndNotify() {
+  // Robust client with fallback across all RPC URLs, retry, and circuit breaker.
+  // Client creation is synchronous — failures happen at request time (caught below).
   let client;
   try {
-    client = await createClient(RPC_URLS);
+    client = createRobustPublicClient(RPC_URLS);
   } catch (err) {
-    console.warn(`[${new Date().toISOString()}] ⚠️  Không thể kết nối RPC: ${err.message}`);
+    console.warn(`[${new Date().toISOString()}] ⚠️  Không thể tạo RPC client: ${err.message}`);
     return { notified: false, liquidity: null };
   }
 

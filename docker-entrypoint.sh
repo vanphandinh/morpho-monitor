@@ -5,25 +5,60 @@ echo "╔═══════════════════════�
 echo "║   Morpho Blue — Docker Container                       ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
-echo "  Starting monitor + webapp + proxy..."
+echo "  Starting monitor + webapp + proxy (self-healing)..."
 echo ""
 
-# Run all three services in parallel, wait for any to exit
-node --env-file=/app/.env monitor.mjs &
-MONITOR_PID=$!
+# ──────────────────────────────────────────────
+# Helper: start a service and track its PID
+# ──────────────────────────────────────────────
+start_service() {
+  local name="$1"
+  local script="$2"
+  node --env-file=/app/.env "$script" &
+  local pid=$!
+  eval "${name}_PID=$pid"
+  echo "[entrypoint] Started $name (PID $pid)"
+}
 
-node --env-file=/app/.env webapp-server.mjs &
-WEBAPP_PID=$!
+# ──────────────────────────────────────────────
+# Start all three services
+# ──────────────────────────────────────────────
+start_service "MONITOR" "monitor.mjs"
+start_service "WEBAPP" "webapp-server.mjs"
+start_service "PROXY" "proxy-rpc.mjs"
 
-node --env-file=/app/.env proxy-rpc.mjs &
-PROXY_PID=$!
+# ──────────────────────────────────────────────
+# Forward SIGTERM/SIGINT to all children
+# ──────────────────────────────────────────────
+trap 'echo "[entrypoint] Shutting down all services..."; kill $MONITOR_PID $WEBAPP_PID $PROXY_PID 2>/dev/null || true; wait; exit 0' TERM INT
 
-# Forward SIGTERM to all children
-trap "kill $MONITOR_PID $WEBAPP_PID $PROXY_PID 2>/dev/null; exit 0" TERM INT
+# ──────────────────────────────────────────────
+# Supervisor loop: auto-restart crashed services
+# ──────────────────────────────────────────────
+echo "[entrypoint] Supervisor active — will restart any crashed service"
+while true; do
+  # wait -n returns when ANY child exits
+  wait -n $MONITOR_PID $WEBAPP_PID $PROXY_PID 2>/dev/null
+  EXIT_CODE=$?
 
-# Wait for any (if one dies, kill the others and exit)
-wait -n $MONITOR_PID $WEBAPP_PID $PROXY_PID
-EXIT_CODE=$?
-kill $MONITOR_PID $WEBAPP_PID $PROXY_PID 2>/dev/null
-wait
-exit $EXIT_CODE
+  # Small delay to avoid tight crash loops
+  sleep 2
+
+  # Detect which service died and restart it
+  if ! kill -0 $MONITOR_PID 2>/dev/null; then
+    echo "[entrypoint] ⚠️  monitor crashed (exit $EXIT_CODE), restarting..."
+    start_service "MONITOR" "monitor.mjs"
+  fi
+
+  if ! kill -0 $WEBAPP_PID 2>/dev/null; then
+    echo "[entrypoint] ⚠️  webapp crashed (exit $EXIT_CODE), restarting..."
+    start_service "WEBAPP" "webapp-server.mjs"
+  fi
+
+  if ! kill -0 $PROXY_PID 2>/dev/null; then
+    echo "[entrypoint] ⚠️  proxy crashed (exit $EXIT_CODE), restarting..."
+    start_service "PROXY" "proxy-rpc.mjs"
+  fi
+
+  echo "[entrypoint] All services running: monitor=$MONITOR_PID webapp=$WEBAPP_PID proxy=$PROXY_PID"
+done

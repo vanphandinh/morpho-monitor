@@ -706,6 +706,7 @@
     // RPC CLIENT
     // ============================================================
     async function createRpcClient() {
+      let lastError;
       for (const url of RPC_URLS) {
         const client = createPublicClient({
           chain: mainnet,
@@ -714,9 +715,13 @@
         try {
           await client.getChainId();
           return client;
-        } catch { /* next */ }
+        } catch (err) {
+          lastError = err;
+          // Brief delay before trying next URL to avoid hammering DNS
+          await new Promise(r => setTimeout(r, 500));
+        }
       }
-      throw new Error("Không thể kết nối đến bất kỳ RPC nào");
+      throw new Error("Không thể kết nối đến bất kỳ RPC nào: " + (lastError?.message || "unknown"));
     }
 
     // ============================================================

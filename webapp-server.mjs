@@ -16,6 +16,10 @@ import {
   createSessionToken,
   verifySessionToken,
 } from "./shared.mjs";
+import { addGlobalErrorHandlers } from "./rpc-client.mjs";
+
+// Global error handlers — prevent crashes from unhandled rejections
+addGlobalErrorHandlers("webapp-server");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = WEBAPP_PORT;
