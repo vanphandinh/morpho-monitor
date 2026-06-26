@@ -85,8 +85,8 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     recordFailure(URL);
     recordFailure(URL);
 
-    // Advance past the 30s cooldown
-    vi.advanceTimersByTime(31_000);
+    // Advance past the max jittered cooldown (backoff 60s + 20% jitter = max 72s)
+    vi.advanceTimersByTime(80_000);
 
     // Now isCircuitOpen should transition to HALF-OPEN (probing=true)
     expect(isCircuitOpen(URL)).toBe(false); // not blocking
@@ -101,8 +101,8 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     recordFailure(URL);
     recordFailure(URL);
 
-    // Advance past cooldown → HALF-OPEN
-    vi.advanceTimersByTime(31_000);
+    // Advance past max jittered cooldown → HALF-OPEN
+    vi.advanceTimersByTime(80_000);
     isCircuitOpen(URL); // transitions to HALF-OPEN, probing=true
 
     // Probe succeeds
@@ -127,8 +127,8 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     const afterOpen = getCircuit(URL);
     const firstBackoff = afterOpen.backoffMs; // 60_000 (already doubled from 30_000)
 
-    // Advance past cooldown → HALF-OPEN
-    vi.advanceTimersByTime(firstBackoff + 1);
+    // Advance past max jittered cooldown → HALF-OPEN
+    vi.advanceTimersByTime(firstBackoff + 20_000);
     isCircuitOpen(URL);
     expect(getCircuit(URL).probing).toBe(true);
 
@@ -177,8 +177,8 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     recordFailure(URL);
     recordFailure(URL);
 
-    // Cooldown expires → HALF-OPEN
-    vi.advanceTimersByTime(31_000);
+    // Advance past max jittered cooldown → HALF-OPEN
+    vi.advanceTimersByTime(80_000);
     isCircuitOpen(URL);
 
     // Probe succeeds → CLOSED
@@ -201,21 +201,21 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     recordFailure(URL);
     let backoff = getCircuit(URL).backoffMs; // 60_000
 
-    // Fail probe 1
-    vi.advanceTimersByTime(backoff + 1);
+    // Fail probe 1 — advance past max jittered cooldown (backoff + 20%)
+    vi.advanceTimersByTime(backoff + 20_000);
     isCircuitOpen(URL);
     recordFailure(URL);
     backoff = getCircuit(URL).backoffMs;
 
     // Fail probe 2
-    vi.advanceTimersByTime(backoff + 1);
+    vi.advanceTimersByTime(backoff + 25_000);
     isCircuitOpen(URL);
     recordFailure(URL);
     backoff = getCircuit(URL).backoffMs;
     expect(backoff).toBe(120_000); // capped at max
 
     // Now URL recovers — succeed probe 3
-    vi.advanceTimersByTime(backoff + 1);
+    vi.advanceTimersByTime(backoff + 25_000);
     isCircuitOpen(URL);
     expect(getCircuit(URL).probing).toBe(true);
     recordSuccess(URL);
@@ -225,5 +225,66 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     expect(c.failures).toBe(0);
     expect(c.openUntil).toBe(0);
     expect(c.backoffMs).toBe(30_000); // reset
+  });
+
+  // ==========================================================
+  // Rate limit (HTTP 429) fast-path
+  // ==========================================================
+
+  it("opens circuit immediately on rate limit (HTTP 429) — threshold 1 instead of 3", () => {
+    // A single rate limit should open the circuit
+    recordFailure(URL, { isRateLimit: true });
+
+    const c = getCircuit(URL);
+    expect(c.failures).toBe(1);
+    expect(c.openUntil).toBeGreaterThan(0); // circuit OPEN after just 1 failure
+    expect(c.probing).toBe(false);
+    expect(isCircuitOpen(URL)).toBe(true); // blocks requests
+  });
+
+  it("rate limit after a non-rate-limit failure still opens immediately", () => {
+    // 1 DNS failure (non-rate-limit) — circuit stays CLOSED
+    recordFailure(URL, { isRateLimit: false });
+    expect(getCircuit(URL).openUntil).toBe(0); // 1 < 3, not open yet
+
+    // Then a rate limit — opens immediately despite only 2 total failures
+    recordFailure(URL, { isRateLimit: true });
+
+    const c = getCircuit(URL);
+    expect(c.failures).toBe(2);
+    expect(c.openUntil).toBeGreaterThan(0); // OPEN after rate limit
+  });
+
+  // ==========================================================
+  // HALF-OPEN log rate-limiting
+  // ==========================================================
+
+  it("HALF-OPEN log is not duplicated within the same cycle", () => {
+    // Mock console.log to track calls
+    const logSpy = vi.spyOn(console, "log");
+
+    // Open circuit
+    recordFailure(URL);
+    recordFailure(URL);
+    recordFailure(URL);
+
+    // Advance past max jittered cooldown
+    vi.advanceTimersByTime(80_000);
+
+    // First call — transitions to HALF-OPEN, should log
+    isCircuitOpen(URL);
+    const firstHits = logSpy.mock.calls.filter(
+      c => String(c[0]).includes("HALF-OPEN")
+    ).length;
+    expect(firstHits).toBe(1);
+
+    // Second call — already probing, should NOT log again
+    isCircuitOpen(URL);
+    const secondHits = logSpy.mock.calls.filter(
+      c => String(c[0]).includes("HALF-OPEN")
+    ).length;
+    expect(secondHits).toBe(1); // still 1, no duplicate
+
+    logSpy.mockRestore();
   });
 });

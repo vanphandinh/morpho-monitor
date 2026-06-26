@@ -28,6 +28,13 @@ import {
 // Global error handlers — prevent crashes from unhandled RPC rejections
 addGlobalErrorHandlers("monitor");
 
+// Robust RPC clients — created once at startup, reused across all cycles.
+// The circuit breaker state (module-level Map in rpc-client.mjs) persists
+// across requests, so reusing the same client preserves failure history.
+// This also avoids viem re-building its internal transport state every cycle.
+const publicClient = createRobustPublicClient(RPC_URLS);
+const walletClient = createRobustWalletClient(RPC_URLS);
+
 // ============================================================
 // CONFIG (resolved from .env or defaults)
 // ============================================================
@@ -198,8 +205,6 @@ async function broadcastPresigned(liquidity, loanToken) {
   );
 
   try {
-    // Robust wallet client with fallback + retry for broadcasting
-    const walletClient = createRobustWalletClient(RPC_URLS);
     const txHash = await walletClient.sendRawTransaction({
       serializedTransaction: best.signedTx,
     });
@@ -304,30 +309,20 @@ async function expireStaleBundle(client) {
  * Single check cycle. Returns { notified, liquidity } for logging.
  */
 async function checkAndNotify() {
-  // Robust client with fallback across all RPC URLs, retry, and circuit breaker.
-  // Client creation is synchronous — failures happen at request time (caught below).
-  let client;
-  try {
-    client = createRobustPublicClient(RPC_URLS);
-  } catch (err) {
-    console.warn(`[${new Date().toISOString()}] ⚠️  Không thể tạo RPC client: ${err.message}`);
-    return { notified: false, liquidity: null };
-  }
-
   // Check for stale presigned bundle (nonce mismatch with chain)
-  await expireStaleBundle(client);
+  await expireStaleBundle(publicClient);
 
   let market, position, loanToken, collateralToken;
   try {
     [market, position] = await Promise.all([
-      fetchMarket(MARKET_ID, client, { deployless: false }),
-      fetchAccrualPosition(LENDER_ADDRESS, MARKET_ID, client, {
+      fetchMarket(MARKET_ID, publicClient, { deployless: false }),
+      fetchAccrualPosition(LENDER_ADDRESS, MARKET_ID, publicClient, {
         deployless: false,
       }),
     ]);
     [collateralToken, loanToken] = await Promise.all([
-      fetchToken(market.params.collateralToken, client, { deployless: false }),
-      fetchToken(market.params.loanToken, client, { deployless: false }),
+      fetchToken(market.params.collateralToken, publicClient, { deployless: false }),
+      fetchToken(market.params.loanToken, publicClient, { deployless: false }),
     ]);
   } catch (err) {
     console.warn(

@@ -14,6 +14,13 @@ const circuits = new Map();
 const CB_MAX_FAILURES = 3;
 const CB_BASE_BACKOFF_MS = 30_000; // 30s
 const CB_MAX_BACKOFF_MS = 120_000; // 2 min
+const CB_JITTER = 0.2; // ±20% jitter to prevent thundering herd
+
+/** Add ±20% jitter to prevent synchronized backoff across URLs. */
+function applyJitter(backoffMs) {
+  const jitter = Math.floor(backoffMs * CB_JITTER * (Math.random() * 2 - 1));
+  return backoffMs + jitter;
+}
 
 function getCircuit(url) {
   if (!circuits.has(url)) {
@@ -41,29 +48,41 @@ function recordSuccess(url) {
   }
 }
 
-function recordFailure(url) {
+/**
+ * Record a transport failure for a URL.
+ * @param {string} url
+ * @param {{ isRateLimit?: boolean }} [opts]
+ */
+function recordFailure(url, opts = {}) {
   const c = getCircuit(url);
   c.failures++;
+
   if (c.probing) {
     // HALF-OPEN probe failed — re-open the circuit with doubled backoff
     c.probing = false;
-    c.openUntil = Date.now() + c.backoffMs;
     c.backoffMs = Math.min(c.backoffMs * 2, CB_MAX_BACKOFF_MS);
+    c.openUntil = Date.now() + applyJitter(c.backoffMs);
     console.warn(
       `[rpc] Circuit OPEN for ${new URL(url).hostname} — ` +
       `HALF-OPEN probe failed, cooldown ${c.backoffMs / 1000}s`
     );
     return;
   }
+
+  // Rate limit (HTTP 429) is a clear signal — open the circuit immediately
+  // after 1 failure instead of waiting for CB_MAX_FAILURES.
+  const threshold = opts.isRateLimit ? 1 : CB_MAX_FAILURES;
+
   // Only open if not already open (guards against concurrent failures
   // that all arrive after the threshold was already crossed)
-  if (c.failures >= CB_MAX_FAILURES && c.openUntil === 0) {
-    c.openUntil = Date.now() + c.backoffMs;
+  if (c.failures >= threshold && c.openUntil === 0) {
+    c.backoffMs = Math.min(c.backoffMs * 2, CB_MAX_BACKOFF_MS);
+    c.openUntil = Date.now() + applyJitter(c.backoffMs);
+    const reason = opts.isRateLimit ? "rate limit (429)" : `${c.failures} consecutive failures`;
     console.warn(
       `[rpc] Circuit OPEN for ${new URL(url).hostname} — ` +
-      `${c.failures} consecutive failures, cooldown ${c.backoffMs / 1000}s`
+      `${reason}, cooldown ${c.backoffMs / 1000}s`
     );
-    c.backoffMs = Math.min(c.backoffMs * 2, CB_MAX_BACKOFF_MS);
   }
 }
 
@@ -71,10 +90,14 @@ function isCircuitOpen(url) {
   const c = getCircuit(url);
   if (c.openUntil > 0) {
     if (Date.now() < c.openUntil) return true;
-    // Cooldown expired → transition to HALF-OPEN
+    // Cooldown expired → transition to HALF-OPEN.
+    // Only log once per OPEN→HALF-OPEN transition to reduce noise.
+    const wasAlreadyProbing = c.probing;
     c.openUntil = 0;
     c.probing = true;
-    console.log(`[rpc] Circuit HALF-OPEN for ${new URL(url).hostname} — probing`);
+    if (!wasAlreadyProbing) {
+      console.log(`[rpc] Circuit HALF-OPEN for ${new URL(url).hostname} — probing`);
+    }
   }
   return false;
 }
@@ -139,9 +162,9 @@ function circuitHttp(url, httpOptions = {}) {
   return (config) => {
     const baseTransport = http(url, {
       timeout: 15_000,
-      retryCount: 2,        // retry individual transport on transient errors
-      retryDelay: 300,
-      ...httpOptions,
+      retryCount: 1,        // 1 retry = 2 total attempts per URL.
+      retryDelay: 300,      // With 9 fallback URLs, retrying the same URL
+      ...httpOptions,       // is less valuable than moving to the next one.
     })(config);
 
     const originalRequest = baseTransport.request.bind(baseTransport);
@@ -165,7 +188,11 @@ function circuitHttp(url, httpOptions = {}) {
           return result;
         } catch (err) {
           if (isTransportError(err)) {
-            recordFailure(url);
+            // Rate limits are a clear signal — trigger immediate circuit open.
+            // Also catch JSON-RPC rate-limit code -32005.
+            const isRateLimit =
+              err?.status === 429 || err?.code === -32005;
+            recordFailure(url, { isRateLimit });
           }
           throw err;
         }
@@ -190,15 +217,24 @@ export function createRobustPublicClient(urls) {
     throw new Error("createRobustPublicClient: urls must be a non-empty array");
   }
 
-  const transports = urls.map((url) => circuitHttp(url));
+  // Shuffle URLs so each process (monitor, proxy) distributes its primary
+  // load across different providers instead of always hitting URL[0] first.
+  const shuffled = [...urls].sort(() => Math.random() - 0.5);
+  const transports = shuffled.map((url) => circuitHttp(url));
 
   return createPublicClient({
     chain: mainnet,
     transport: fallback(transports, {
-      // rank: track success/failure per transport and prioritize good ones
-      rank: true,
-      // retry the entire fallback chain on transient failures
-      retryCount: 3,
+      // rank: disabled — conflicts with circuit breaker fast-fail.
+      // When the circuit is OPEN, the near-instant throw (code=-1) can be
+      // misinterpreted by viem's ranker as a "fast" response, causing the
+      // broken URL to be favored over healthy ones. The circuit breaker
+      // already handles failover; ranking adds no value here.
+      rank: false,
+      // 2 retries = 3 total passes through the URL chain.
+      // Reduced from 3 (4 passes) since the circuit breaker already
+      // provides intelligent per-URL backoff.
+      retryCount: 2,
       retryDelay: 500,
     }),
   });
@@ -215,13 +251,14 @@ export function createRobustWalletClient(urls) {
     throw new Error("createRobustWalletClient: urls must be a non-empty array");
   }
 
-  const transports = urls.map((url) => circuitHttp(url));
+  const shuffled = [...urls].sort(() => Math.random() - 0.5);
+  const transports = shuffled.map((url) => circuitHttp(url));
 
   return createWalletClient({
     chain: mainnet,
     transport: fallback(transports, {
-      rank: true,
-      retryCount: 3,
+      rank: false,
+      retryCount: 2,
       retryDelay: 500,
     }),
   });
