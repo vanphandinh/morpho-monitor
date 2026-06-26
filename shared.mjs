@@ -25,14 +25,15 @@ export const MORPHO_BLUE_ADDRESS = env("MORPHO_BLUE_ADDRESS",
 
 // ---- RPC ----
 export const RPC_URLS = env("RPC_URLS",
-  "https://eth.blockrazor.xyz," +          // 171ms — fastest
-  "https://ethereum-rpc.publicnode.com," + // 353ms
-  "https://eth.drpc.org," +                // 390ms
-  "https://eth.api.pocket.network," +      // 546ms
-  "https://0xrpc.io/eth," +                // 591ms
-  "https://rpc.flashbots.net," +           // 615ms
-  "https://rpc.mevblocker.io," +           // 631ms
-  "https://rpc.nodeflare.app/eth/public"   // 905ms
+  "https://lb.drpc.live/ethereum/AlqTJ3Pbb0gGqQof0HI4hLunOH9fcQYR8aFWVjewFaCJ," +
+  "https://lb.drpc.live/ethereum/AunJZVj7QEqckownxj_qxRnQ2DzbcQYR8aFXVjewFaCJ," +
+  "https://ethereum-rpc.publicnode.com," +
+  "https://eth-mainnet.g.alchemy.com/v2/usw2oMtZYpOnwPTrHcEGL," +
+  "https://eth-mainnet.g.alchemy.com/v2/WeGRNBp6KnWDuMSuyE7r9," +
+  "https://rpc.ankr.com/eth/0bda9fd26145d611152a6eec8b728bf7747688a87037d5da4a0bb1feb42977f8," +
+  "https://rpc.ankr.com/eth/75c3d8f64c68d868b9e194da044b3f61849506bef26508a419985bfc5c46c338," +
+  "https://mainnet.infura.io/v3/a8e97104e75046a58490a844b734c274," +
+  "https://mainnet.infura.io/v3/70c484519b7646d7820601e5071474e8"
 ).split(",").map(u => u.trim()).filter(Boolean);
 
 // ---- Monitor ----
