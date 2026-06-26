@@ -90,6 +90,7 @@ console.log("");
 
 let matched = 0;
 let mismatched = 0;
+const txNonces = []; // thu thập nonce từ tất cả tx để cross-check
 
 for (let i = 0; i < bundle.withdrawals.length; i++) {
   const w = bundle.withdrawals[i];
@@ -113,6 +114,8 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
     mismatched++;
     continue;
   }
+
+  txNonces.push(tx.nonce); // thu thập để cross-check sau
 
   console.log(`   ── Transaction ──`);
   console.log(`   chainId:           ${tx.chainId}`);
@@ -160,6 +163,17 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
   console.log(`   onBehalf:          ${args[3] || "N/A"}`);
   console.log(`   receiver:          ${args[4] || "N/A"}`);
 
+  // Xác minh receiver = lender
+  const receiver = args[4];
+  if (bundle.lenderAddress) {
+    if (receiver?.toLowerCase() !== bundle.lenderAddress.toLowerCase()) {
+      console.log(`   ❌ RECEIVER SAI: receiver=${receiver}, lender=${bundle.lenderAddress}`);
+      mismatched++;
+    } else {
+      console.log(`   ✅ Receiver khớp lender: ${receiver}`);
+    }
+  }
+
   // Compare
   if (assets && w.amountWei && BigInt(assets) === BigInt(w.amountWei)) {
     console.log(`   ✅ KHỚP: assets = amountWei = ${assets.toString()}`);
@@ -169,6 +183,29 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
     console.log(`      amountWei (label): ${w.amountWei} (${w.amountFormatted})`);
     console.log(`      assets (signedTx): ${assets?.toString() || "N/A"} (${assets ? formatUnits(assets, 6) + " USDC" : "N/A"})`);
     mismatched++;
+  }
+}
+
+// ============================================================
+// Nonce cross-check (chỉ chạy khi tất cả tx parse thành công)
+// ============================================================
+// Chỉ cross-check khi tất cả withdrawal đều có signedTx parse thành công
+if (txNonces.length === bundle.withdrawals.length) {
+  const uniqueNonces = [...new Set(txNonces)];
+  if (uniqueNonces.length > 1) {
+    console.log("");
+    console.log(`❌ CÁC TX CÓ NONCE KHÁC NHAU: ${uniqueNonces.join(", ")}`);
+    mismatched++;
+  } else if (bundle.nonce == null) {
+    console.log("");
+    console.log(`⚠️  Tất cả ${txNonces.length} tx có cùng nonce=${uniqueNonces[0]}, nhưng bundle không có nonce để so sánh`);
+  } else if (uniqueNonces[0] !== Number(bundle.nonce)) {
+    console.log("");
+    console.log(`❌ NONCE KHÔNG KHỚP BUNDLE: tx nonce=${uniqueNonces[0]}, bundle nonce=${bundle.nonce}`);
+    mismatched++;
+  } else {
+    console.log("");
+    console.log(`✅ Tất cả ${txNonces.length} tx có cùng nonce=${uniqueNonces[0]}, khớp với bundle nonce=${bundle.nonce}`);
   }
 }
 
