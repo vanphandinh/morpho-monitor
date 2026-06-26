@@ -709,23 +709,48 @@
     // ============================================================
     // RPC CLIENT
     // ============================================================
+
+    /**
+     * Fallback transport — bản rút gọn của server-side round-robin transport.
+     * Mỗi request bắt đầu từ URL hiện tại (random lúc khởi tạo).
+     * Nếu thất bại → thử URL tiếp theo. Thành công → advance index cho request sau.
+     * Không có circuit breaker vì browser session ngắn.
+     */
+    function fallbackTransport(urls, opts = {}) {
+      const { timeout = 15000 } = opts;
+      let idx = Math.floor(Math.random() * urls.length); // random start — phân tán tải
+
+      return (config) => {
+        const transports = urls.map(url => http(url, { timeout })(config));
+
+        return {
+          ...transports[0],
+          request: async (args) => {
+            let lastError;
+            for (let i = 0; i < urls.length; i++) {
+              const urlIdx = (idx + i) % urls.length;
+              try {
+                const result = await transports[urlIdx].request(args);
+                idx = (urlIdx + 1) % urls.length; // advance cho request tiếp theo
+                return result;
+              } catch (err) {
+                lastError = err;
+              }
+            }
+            throw lastError;
+          },
+        };
+      };
+    }
+
     async function createRpcClient() {
-      let lastError;
-      for (const url of RPC_URLS) {
-        const client = createPublicClient({
-          chain: mainnet,
-          transport: http(url, { timeout: 15000 }),
-        });
-        try {
-          await client.getChainId();
-          return client;
-        } catch (err) {
-          lastError = err;
-          // Brief delay before trying next URL to avoid hammering DNS
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-      throw new Error("Không thể kết nối đến bất kỳ RPC nào: " + (lastError?.message || "unknown"));
+      const client = createPublicClient({
+        chain: mainnet,
+        transport: fallbackTransport(RPC_URLS, { timeout: 15000 }),
+      });
+      // Startup health check — chỉ fail nếu TẤT CẢ URL đều down
+      await client.getChainId();
+      return client;
     }
 
     // ============================================================
