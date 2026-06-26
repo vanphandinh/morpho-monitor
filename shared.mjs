@@ -25,11 +25,14 @@ export const MORPHO_BLUE_ADDRESS = env("MORPHO_BLUE_ADDRESS",
 
 // ---- RPC ----
 export const RPC_URLS = env("RPC_URLS",
-  "https://ethereum-rpc.publicnode.com," +
-  "https://eth.drpc.org," +
-  "https://1rpc.io/eth," +
-  "https://rpc.mevblocker.io," +
-  "https://cloudflare-eth.com"
+  "https://eth.blockrazor.xyz," +          // 171ms — fastest
+  "https://ethereum-rpc.publicnode.com," + // 353ms
+  "https://eth.drpc.org," +                // 390ms
+  "https://eth.api.pocket.network," +      // 546ms
+  "https://0xrpc.io/eth," +                // 591ms
+  "https://rpc.flashbots.net," +           // 615ms
+  "https://rpc.mevblocker.io," +           // 631ms
+  "https://rpc.nodeflare.app/eth/public"   // 905ms
 ).split(",").map(u => u.trim()).filter(Boolean);
 
 // ---- Monitor ----
