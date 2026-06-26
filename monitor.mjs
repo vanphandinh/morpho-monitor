@@ -339,7 +339,7 @@ async function checkAndNotify() {
   const supplyAssets = position.supplyAssets;
 
   // First run: record state passively — NEVER notify on startup.
-  // The monitor only alerts on 0-to-positive transitions in subsequent cycles.
+  // The monitor only alerts on below-threshold to above-threshold transitions.
   // This prevents notification floods on frequent restarts.
   if (lastSeenLiquidity === null) {
     lastSeenLiquidity = liquidity;
@@ -356,11 +356,17 @@ async function checkAndNotify() {
         `[${new Date().toISOString()}] ⏳ Liquidity hiện tại = 0. ` +
           `Sẽ thông báo khi có thanh khoản xuất hiện.`
       );
+    } else if (liquidity >= MIN_LIQUIDITY_THRESHOLD) {
+      console.log(
+        `[${new Date().toISOString()}] ℹ️  Liquidity hiện có > 0 và đang trên ngưỡng. ` +
+          `Sẽ KHÔNG gửi thông báo khởi tạo. ` +
+          `Chỉ thông báo khi liquidity giảm xuống dưới ngưỡng rồi vượt ngưỡng trở lại.`
+      );
     } else {
       console.log(
-        `[${new Date().toISOString()}] ℹ️  Liquidity hiện có > 0. ` +
+        `[${new Date().toISOString()}] ℹ️  Liquidity hiện có > 0 nhưng dưới ngưỡng. ` +
           `Sẽ KHÔNG gửi thông báo khởi tạo. ` +
-          `Chỉ thông báo khi liquidity trở về 0 rồi dương trở lại.`
+          `Sẽ thông báo khi liquidity vượt ngưỡng.`
       );
     }
     return { notified: false, liquidity };
@@ -403,10 +409,11 @@ async function checkAndNotify() {
     }
   }
 
-  // Reset cycle flag when liquidity goes back to 0
-  if (liquidity === 0n && hasNotifiedThisCycle) {
+  // Reset cycle flag when liquidity drops below threshold — opens a new
+  // transition window so the next rise above threshold triggers a notification.
+  if (liquidity < MIN_LIQUIDITY_THRESHOLD && hasNotifiedThisCycle) {
     console.log(
-      `[${new Date().toISOString()}] 🔄 Liquidity về 0, reset trạng thái.`
+      `[${new Date().toISOString()}] 🔄 Liquidity dưới ngưỡng, reset trạng thái.`
     );
     hasNotifiedThisCycle = false;
   }
@@ -430,8 +437,6 @@ async function checkAndNotify() {
       return `⏱️  Cooldown còn ${Math.ceil(cooldownRemaining / 1000)}s`;
     if (decision.reason === "daily_limit")
       return "🛑 Đã đạt giới hạn thông báo hôm nay";
-    if (decision.reason === "already_notified_this_cycle")
-      return "🔕 Đã thông báo chu kỳ này";
     return "🟢 Sẵn sàng thông báo";
   })();
 
