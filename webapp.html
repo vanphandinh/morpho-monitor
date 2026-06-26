@@ -876,6 +876,8 @@
     // ============================================================
     // WALLET
     // ============================================================
+    let _listenersAttached = false; // guard against duplicate event listeners
+
     window.connectWallet = async function() {
       try {
         if (!window.ethereum) {
@@ -933,36 +935,38 @@
         updateAuthUI();
         renderWalletCompatibility();
 
-        // Listen for account changes
-        window.ethereum.on("accountsChanged", (accts) => {
-          if (accts.length === 0) {
+        // Attach wallet event listeners once (prevents duplicate firing)
+        if (!_listenersAttached) {
+          _listenersAttached = true;
+
+          window.ethereum.on("accountsChanged", (accts) => {
+            if (accts.length === 0) {
+              window.disconnectWallet();
+            } else {
+              currentAccount = accts[0];
+              document.getElementById("wallet-address").textContent = currentAccount;
+            }
+          });
+
+          window.ethereum.on("chainChanged", (chainId) => {
+            if (chainId === "0x1") {
+              // Returned to Ethereum mainnet — refresh market data
+              fetchAllData().then(() => {
+                renderMarketInfo();
+                renderPosition();
+              }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
+            } else {
+              showTxResult("warn", "⚠️ Vui lòng chuyển về Ethereum Mainnet để sử dụng.");
+              document.getElementById("btn-withdraw").disabled = true;
+              document.getElementById("btn-withdraw-all").disabled = true;
+            }
+          });
+
+          window.ethereum.on("disconnect", () => {
             window.disconnectWallet();
-          } else {
-            currentAccount = accts[0];
-            document.getElementById("wallet-address").textContent = currentAccount;
-          }
-        });
-
-        // Listen for chain changes — re-fetch data if returning to mainnet
-        window.ethereum.on("chainChanged", (chainId) => {
-          if (chainId === "0x1") {
-            // Returned to Ethereum mainnet — refresh market data
-            fetchAllData().then(() => {
-              renderMarketInfo();
-              renderPosition();
-            }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
-          } else {
-            showTxResult("warn", "⚠️ Vui lòng chuyển về Ethereum Mainnet để sử dụng.");
-            document.getElementById("btn-withdraw").disabled = true;
-            document.getElementById("btn-withdraw-all").disabled = true;
-          }
-        });
-
-        // Listen for MetaMask disconnect
-        window.ethereum.on("disconnect", () => {
-          window.disconnectWallet();
-          showTxResult("error", "🔌 Ví đã ngắt kết nối.");
-        });
+            showTxResult("error", "🔌 Ví đã ngắt kết nối.");
+          });
+        }
 
         hideError();
       } catch (err) {
@@ -973,6 +977,7 @@
     window.disconnectWallet = function() {
       walletClient = null;
       currentAccount = null;
+      _listenersAttached = false; // allow re-attach on next connect
       document.getElementById("wallet-status").style.display = "block";
       document.getElementById("wallet-connected").style.display = "none";
       document.getElementById("btn-withdraw").disabled = true;

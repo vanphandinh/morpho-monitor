@@ -14,7 +14,8 @@ import {
   CHALLENGE_EXPIRY_MS,
   recoverSignerAddress,
   createSessionToken,
-  verifySessionToken,
+  verifyToken,
+  checkInternalSecret,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
 
@@ -46,13 +47,23 @@ htmlContent = htmlContent.replace(
 // ============================================================
 const challenges = new Map(); // challenge → { address, createdAt, expiresAt }
 
-// Clean up expired challenges every 10 minutes
+// Write lock for POST /api/presign — serializes concurrent reads/writes to presigned.json
+let writeLock = Promise.resolve();
+
+// Rate limit for /api/challenge: max 10 requests per minute per IP
+const challengeRateLimit = new Map(); // IP → { count, windowStart }
+
+// Clean up expired challenges and rate limit entries every 2 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [key, val] of challenges) {
     if (now > val.expiresAt) challenges.delete(key);
   }
-}, 10 * 60 * 1000);
+  // Clean stale rate limit entries (older than 1 minute)
+  for (const [ip, entry] of challengeRateLimit) {
+    if (now - entry.windowStart > 60_000) challengeRateLimit.delete(ip);
+  }
+}, 2 * 60 * 1000);
 
 // Log configuration
 if (WEBAPP_PASSWORD) {
@@ -67,34 +78,8 @@ console.log(`[presign] 👛 Lender address: ${LENDER_ADDRESS}`);
 // AUTH MIDDLEWARE
 // ============================================================
 
-/**
- * Verify a Bearer token (HMAC-based, verifiable by both webapp-server and proxy-rpc).
- * Returns { address, expiresAt } or null.
- */
-function verifyToken(req) {
-  if (!WEBAPP_PASSWORD) return { address: LENDER_ADDRESS, expiresAt: Infinity }; // dev mode
-  const auth = req.headers["authorization"];
-  if (!auth || !auth.startsWith("Bearer ")) return null;
-  const token = auth.slice(7);
-  return verifySessionToken(token);
-}
-
-/**
- * Check internal secret (Basic Auth with WEBAPP_PASSWORD).
- * Used for proxy ↔ webapp internal communication.
- */
-function checkInternalSecret(req) {
-  if (!WEBAPP_PASSWORD) return true;
-  const auth = req.headers["authorization"];
-  if (!auth || !auth.startsWith("Basic ")) return false;
-  try {
-    const [, encoded] = auth.split(" ");
-    const [, pass] = Buffer.from(encoded, "base64").toString("utf-8").split(":");
-    return pass === WEBAPP_PASSWORD;
-  } catch {
-    return false;
-  }
-}
+// Auth helpers (verifyToken, checkInternalSecret) imported from shared.mjs.
+// verifyToken is called with LENDER_ADDRESS as devAddress so dev mode returns the correct lender.
 
 const server = http.createServer((req, res) => {
   // ---- Auth: static HTML page is now public (auth via wallet in JS) ----
@@ -102,8 +87,23 @@ const server = http.createServer((req, res) => {
 
   // ---- API: GET /api/challenge — tạo challenge để user ký (không cần auth) ----
   if (req.method === "GET" && req.url === "/api/challenge") {
-    const challenge = crypto.randomBytes(16).toString("hex");
+    // Rate limit: max 10 challenges per minute per IP
+    const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+               req.socket.remoteAddress || "unknown";
     const now = Date.now();
+    const rl = challengeRateLimit.get(ip);
+    if (rl && now - rl.windowStart < 60_000) {
+      if (rl.count >= 10) {
+        res.writeHead(429, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: "Too many requests. Try again later." }));
+        return;
+      }
+      rl.count++;
+    } else {
+      challengeRateLimit.set(ip, { count: 1, windowStart: now });
+    }
+
+    const challenge = crypto.randomBytes(16).toString("hex");
     challenges.set(challenge, {
       address: LENDER_ADDRESS,
       createdAt: now,
@@ -123,6 +123,9 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/auth") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
+    req.on("error", (err) => {
+      console.error(`[webapp] Request stream error on /api/auth: ${err.message}`);
+    });
     req.on("end", async () => {
       try {
         const { address, signature, challenge: challengeStr } = JSON.parse(body);
@@ -188,7 +191,7 @@ const server = http.createServer((req, res) => {
 
   // ---- API: GET /api/presign — trả về summary bundle hiện tại (không signedTx) ----
   if (req.method === "GET" && req.url === "/api/presign") {
-    if (!verifyToken(req)) {
+    if (!verifyToken(req, LENDER_ADDRESS)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -225,7 +228,7 @@ const server = http.createServer((req, res) => {
 
   // ---- API: POST /api/bundle — relay metadata từ frontend sang proxy ----
   if (req.method === "POST" && req.url === "/api/bundle") {
-    if (!verifyToken(req)) {
+    if (!verifyToken(req, LENDER_ADDRESS)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -233,6 +236,9 @@ const server = http.createServer((req, res) => {
 
     let body = "";
     req.on("data", (chunk) => (body += chunk));
+    req.on("error", (err) => {
+      console.error(`[webapp] Request stream error on /api/bundle: ${err.message}`);
+    });
     req.on("end", async () => {
       try {
         const proxyUrl = PROXY_RPC_URL.replace(/\/+$/, "");
@@ -259,7 +265,8 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- Block access to sensitive files (.json, .env, etc.) ----
-  const blockedPatterns = [/\.json$/i, /\.env$/i, /\.log$/i, /\.tar$/i];
+  // Match sensitive extensions even when followed by query string (e.g. /.env?foo)
+  const blockedPatterns = [/\.(json|env|log|tar)(\?|$)/i];
   if (req.method === "GET" && blockedPatterns.some(p => p.test(req.url))) {
     res.writeHead(403, { "Content-Type": "text/plain" });
     res.end("Forbidden");
@@ -268,7 +275,7 @@ const server = http.createServer((req, res) => {
 
   // ---- API: DELETE /api/presign — xóa toàn bộ bundle hoặc 1 tier (?tier=N) ----
   if (req.method === "DELETE" && req.url.startsWith("/api/presign")) {
-    if (!verifyToken(req)) {
+    if (!verifyToken(req, LENDER_ADDRESS)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -319,7 +326,7 @@ const server = http.createServer((req, res) => {
   // ---- API: POST /api/presign — nhận signed bundle từ proxy (internal) hoặc user (Bearer) ----
   if (req.method === "POST" && req.url === "/api/presign") {
     // Accept either internal secret (proxy→webapp) or Bearer token (user→webapp)
-    const session = verifyToken(req);
+    const session = verifyToken(req, LENDER_ADDRESS);
     const isInternal = checkInternalSecret(req);
     if (!session && !isInternal) {
       console.warn(
@@ -332,70 +339,80 @@ const server = http.createServer((req, res) => {
 
     let body = "";
     req.on("data", (chunk) => (body += chunk));
+    req.on("error", (err) => {
+      console.error(`[webapp] Request stream error on /api/presign: ${err.message}`);
+    });
     req.on("end", () => {
-      try {
-        const newBundle = JSON.parse(body);
-        if (!newBundle.withdrawals || newBundle.withdrawals.length === 0) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: "Invalid bundle: withdrawals empty" }));
-          return;
-        }
+      // Serialize writes to presigned.json: chain onto the previous write's
+      // promise so concurrent requests don't race on file reads/writes.
+      const doWrite = () => {
+        try {
+          const newBundle = JSON.parse(body);
+          if (!newBundle.withdrawals || newBundle.withdrawals.length === 0) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "Invalid bundle: withdrawals empty" }));
+            return;
+          }
 
-        // Merge hoặc replace dựa trên nonce
-        let merged = newBundle;
-        let action = "saved";
+          // Merge hoặc replace dựa trên nonce
+          let merged = newBundle;
+          let action = "saved";
 
-        if (fs.existsSync(PRESIGNED_PATH)) {
-          try {
-            const old = JSON.parse(fs.readFileSync(PRESIGNED_PATH, "utf-8"));
-            if (old.withdrawals && old.withdrawals.length > 0) {
-              if (old.nonce === newBundle.nonce) {
-                // Cùng nonce → merge: thêm tier mới, thay tier trùng amountWei
-                const map = new Map();
-                let added = 0, replaced = 0;
-                for (const w of old.withdrawals) {
-                  if (w.amountWei) map.set(w.amountWei, w);
+          if (fs.existsSync(PRESIGNED_PATH)) {
+            try {
+              const old = JSON.parse(fs.readFileSync(PRESIGNED_PATH, "utf-8"));
+              if (old.withdrawals && old.withdrawals.length > 0) {
+                if (old.nonce === newBundle.nonce) {
+                  // Cùng nonce → merge: thêm tier mới, thay tier trùng amountWei
+                  const map = new Map();
+                  let added = 0, replaced = 0;
+                  for (const w of old.withdrawals) {
+                    if (w.amountWei) map.set(w.amountWei, w);
+                  }
+                  for (const w of newBundle.withdrawals) {
+                    if (!w.amountWei) continue;
+                    if (map.has(w.amountWei)) replaced++; else added++;
+                    map.set(w.amountWei, w);
+                  }
+                  merged = {
+                    ...newBundle,
+                    createdAt: old.createdAt,
+                    updatedAt: new Date().toISOString(),
+                    withdrawals: [...map.values()],
+                  };
+                  const parts = [];
+                  if (added > 0) parts.push(`${added} new`);
+                  if (replaced > 0) parts.push(`${replaced} updated`);
+                  if (map.size - added - replaced > 0) parts.push(`${map.size - added - replaced} kept`);
+                  action = `merged (${parts.join(", ")})`;
+                } else {
+                  // Khác nonce → thay toàn bộ (phiên ký mới)
+                  action = "replaced (new nonce)";
                 }
-                for (const w of newBundle.withdrawals) {
-                  if (!w.amountWei) continue;
-                  if (map.has(w.amountWei)) replaced++; else added++;
-                  map.set(w.amountWei, w);
-                }
-                merged = {
-                  ...newBundle,
-                  createdAt: old.createdAt,
-                  updatedAt: new Date().toISOString(),
-                  withdrawals: [...map.values()],
-                };
-                const parts = [];
-                if (added > 0) parts.push(`${added} new`);
-                if (replaced > 0) parts.push(`${replaced} updated`);
-                if (map.size - added - replaced > 0) parts.push(`${map.size - added - replaced} kept`);
-                action = `merged (${parts.join(", ")})`;
-              } else {
-                // Khác nonce → thay toàn bộ (phiên ký mới)
-                action = "replaced (new nonce)";
               }
-            }
-          } catch { /* corrupt — overwrite */ }
+            } catch { /* corrupt — overwrite */ }
+          }
+
+          // Atomic write
+          const tmpPath = PRESIGNED_PATH.replace(".json", ".tmp.json");
+          fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2));
+          fs.renameSync(tmpPath, PRESIGNED_PATH);
+          try { fs.chmodSync(PRESIGNED_PATH, 0o600); } catch {}
+
+          console.log(
+            `[${new Date().toISOString()}] 📝 Presigned bundle ${action}: ` +
+              `${merged.withdrawals.length} tiers, nonce=${newBundle.nonce}`
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, tiers: merged.withdrawals.length, action }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
         }
+      };
 
-        // Atomic write
-        const tmpPath = PRESIGNED_PATH.replace(".json", ".tmp.json");
-        fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2));
-        fs.renameSync(tmpPath, PRESIGNED_PATH);
-        try { fs.chmodSync(PRESIGNED_PATH, 0o600); } catch {}
-
-        console.log(
-          `[${new Date().toISOString()}] 📝 Presigned bundle ${action}: ` +
-            `${merged.withdrawals.length} tiers, nonce=${newBundle.nonce}`
-        );
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, tiers: merged.withdrawals.length, action }));
-      } catch (err) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
+      // Chain onto write lock to serialize concurrent presigned.json access
+      writeLock = writeLock.then(doWrite, doWrite);
     });
     return;
   }

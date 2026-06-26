@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, fallback, http } from "viem";
+import { createPublicClient, createWalletClient, http } from "viem";
 import { mainnet } from "viem/chains";
 
 // ============================================================
@@ -151,19 +151,19 @@ function isTransportError(err) {
 /**
  * Returns a transport factory (like viem's http()) that wraps each
  * request with circuit breaker logic. When the circuit is OPEN,
- * requests to this URL fail instantly, allowing viem's fallback
- * transport to move to the next URL.
+ * requests to this URL fail instantly (code=-1), allowing the
+ * round-robin transport to skip to the next URL.
  *
  * @param {string} url - RPC endpoint URL
  * @param {object} httpOptions - Options forwarded to viem's http()
- * @returns {function} transport factory compatible with viem's fallback()
+ * @returns {function} transport factory compatible with createRoundRobinTransport
  */
 function circuitHttp(url, httpOptions = {}) {
   return (config) => {
     const baseTransport = http(url, {
       timeout: 15_000,
       retryCount: 1,        // 1 retry = 2 total attempts per URL.
-      retryDelay: 300,      // With 9 fallback URLs, retrying the same URL
+      retryDelay: 300,      // With 9 URLs in rotation, retrying the same URL
       ...httpOptions,       // is less valuable than moving to the next one.
     })(config);
 
@@ -202,11 +202,73 @@ function circuitHttp(url, httpOptions = {}) {
 }
 
 // ============================================================
+// ROUND-ROBIN TRANSPORT — cycles through healthy URLs each request
+// ============================================================
+
+/**
+ * Creates a viem-compatible transport that round-robins across URLs.
+ * Each request starts at the next URL in rotation, distributing load
+ * evenly across all providers. Circuit-breaker OPEN URLs are skipped
+ * automatically.
+ *
+ * @param {string[]} urls - Array of RPC endpoint URLs
+ * @param {{ retryCount?: number, retryDelay?: number }} [opts]
+ * @returns {function} transport factory compatible with viem createPublicClient / createWalletClient
+ */
+export function createRoundRobinTransport(urls, opts = {}) {
+  const { retryCount = 1, retryDelay = 500 } = opts;
+  // Random starting position so each process distributes load differently
+  let roundRobinIndex = Math.floor(Math.random() * urls.length);
+
+  return (config) => {
+    const transports = urls.map((url) => circuitHttp(url)(config));
+
+    async function tryAllUrls(args, startIdx) {
+      let lastError;
+      for (let i = 0; i < urls.length; i++) {
+        const idx = (startIdx + i) % urls.length;
+        try {
+          const result = await transports[idx].request(args);
+          // Success — advance round-robin for the next request
+          roundRobinIndex = (idx + 1) % urls.length;
+          return result;
+        } catch (_err) {
+          lastError = _err;
+          // err.code === -1 (circuit OPEN) or transport error → try next URL
+        }
+      }
+      throw lastError;
+    }
+
+    return {
+      config: transports[0].config,
+      request: async (args) => {
+        let lastError;
+        for (let attempt = 0; attempt <= retryCount; attempt++) {
+          try {
+            return await tryAllUrls(args, roundRobinIndex % urls.length);
+          } catch (err) {
+            lastError = err;
+            if (attempt < retryCount) {
+              await new Promise((r) => setTimeout(r, retryDelay));
+            }
+          }
+        }
+        throw lastError;
+      },
+      get value() {
+        return transports[0].value;
+      },
+    };
+  };
+}
+
+// ============================================================
 // ROBUST CLIENT FACTORIES
 // ============================================================
 
 /**
- * Create a viem public client with fallback across all RPC URLs,
+ * Create a viem public client with round-robin across all RPC URLs,
  * circuit breaker per URL, and retry with exponential backoff.
  *
  * @param {string[]} urls - Array of RPC endpoint URLs
@@ -217,24 +279,12 @@ export function createRobustPublicClient(urls) {
     throw new Error("createRobustPublicClient: urls must be a non-empty array");
   }
 
-  // Shuffle URLs so each process (monitor, proxy) distributes its primary
-  // load across different providers instead of always hitting URL[0] first.
-  const shuffled = [...urls].sort(() => Math.random() - 0.5);
-  const transports = shuffled.map((url) => circuitHttp(url));
-
   return createPublicClient({
     chain: mainnet,
-    transport: fallback(transports, {
-      // rank: disabled — conflicts with circuit breaker fast-fail.
-      // When the circuit is OPEN, the near-instant throw (code=-1) can be
-      // misinterpreted by viem's ranker as a "fast" response, causing the
-      // broken URL to be favored over healthy ones. The circuit breaker
-      // already handles failover; ranking adds no value here.
-      rank: false,
-      // 2 retries = 3 total passes through the URL chain.
-      // Reduced from 3 (4 passes) since the circuit breaker already
-      // provides intelligent per-URL backoff.
-      retryCount: 2,
+    transport: createRoundRobinTransport(urls, {
+      // 1 retry = 2 total passes through the full URL rotation.
+      // The per-URL retry is handled inside circuitHttp (retryCount=1).
+      retryCount: 1,
       retryDelay: 500,
     }),
   });
@@ -251,14 +301,10 @@ export function createRobustWalletClient(urls) {
     throw new Error("createRobustWalletClient: urls must be a non-empty array");
   }
 
-  const shuffled = [...urls].sort(() => Math.random() - 0.5);
-  const transports = shuffled.map((url) => circuitHttp(url));
-
   return createWalletClient({
     chain: mainnet,
-    transport: fallback(transports, {
-      rank: false,
-      retryCount: 2,
+    transport: createRoundRobinTransport(urls, {
+      retryCount: 1,
       retryDelay: 500,
     }),
   });

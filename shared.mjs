@@ -12,7 +12,8 @@ export const env = (key, fallback) => process.env[key] ?? fallback;
 export const envNum = (key, fallback) => {
   const v = process.env[key];
   if (v === undefined || v === "") return fallback;
-  return Number(v);
+  const n = Number(v);
+  return isNaN(n) ? fallback : n;
 };
 
 // ---- Morpho Blue ----
@@ -118,12 +119,12 @@ export function shortenAddress(address) {
 }
 
 /**
- * Create a viem public client with fallback, retry, and circuit breaker.
+ * Create a viem public client with round-robin, retry, and circuit breaker.
  * Delegates to the robust client factory in rpc-client.mjs.
  *
- * Unlike the old sequential-try approach, this client uses viem's
- * `fallback` transport so that if one RPC URL fails mid-request,
- * subsequent requests automatically try the next URL with backoff.
+ * Uses the round-robin transport so that requests are distributed evenly
+ * across all RPC URLs. Circuit breaker per-URL automatically skips
+ * unhealthy endpoints.
  */
 export async function createClient(urls = RPC_URLS) {
   const { createRobustPublicClient } = await import("./rpc-client.mjs");
@@ -182,6 +183,41 @@ export function verifySessionToken(token) {
     return { address, expiresAt: expiry };
   } catch {
     return null;
+  }
+}
+
+// ============================================================
+// AUTH HELPERS (used by both webapp-server and proxy-rpc)
+// ============================================================
+
+/**
+ * Verify a Bearer token (HMAC-based, verifiable by both webapp-server and proxy-rpc).
+ * Returns { address, expiresAt } or null.
+ * @param {object} req - Node.js IncomingMessage
+ * @param {string} [devAddress="dev"] - address returned in dev mode (no WEBAPP_PASSWORD)
+ */
+export function verifyToken(req, devAddress = "dev") {
+  if (!WEBAPP_PASSWORD) return { address: devAddress, expiresAt: Infinity }; // dev mode
+  const auth = req.headers["authorization"];
+  if (!auth || !auth.startsWith("Bearer ")) return null;
+  const token = auth.slice(7);
+  return verifySessionToken(token);
+}
+
+/**
+ * Check internal secret (Basic Auth with WEBAPP_PASSWORD).
+ * Used for webapp-server ↔ proxy internal communication.
+ */
+export function checkInternalSecret(req) {
+  if (!WEBAPP_PASSWORD) return true;
+  const auth = req.headers["authorization"];
+  if (!auth || !auth.startsWith("Basic ")) return false;
+  try {
+    const [, encoded] = auth.split(" ");
+    const [, pass] = Buffer.from(encoded, "base64").toString("utf-8").split(":");
+    return pass === WEBAPP_PASSWORD;
+  } catch {
+    return false;
   }
 }
 

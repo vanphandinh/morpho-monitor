@@ -5,7 +5,29 @@ import {
   isCircuitOpen,
   getCircuit,
   circuits,
+  createRoundRobinTransport,
 } from "../rpc-client.mjs";
+
+// Track which URLs were actually called through the mocked HTTP transport
+const rpcCallLog = vi.hoisted(() => []);
+
+vi.mock("viem", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    http: vi.fn((url) => {
+      const req = vi.fn(() => {
+        rpcCallLog.push(url);
+        return Promise.resolve({ id: 1, jsonrpc: "2.0", result: "0x1" });
+      });
+      return () => ({
+        config: { url },
+        request: req,
+        value: {},
+      });
+    }),
+  };
+});
 
 const URL = "https://ethereum-rpc.publicnode.com";
 
@@ -286,5 +308,110 @@ describe("circuit breaker — HALF-OPEN state tracking", () => {
     expect(secondHits).toBe(1); // still 1, no duplicate
 
     logSpy.mockRestore();
+  });
+});
+
+// ==========================================================
+// ROUND-ROBIN TRANSPORT — load distribution across URLs
+// ==========================================================
+
+const RR_URLS = [
+  "https://rpc1.example.com",
+  "https://rpc2.example.com",
+  "https://rpc3.example.com",
+];
+
+describe("round-robin transport", () => {
+  beforeEach(() => {
+    circuits.clear();
+    rpcCallLog.length = 0;
+    // random() returns 0 → roundRobinIndex starts at 0
+    vi.spyOn(Math, "random").mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("cycles through URLs in round-robin order on successive requests", async () => {
+    const factory = createRoundRobinTransport([...RR_URLS]);
+    const transport = factory({});
+
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+
+    // URL[0], URL[1], URL[2] in order
+    expect(rpcCallLog).toEqual([RR_URLS[0], RR_URLS[1], RR_URLS[2]]);
+  });
+
+  it("wraps around to first URL after full rotation", async () => {
+    const factory = createRoundRobinTransport([...RR_URLS]);
+    const transport = factory({});
+
+    // Cycle through all 3 URLs, then one more
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+
+    expect(rpcCallLog).toEqual([
+      RR_URLS[0],
+      RR_URLS[1],
+      RR_URLS[2],
+      RR_URLS[0], // wrapped around
+    ]);
+  });
+
+  it("skips circuit-open URL and falls through to the next healthy one", async () => {
+    // Open circuit for URL[1] with rate-limit fast path (threshold=1)
+    recordFailure(RR_URLS[1], { isRateLimit: true });
+    expect(isCircuitOpen(RR_URLS[1])).toBe(true);
+
+    const factory = createRoundRobinTransport([...RR_URLS]);
+    const transport = factory({});
+
+    // Request 1: starts at index 0 → URL[0] succeeds → roundRobinIndex = 1
+    await transport.request({ method: "eth_blockNumber" });
+    // Request 2: starts at index 1 → URL[1] is OPEN → skip → URL[2] succeeds → roundRobinIndex = 0
+    await transport.request({ method: "eth_blockNumber" });
+
+    // URL[1] should never appear (it was skipped due to circuit OPEN)
+    expect(rpcCallLog).toEqual([RR_URLS[0], RR_URLS[2]]);
+    expect(rpcCallLog).not.toContain(RR_URLS[1]);
+  });
+
+  it("routes all traffic to the single healthy URL when others are open", async () => {
+    // Open circuits for URL[0] and URL[2]
+    recordFailure(RR_URLS[0], { isRateLimit: true });
+    recordFailure(RR_URLS[2], { isRateLimit: true });
+
+    const factory = createRoundRobinTransport([...RR_URLS]);
+    const transport = factory({});
+
+    // All 3 requests should go to URL[1] (the only healthy one)
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+    await transport.request({ method: "eth_blockNumber" });
+
+    expect(rpcCallLog).toEqual([RR_URLS[1], RR_URLS[1], RR_URLS[1]]);
+  });
+
+  it("retries the full URL rotation when all URLs fail on first pass", async () => {
+    // Open all circuits so every URL fails on first attempt
+    recordFailure(RR_URLS[0], { isRateLimit: true });
+    recordFailure(RR_URLS[1], { isRateLimit: true });
+    recordFailure(RR_URLS[2], { isRateLimit: true });
+
+    const factory = createRoundRobinTransport([...RR_URLS]);
+    const transport = factory({});
+
+    // Should throw after retryCount + 1 = 2 passes, all failing
+    await expect(
+      transport.request({ method: "eth_blockNumber" })
+    ).rejects.toBeDefined();
+
+    // No URL should have been successfully called (mock request never reached)
+    expect(rpcCallLog).toEqual([]);
   });
 });

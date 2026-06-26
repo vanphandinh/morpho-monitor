@@ -309,6 +309,10 @@ async function expireStaleBundle(client) {
  * Single check cycle. Returns { notified, liquidity } for logging.
  */
 async function checkAndNotify() {
+  // Reset daily counter early — must run even if RPC is down
+  // to ensure counters don't stay stale during extended outages.
+  resetDailyIfNeeded();
+
   // Check for stale presigned bundle (nonce mismatch with chain)
   await expireStaleBundle(publicClient);
 
@@ -361,9 +365,6 @@ async function checkAndNotify() {
     }
     return { notified: false, liquidity };
   }
-
-  // Reset daily counter
-  resetDailyIfNeeded();
 
   // Use pure-function anti-spam logic (from shared.mjs, independently testable)
   const decision = shouldNotify({

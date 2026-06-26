@@ -5,7 +5,8 @@ import {
   PROXY_PORT,
   WEBAPP_URL,
   WEBAPP_PASSWORD,
-  verifySessionToken,
+  verifyToken,
+  checkInternalSecret,
 } from "./shared.mjs";
 import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 
@@ -18,12 +19,13 @@ const PORT = PROXY_PORT || 8545;
 // STATE
 // ============================================================
 const capturedTxs = []; // [{ hash: "0x...", signedTx: "0x...", capturedAt: ISO }]
+let bundleInProgress = false; // mutex for POST /bundle — prevents concurrent race on capturedTxs
 
 // ============================================================
 // FAKE RESPONSES
 // ============================================================
 
-// Robust public client with fallback across all RPC URLs,
+// Robust public client with round-robin across all RPC URLs,
 // retry with backoff, and circuit breaker per URL.
 // Used for forwarding eth_getTransactionCount + startup block fetch.
 const publicClient = createRobustPublicClient(RPC_URLS);
@@ -144,7 +146,7 @@ async function handleRpc(method, params) {
 
     case "eth_getTransactionCount": {
       // Forward to real RPC to get the actual on-chain nonce.
-      // The robust client handles retry + fallback across all URLs.
+      // The robust client handles retry + round-robin across all URLs.
       // If ALL URLs fail after retries, the error propagates to the
       // JSON-RPC handler which returns a proper error response to the wallet.
       const address = params[0];
@@ -218,34 +220,7 @@ function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
 }
 
-/**
- * Verify a Bearer token (HMAC-based, verifiable by both webapp-server and proxy-rpc).
- * Returns { address, expiresAt } or null.
- */
-function verifyToken(req) {
-  if (!WEBAPP_PASSWORD) return { address: "dev", expiresAt: Infinity }; // dev mode
-  const auth = req.headers["authorization"];
-  if (!auth || !auth.startsWith("Bearer ")) return null;
-  const token = auth.slice(7);
-  return verifySessionToken(token);
-}
-
-/**
- * Check internal secret (Basic Auth with WEBAPP_PASSWORD).
- * Used for webapp-server → proxy internal communication.
- */
-function checkInternalSecret(req) {
-  if (!WEBAPP_PASSWORD) return true;
-  const auth = req.headers["authorization"];
-  if (!auth || !auth.startsWith("Basic ")) return false;
-  try {
-    const [, encoded] = auth.split(" ");
-    const [, pass] = Buffer.from(encoded, "base64").toString("utf-8").split(":");
-    return pass === WEBAPP_PASSWORD;
-  } catch {
-    return false;
-  }
-}
+// Auth helpers (verifyToken, checkInternalSecret) imported from shared.mjs
 
 const server = http.createServer(async (req, res) => {
   // CORS: mirror request origin (required for credentialed requests)
@@ -276,8 +251,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Mutex: only one bundle operation at a time to prevent concurrent
+    // requests from racing on the shared capturedTxs buffer.
+    if (bundleInProgress) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "Bundle operation already in progress" }));
+      return;
+    }
+    bundleInProgress = true;
+
     let body = "";
     req.on("data", (chunk) => (body += chunk));
+    req.on("error", (err) => {
+      bundleInProgress = false;
+      console.error(`[proxy] Request stream error on /bundle: ${err.message}`);
+    });
     req.on("end", async () => {
       try {
         const meta = JSON.parse(body);
@@ -337,7 +325,15 @@ const server = http.createServer(async (req, res) => {
           },
           body: JSON.stringify(bundle),
         });
-        const postResult = await postResp.json();
+
+        // Safe JSON parse — handle non-JSON responses gracefully
+        let postResult;
+        const respText = await postResp.text();
+        try {
+          postResult = JSON.parse(respText);
+        } catch {
+          postResult = { ok: false, error: `Non-JSON response (${postResp.status}): ${respText.slice(0, 200)}` };
+        }
 
         if (postResult.ok) {
           console.log(`[proxy] ✅ Bundle sent to server: ${withdrawals.length} tiers`);
@@ -352,6 +348,8 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: err.message }));
+      } finally {
+        bundleInProgress = false;
       }
     });
     return;
@@ -391,6 +389,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
+    req.on("error", (err) => {
+      console.error(`[proxy] Request stream error on JSON-RPC: ${err.message}`);
+    });
     req.on("end", async () => {
       res.setHeader("Content-Type", "application/json");
 
