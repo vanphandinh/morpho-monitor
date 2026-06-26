@@ -5,7 +5,10 @@ import { mainnet } from "viem/chains";
 // CIRCUIT BREAKER — per-URL failure tracking
 // ============================================================
 
-/** @type {Map<string, { failures: number, openUntil: number, backoffMs: number }>} */
+/**
+ * @typedef {{ failures: number, openUntil: number, backoffMs: number, probing: boolean }} CircuitState
+ * @type {Map<string, CircuitState>}
+ */
 const circuits = new Map();
 
 const CB_MAX_FAILURES = 3;
@@ -14,25 +17,47 @@ const CB_MAX_BACKOFF_MS = 120_000; // 2 min
 
 function getCircuit(url) {
   if (!circuits.has(url)) {
-    circuits.set(url, { failures: 0, openUntil: 0, backoffMs: CB_BASE_BACKOFF_MS });
+    circuits.set(url, { failures: 0, openUntil: 0, backoffMs: CB_BASE_BACKOFF_MS, probing: false });
   }
   return circuits.get(url);
 }
 
 function recordSuccess(url) {
   const c = getCircuit(url);
-  if (c.failures > 0 || c.openUntil > 0) {
+  if (c.probing) {
+    // Successful HALF-OPEN probe — circuit has recovered
+    c.probing = false;
+    c.failures = 0;
+    c.openUntil = 0;
+    c.backoffMs = CB_BASE_BACKOFF_MS;
     console.log(`[rpc] Circuit CLOSED for ${new URL(url).hostname} — recovered`);
+    return;
   }
-  c.failures = 0;
-  c.openUntil = 0;
-  c.backoffMs = CB_BASE_BACKOFF_MS;
+  // Normal success in CLOSED state — decrement to smooth out transient failures.
+  // Don't reset to 0: a single stale in-flight success must not close a circuit
+  // that was just opened by concurrent failures.
+  if (c.failures > 0) {
+    c.failures--;
+  }
 }
 
 function recordFailure(url) {
   const c = getCircuit(url);
   c.failures++;
-  if (c.failures >= CB_MAX_FAILURES) {
+  if (c.probing) {
+    // HALF-OPEN probe failed — re-open the circuit with doubled backoff
+    c.probing = false;
+    c.openUntil = Date.now() + c.backoffMs;
+    c.backoffMs = Math.min(c.backoffMs * 2, CB_MAX_BACKOFF_MS);
+    console.warn(
+      `[rpc] Circuit OPEN for ${new URL(url).hostname} — ` +
+      `HALF-OPEN probe failed, cooldown ${c.backoffMs / 1000}s`
+    );
+    return;
+  }
+  // Only open if not already open (guards against concurrent failures
+  // that all arrive after the threshold was already crossed)
+  if (c.failures >= CB_MAX_FAILURES && c.openUntil === 0) {
     c.openUntil = Date.now() + c.backoffMs;
     console.warn(
       `[rpc] Circuit OPEN for ${new URL(url).hostname} — ` +
@@ -48,10 +73,14 @@ function isCircuitOpen(url) {
     if (Date.now() < c.openUntil) return true;
     // Cooldown expired → transition to HALF-OPEN
     c.openUntil = 0;
+    c.probing = true;
     console.log(`[rpc] Circuit HALF-OPEN for ${new URL(url).hostname} — probing`);
   }
   return false;
 }
+
+// Exported for testing
+export { recordSuccess, recordFailure, isCircuitOpen, getCircuit, circuits };
 
 // ============================================================
 // ERROR CLASSIFICATION
