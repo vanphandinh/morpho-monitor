@@ -112,8 +112,70 @@ Detects the user's wallet by checking EIP-1193 provider flags: `e.isRabby`, `e.i
 - **`--env-file=.env`** flag required for all `node` commands. The `.env` file is gitignored; `.env.example` is the template.
 - **Port conventions:** webapp=3000, proxy=8545. Proxy URL is auto-derived from `WEBAPP_URL` host + `PROXY_PORT`.
 - **Docker:** `docker-compose.yml` runs all three services under a supervisor shell script that auto-restarts crashed processes.
+- **HTTPS/SSL:** Servers support HTTPS khi `SSL_CERT_PATH` và `SSL_KEY_PATH` được set trong `.env`. Để trống cả hai → chạy HTTP như cũ. Xem hướng dẫn thiết lập Let's Encrypt bên dưới.
 - **`webapp.html` hardcodes RPC URLs** identically to `shared.mjs`. Both files must be updated together when URLs change.
 - **`env()` uses `??` (nullish coalescing)** — returns empty string `""` (not fallback) when the env var is set to `""`. Important for `NTFY_TOPIC` and `WEBAPP_PASSWORD`: setting them to `""` enables dev mode / no auth, while leaving them unset uses the fallback value.
+
+## HTTPS với Let's Encrypt trên VPS
+
+Toàn bộ `/etc/letsencrypt` được mount read-only vào `/certs/` trong container.
+Không cần copy certs — Let's Encrypt tự renew, container tự động dùng cert mới sau khi restart.
+
+### 1. Cài đặt certbot và lấy chứng chỉ
+
+```bash
+# Cài certbot (Ubuntu/Debian)
+sudo apt install certbot
+
+# Lấy chứng chỉ (yêu cầu domain trỏ về VPS và port 80 mở)
+sudo certbot certonly --standalone -d your-domain.com
+```
+
+### 2. Cấu hình .env
+
+```ini
+# SSL — thay your-domain.com bằng tên miền thật
+SSL_CERT_PATH=/certs/live/your-domain.com/fullchain.pem
+SSL_KEY_PATH=/certs/live/your-domain.com/privkey.pem
+
+# Cập nhật URL sang HTTPS
+WEBAPP_URL=https://your-domain.com
+# PROXY_RPC_URL sẽ tự động derive thành https://your-domain.com:8545
+```
+
+### 3. docker-compose.yml
+
+Mount `/etc/letsencrypt` đã được cấu hình sẵn (dòng `- /etc/letsencrypt:/certs/:ro`). Không cần chỉnh sửa.
+
+### 4. Mở port trên firewall
+
+```bash
+sudo ufw allow 3000/tcp
+sudo ufw allow 8545/tcp
+```
+
+### 5. Khởi động
+
+```bash
+docker compose up -d --build
+# Kiểm tra: curl -v https://your-domain.com:3000
+```
+
+### 6. Tự động renew chứng chỉ
+
+Certbot tự động renew qua systemd timer. Chỉ cần restart container để load cert mới:
+
+```bash
+# /etc/letsencrypt/renewal-hooks/deploy/morpho.sh
+#!/bin/bash
+docker restart morpho
+```
+
+```bash
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/morpho.sh
+```
+
+Kiểm tra timer: `systemctl status certbot.timer`.
 
 ## Sharp edges
 

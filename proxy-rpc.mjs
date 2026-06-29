@@ -1,10 +1,15 @@
 import http from "node:http";
+import https from "node:https";
+import fs from "node:fs";
 import { keccak256, toHex } from "viem";
 import {
   RPC_URLS,
   PROXY_PORT,
   WEBAPP_URL,
   WEBAPP_PASSWORD,
+  USE_SSL,
+  SSL_CERT_PATH,
+  SSL_KEY_PATH,
   verifyToken,
   checkInternalSecret,
 } from "./shared.mjs";
@@ -222,7 +227,25 @@ function jsonRpcResult(id, result) {
 
 // Auth helpers (verifyToken, checkInternalSecret) imported from shared.mjs
 
-const server = http.createServer(async (req, res) => {
+// ---- SSL/TLS setup ----
+let sslOptions = null;
+if (USE_SSL) {
+  try {
+    sslOptions = {
+      cert: fs.readFileSync(SSL_CERT_PATH, "utf-8"),
+      key: fs.readFileSync(SSL_KEY_PATH, "utf-8"),
+    };
+  } catch (err) {
+    console.error(`❌ Không đọc được chứng chỉ SSL: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// Conditional server: HTTPS nếu có cert, HTTP nếu không
+const createServer = (handler) =>
+  sslOptions ? https.createServer(sslOptions, handler) : http.createServer(handler);
+
+const server = createServer(async (req, res) => {
   // CORS: mirror request origin (required for credentialed requests)
   const origin = req.headers["origin"];
   if (origin) {
@@ -453,19 +476,21 @@ const server = http.createServer(async (req, res) => {
   res.end("proxy-rpc: use POST for JSON-RPC");
 });
 
+const proto = sslOptions ? "https" : "http";
 server.listen(PORT, "0.0.0.0", () => {
   console.log("");
   console.log("╔══════════════════════════════════════════════════════════╗");
   console.log("║   Morpho Blue — RPC Proxy (Capture Signed Tx)          ║");
   console.log("╚══════════════════════════════════════════════════════════╝");
   console.log("");
-  console.log(`  🔌 Proxy:    http://127.0.0.1:${PORT}`);
-  console.log(`  📊 Status:   http://127.0.0.1:${PORT}/captured`);
-  console.log(`  🔗 Bundle:   POST http://127.0.0.1:${PORT}/bundle`);
+  console.log(`  🔌 Proxy:    ${proto}://127.0.0.1:${PORT}`);
+  console.log(`  📊 Status:   ${proto}://127.0.0.1:${PORT}/captured`);
+  console.log(`  🔗 Bundle:   POST ${proto}://127.0.0.1:${PORT}/bundle`);
+  if (sslOptions) console.log(`  🔒 SSL enabled — cert: ${SSL_CERT_PATH}`);
   console.log("");
   console.log("  📋 Hướng dẫn MetaMask:");
   console.log(`     1. Settings → Networks → Add Network`);
-  console.log(`     2. RPC URL: http://127.0.0.1:${PORT}`);
+  console.log(`     2. RPC URL: ${proto}://127.0.0.1:${PORT}`);
   console.log(`     3. Chain ID: 1`);
   console.log(`     4. Symbol: ETH`);
   console.log("");

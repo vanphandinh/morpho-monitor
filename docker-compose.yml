@@ -9,6 +9,13 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - presigned_data:/app/data
+      # ---- SSL/TLS (Let's Encrypt) ----
+      # Mount toàn bộ /etc/letsencrypt vào /certs/ (read-only).
+      # Khi chưa có cert, thư mục rỗng không ảnh hưởng — server vẫn chạy HTTP.
+      # Để bật HTTPS, set trong .env:
+      #   SSL_CERT_PATH=/certs/live/your-domain.com/fullchain.pem
+      #   SSL_KEY_PATH=/certs/live/your-domain.com/privkey.pem
+      - /etc/letsencrypt:/certs/:ro
 
 volumes:
   presigned_data:

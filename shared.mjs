@@ -65,6 +65,12 @@ export const NTFY_TOPIC = env("NTFY_TOPIC", ""); // empty = auto-generate
 export const WEBAPP_URL = env("WEBAPP_URL", "http://localhost:3000");
 export const WEBAPP_PORT = envNum("WEBAPP_PORT", 3000);
 
+// ---- SSL/TLS (để trống = HTTP, thiết lập = HTTPS) ----
+// Đường dẫn tới fullchain.pem và privkey.pem (Let's Encrypt)
+export const SSL_CERT_PATH = env("SSL_CERT_PATH", "");
+export const SSL_KEY_PATH = env("SSL_KEY_PATH", "");
+export const USE_SSL = !!(SSL_CERT_PATH && SSL_KEY_PATH);
+
 // ---- Webapp Auth ----
 export const WEBAPP_PASSWORD = env("WEBAPP_PASSWORD", ""); // internal secret for proxy↔webapp
 export const SESSION_EXPIRY_MS = envNum("SESSION_EXPIRY_HOURS", 24) * 60 * 60 * 1000;

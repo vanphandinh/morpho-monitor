@@ -1,4 +1,5 @@
 import http from "node:http";
+import https from "node:https";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -12,6 +13,9 @@ import {
   LENDER_ADDRESS,
   SESSION_EXPIRY_MS,
   CHALLENGE_EXPIRY_MS,
+  USE_SSL,
+  SSL_CERT_PATH,
+  SSL_KEY_PATH,
   recoverSignerAddress,
   createSessionToken,
   verifyToken,
@@ -81,7 +85,25 @@ console.log(`[presign] 👛 Lender address: ${LENDER_ADDRESS}`);
 // Auth helpers (verifyToken, checkInternalSecret) imported from shared.mjs.
 // verifyToken is called with LENDER_ADDRESS as devAddress so dev mode returns the correct lender.
 
-const server = http.createServer((req, res) => {
+// ---- SSL/TLS setup ----
+let sslOptions = null;
+if (USE_SSL) {
+  try {
+    sslOptions = {
+      cert: fs.readFileSync(SSL_CERT_PATH, "utf-8"),
+      key: fs.readFileSync(SSL_KEY_PATH, "utf-8"),
+    };
+  } catch (err) {
+    console.error(`❌ Không đọc được chứng chỉ SSL: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// Conditional server: HTTPS nếu có cert, HTTP nếu không
+const createServer = (handler) =>
+  sslOptions ? https.createServer(sslOptions, handler) : http.createServer(handler);
+
+const server = createServer((req, res) => {
   // ---- Auth: static HTML page is now public (auth via wallet in JS) ----
   // No Basic Auth prompt on page load — the frontend handles sign-in.
 
@@ -449,13 +471,15 @@ const server = http.createServer((req, res) => {
   res.end(htmlContent);
 });
 
+const proto = sslOptions ? "https" : "http";
 server.listen(PORT, "0.0.0.0", () => {
   console.log("╔══════════════════════════════════════════════════════════╗");
   console.log("║   Morpho Blue - Withdrawal Webapp Server               ║");
   console.log("╚══════════════════════════════════════════════════════════╝");
   console.log("");
-  console.log(`  🌐 Webapp đang chạy tại: http://0.0.0.0:${PORT}`);
-  console.log(`  📱 Local:               http://localhost:${PORT}`);
+  console.log(`  🌐 Webapp đang chạy tại: ${proto}://0.0.0.0:${PORT}`);
+  console.log(`  📱 Local:               ${proto}://localhost:${PORT}`);
+  if (sslOptions) console.log(`  🔒 SSL enabled — cert: ${SSL_CERT_PATH}`);
   console.log("");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("  Nhấn Ctrl+C để dừng");
