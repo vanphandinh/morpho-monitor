@@ -94,10 +94,16 @@ const txNonces = []; // thu thập nonce từ tất cả tx để cross-check
 
 for (let i = 0; i < bundle.withdrawals.length; i++) {
   const w = bundle.withdrawals[i];
+  const isAllShares = w.type === "all-shares";
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  console.log(`📌 Tier ${i + 1}: "${w.label || "N/A"}"`);
-  console.log(`   amountWei:         ${w.amountWei} (${formatUnits(BigInt(w.amountWei || "0"), 6)} USDC)`);
-  console.log(`   amountFormatted:   ${w.amountFormatted || "N/A"}`);
+  console.log(`📌 ${isAllShares ? "All-Shares" : `Tier ${i + 1}`}: "${w.label || "N/A"}"`);
+  if (isAllShares) {
+    console.log(`   sharesWei:         ${w.sharesWei || "N/A"}`);
+    console.log(`   amountFormatted:   ${w.amountFormatted || "N/A"}`);
+  } else {
+    console.log(`   amountWei:         ${w.amountWei} (${formatUnits(BigInt(w.amountWei || "0"), 6)} USDC)`);
+    console.log(`   amountFormatted:   ${w.amountFormatted || "N/A"}`);
+  }
 
   if (!w.signedTx) {
     console.log(`   ❌ KHÔNG CÓ signedTx`);
@@ -175,14 +181,29 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
   }
 
   // Compare
-  if (assets && w.amountWei && BigInt(assets) === BigInt(w.amountWei)) {
-    console.log(`   ✅ KHỚP: assets = amountWei = ${assets.toString()}`);
-    matched++;
+  if (isAllShares) {
+    // All-shares: compare shares param (args[2]) with sharesWei label
+    const shares = args[2]; // shares là param thứ 3
+    console.log(`   ── All-Shares Withdraw ──`);
+    console.log(`   shares (signedTx): ${shares?.toString() || "N/A"}`);
+    console.log(`   sharesWei (label): ${w.sharesWei || "N/A"}`);
+    if (shares && w.sharesWei && BigInt(shares) === BigInt(w.sharesWei)) {
+      console.log(`   ✅ KHỚP: shares = sharesWei = ${shares.toString()}`);
+      matched++;
+    } else {
+      console.log(`   ❌ MISMATCH: signed shares=${shares?.toString()}, label sharesWei=${w.sharesWei}`);
+      mismatched++;
+    }
   } else {
-    console.log(`   ❌ MISMATCH:`);
-    console.log(`      amountWei (label): ${w.amountWei} (${w.amountFormatted})`);
-    console.log(`      assets (signedTx): ${assets?.toString() || "N/A"} (${assets ? formatUnits(assets, 6) + " USDC" : "N/A"})`);
-    mismatched++;
+    if (assets && w.amountWei && BigInt(assets) === BigInt(w.amountWei)) {
+      console.log(`   ✅ KHỚP: assets = amountWei = ${assets.toString()}`);
+      matched++;
+    } else {
+      console.log(`   ❌ MISMATCH:`);
+      console.log(`      amountWei (label): ${w.amountWei} (${w.amountFormatted})`);
+      console.log(`      assets (signedTx): ${assets?.toString() || "N/A"} (${assets ? formatUnits(assets, 6) + " USDC" : "N/A"})`);
+      mismatched++;
+    }
   }
 }
 

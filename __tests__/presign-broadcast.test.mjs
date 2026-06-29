@@ -57,7 +57,11 @@ function validatePresignedBundle(bundle) {
   } else {
     bundle.withdrawals.forEach((w, i) => {
       if (!w.signedTx) errors.push(`withdrawals[${i}]: missing signedTx`);
-      if (!w.amountWei) errors.push(`withdrawals[${i}]: missing amountWei`);
+      if (w.type === "all-shares") {
+        if (!w.sharesWei) errors.push(`withdrawals[${i}]: all-shares entry missing sharesWei`);
+      } else {
+        if (!w.amountWei) errors.push(`withdrawals[${i}]: missing amountWei`);
+      }
       if (!w.amountFormatted) errors.push(`withdrawals[${i}]: missing amountFormatted`);
     });
   }
@@ -252,5 +256,108 @@ describe("validatePresignedBundle", () => {
     const bundle = { ...validBundle, nonce: 0 };
     const result = validatePresignedBundle(bundle);
     expect(result.valid).toBe(true);
+  });
+
+  it("chấp nhận all-shares entry hợp lệ", () => {
+    const bundle = {
+      ...validBundle,
+      withdrawals: [{
+        type: "all-shares",
+        sharesWei: "123456789",
+        amountWei: "0",
+        amountFormatted: "Toàn bộ shares",
+        label: "Rút toàn bộ shares",
+        signedTx: "0x02f8abcd",
+      }],
+    };
+    const result = validatePresignedBundle(bundle);
+    expect(result.valid).toBe(true);
+  });
+
+  it("từ chối all-shares entry thiếu sharesWei", () => {
+    const bundle = {
+      ...validBundle,
+      withdrawals: [{
+        type: "all-shares",
+        amountWei: "0",
+        amountFormatted: "Toàn bộ shares",
+        signedTx: "0x02f8abcd",
+      }],
+    };
+    const result = validatePresignedBundle(bundle);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("sharesWei"))).toBe(true);
+  });
+
+  it("chấp nhận bundle hỗn hợp tier + all-shares", () => {
+    const bundle = {
+      ...validBundle,
+      withdrawals: [
+        {
+          label: "50k USDC",
+          amountWei: "50000000000",
+          amountFormatted: "50000 USDC",
+          signedTx: "0x02f8abcd",
+        },
+        {
+          type: "all-shares",
+          sharesWei: "987654321",
+          amountWei: "0",
+          amountFormatted: "Toàn bộ shares",
+          label: "Rút toàn bộ shares",
+          signedTx: "0x02f8ef01",
+        },
+      ],
+    };
+    const result = validatePresignedBundle(bundle);
+    expect(result.valid).toBe(true);
+  });
+});
+
+// ============================================================
+// TESTS: estimateSharesValue
+// ============================================================
+
+describe("estimateSharesValue", () => {
+  /**
+   * Estimate the current asset value of a shares amount using pool exchange rate.
+   * Duplicated từ monitor.mjs để test độc lập.
+   */
+  function estimateSharesValue(sharesWei, totalSupplyAssets, totalSupplyShares) {
+    if (!totalSupplyShares || totalSupplyShares === 0n) return 0n;
+    return (BigInt(sharesWei) * totalSupplyAssets) / totalSupplyShares;
+  }
+
+  it("tính đúng giá trị assets từ shares", () => {
+    // 100 shares out of 1000 total, pool has 500,000 USDC totalSupplyAssets
+    const result = estimateSharesValue("100", 500_000_000000n, 1000n);
+    expect(result).toBe(50_000_000000n); // 50,000 USDC
+  });
+
+  it("tính đúng với số lượng shares lớn", () => {
+    // All 1000 shares = 500,000 USDC
+    const result = estimateSharesValue("1000", 500_000_000000n, 1000n);
+    expect(result).toBe(500_000_000000n);
+  });
+
+  it("trả về 0 khi totalSupplyShares = 0", () => {
+    const result = estimateSharesValue("100", 500_000_000000n, 0n);
+    expect(result).toBe(0n);
+  });
+
+  it("trả về 0 khi totalSupplyShares = null/undefined", () => {
+    const result = estimateSharesValue("100", 500_000_000000n, null);
+    expect(result).toBe(0n);
+  });
+
+  it("trả về 0 khi shares = 0", () => {
+    const result = estimateSharesValue("0", 500_000_000000n, 1000n);
+    expect(result).toBe(0n);
+  });
+
+  it("làm tròn xuống (floor) với phép chia không chẵn", () => {
+    // 1 share out of 3 total, pool has 10 wei → floor(1*10/3) = 3
+    const result = estimateSharesValue("1", 10n, 3n);
+    expect(result).toBe(3n);
   });
 });

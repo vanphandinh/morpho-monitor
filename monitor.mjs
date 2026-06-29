@@ -129,10 +129,20 @@ async function sendNtfyNotification(
 // ============================================================
 
 /**
+ * Estimate the current asset value of a shares amount using pool exchange rate.
+ * Uses the same formula as Morpho: (shares * totalSupplyAssets) / totalSupplyShares
+ */
+function estimateSharesValue(sharesWei, totalSupplyAssets, totalSupplyShares) {
+  if (!totalSupplyShares || totalSupplyShares === 0n) return 0n;
+  return (BigInt(sharesWei) * totalSupplyAssets) / totalSupplyShares;
+}
+
+/**
  * Load presigned bundle, select best tier ≤ liquidity, broadcast.
+ * Prioritizes "withdraw-all-shares" entries over fixed-amount tiers.
  * Returns { broadcasted: boolean, txHash?, tier? }.
  */
-async function broadcastPresigned(liquidity, loanToken) {
+async function broadcastPresigned(liquidity, loanToken, market) {
   // 1. Check file exists
   if (!fs.existsSync(PRESIGNED_FILE)) {
     return { broadcasted: false };
@@ -170,35 +180,67 @@ async function broadcastPresigned(liquidity, loanToken) {
       `${bundle.withdrawals.length} tiers, nonce=${bundle.nonce}`
   );
 
-  // 4. Select best tier: largest amount ≤ liquidity
-  const sorted = [...bundle.withdrawals]
-    .filter(w => w.amountWei && w.signedTx)
-    .sort((a, b) => {
-      const diff = BigInt(a.amountWei) - BigInt(b.amountWei);
-      if (diff > 0n) return 1;
-      if (diff < 0n) return -1;
-      return 0;
-    });
-
-  // Find largest tier where amountWei ≤ liquidity
+  // 4. First, check for "withdraw-all-shares" entry (prioritize over fixed tiers)
   let best = null;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    if (BigInt(sorted[i].amountWei) <= liquidity) {
-      best = sorted[i];
-      break;
+  const allSharesEntry = bundle.withdrawals.find(
+    w => w.type === "all-shares" && w.sharesWei && w.signedTx
+  );
+
+  if (allSharesEntry && market?.totalSupplyAssets != null && market?.totalSupplyShares != null) {
+    const estimatedAssets = estimateSharesValue(
+      allSharesEntry.sharesWei,
+      market.totalSupplyAssets,
+      market.totalSupplyShares
+    );
+
+    console.log(
+      `[${new Date().toISOString()}] ℹ️  Phát hiện withdraw-all entry: ` +
+        `${allSharesEntry.sharesWei} shares, ước tính ${formatTokenAmount(estimatedAssets, dec, sym)}, ` +
+        `thanh khoản: ${formatTokenAmount(liquidity, dec, sym)}`
+    );
+
+    if (estimatedAssets > 0n && estimatedAssets <= liquidity) {
+      best = allSharesEntry;
+      console.log(
+        `[${new Date().toISOString()}] 🎯 Chọn withdraw-all (ước tính ${formatTokenAmount(estimatedAssets, dec, sym)} ≤ liquidity)`
+      );
+    } else {
+      console.log(
+        `[${new Date().toISOString()}] ℹ️  Withdraw-all cần ~${formatTokenAmount(estimatedAssets, dec, sym)} ` +
+          `nhưng thanh khoản chỉ ${formatTokenAmount(liquidity, dec, sym)} — fallback xuống tier`
+      );
+    }
+  }
+
+  // 5. Fall back to tier selection if no all-shares entry chosen
+  if (!best) {
+    const sorted = [...bundle.withdrawals]
+      .filter(w => w.amountWei && w.signedTx && w.type !== "all-shares")
+      .sort((a, b) => {
+        const diff = BigInt(a.amountWei) - BigInt(b.amountWei);
+        if (diff > 0n) return 1;
+        if (diff < 0n) return -1;
+        return 0;
+      });
+
+    // Find largest tier where amountWei ≤ liquidity
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      if (BigInt(sorted[i].amountWei) <= liquidity) {
+        best = sorted[i];
+        break;
+      }
     }
   }
 
   if (!best) {
     console.log(
       `[${new Date().toISOString()}] ℹ️  Presigned bundle có nhưng không tier nào ≤ ` +
-        `thanh khoản (${formatTokenAmount(liquidity, dec, sym)}). Tier nhỏ nhất: ` +
-        `${sorted[0]?.amountFormatted ?? "N/A"}`
+        `thanh khoản (${formatTokenAmount(liquidity, dec, sym)}).`
     );
     return { broadcasted: false };
   }
 
-  // 5. Broadcast
+  // 6. Broadcast
   console.log(
     `[${new Date().toISOString()}] 🔄 Đang broadcast presigned tier ` +
       `"${best.label}" (${best.amountFormatted})...`
@@ -213,7 +255,7 @@ async function broadcastPresigned(liquidity, loanToken) {
       `[${new Date().toISOString()}] ✅ Đã broadcast presigned tx: ${txHash}`
     );
 
-    // 6. Mark as used — rename file
+    // 7. Mark as used — rename file
     bundle.status = "broadcast";
     bundle.broadcastedAt = new Date().toISOString();
     bundle.broadcastedTier = best.label;
@@ -449,7 +491,7 @@ async function checkAndNotify() {
 
   // Try presigned broadcast (independent of notification logic)
   if (liquidity > 0n) {
-    const presignResult = await broadcastPresigned(liquidity, loanToken);
+    const presignResult = await broadcastPresigned(liquidity, loanToken, market);
     if (presignResult.broadcasted) {
       console.log(
         `[${new Date().toISOString()}] 🎯 Presigned broadcast thành công: ` +

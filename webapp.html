@@ -391,6 +391,25 @@
       <div class="card" id="presign-existing-info"></div>
     </div>
 
+    <!-- Withdraw All Shares -->
+    <div id="presign-withdraw-all-section" style="display:none">
+      <h2>🔄 Rút Toàn Bộ Shares</h2>
+      <div class="card">
+        <div class="row">
+          <span class="label">Supply Shares:</span>
+          <span class="value" id="presign-supply-shares">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Supply Assets (ước tính):</span>
+          <span class="value" id="presign-supply-assets">—</span>
+        </div>
+        <div id="presign-withdraw-all-status" style="margin:8px 0;font-size:0.9rem"></div>
+        <button class="btn-danger" id="btn-sign-withdraw-all" onclick="signWithdrawAll()" disabled>
+          🔄 Ký Rút Toàn Bộ Shares
+        </button>
+      </div>
+    </div>
+
     <!-- Actions -->
     <div id="presign-actions" style="display:none">
       <h2>🚀 Ký & Lưu</h2>
@@ -545,6 +564,7 @@
     let currentTab = "withdraw";
     let presignedNonce = null;
     let presignedTiers = [];       // { amount: string, amountWei: string, signedTx: string, status: 'pending'|'signing'|'signed'|'error' }
+    let presignedWithdrawAll = null; // { sharesWei: string, txHash: string, status: 'pending'|'signing'|'signed'|'error' }
     let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
     let isSigningInProgress = false;
 
@@ -1092,10 +1112,16 @@
           document.getElementById("btn-sign-all").disabled = false;
         }
         updateAuthUI();
+        // Show rút toàn bộ shares section
+        const withdrawAllSec = document.getElementById("presign-withdraw-all-section");
+        if (withdrawAllSec) withdrawAllSec.style.display = "block";
+        renderPresignWithdrawAllInfo();
       } else {
         statusEl.style.display = "block";
         connectedEl.style.display = "none";
         document.getElementById("btn-sign-all").disabled = true;
+        const withdrawAllSec = document.getElementById("presign-withdraw-all-section");
+        if (withdrawAllSec) withdrawAllSec.style.display = "none";
       }
     }
 
@@ -1209,8 +1235,18 @@
         presignedGas.maxPriorityFeePerGas = null;
       }
       // Reset signed state if gas changed (cần ký lại)
+      let gasChanged = false;
       if (presignedTiers.some(t => t.status === "signed")) {
         document.getElementById("btn-save-server").disabled = true;
+        gasChanged = true;
+      }
+      if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
+        document.getElementById("btn-save-server").disabled = true;
+        presignedWithdrawAll = null;
+        gasChanged = true;
+      }
+      if (gasChanged) {
+        showPresignError("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
       }
       updateSignButton();
     };
@@ -1219,6 +1255,11 @@
       const btn = document.getElementById("btn-sign-all");
       if (currentAccount && presignedNonce !== null && presignedGas.maxFeePerGas && presignedTiers.length > 0) {
         btn.disabled = false;
+      }
+      // Enable/disable nút rút toàn bộ shares
+      const btnAll = document.getElementById("btn-sign-withdraw-all");
+      if (btnAll) {
+        btnAll.disabled = !(currentAccount && presignedNonce !== null && presignedGas.maxFeePerGas);
       }
     }
 
@@ -1378,19 +1419,118 @@
       isSigningInProgress = false;
     };
 
+    // ============================================================
+    // PRESIGN: SIGN WITHDRAW ALL SHARES
+    // ============================================================
+    window.signWithdrawAll = async function() {
+      if (isSigningInProgress) return;
+
+      // Validate
+      if (!walletClient || !currentAccount) {
+        showPresignError("Vui lòng kết nối ví trước.");
+        return;
+      }
+      if (presignedNonce === null) {
+        showPresignError("Vui lòng lấy nonce trước.");
+        return;
+      }
+      onGasInputChange();
+      if (!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+        showPresignError("Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
+        return;
+      }
+
+      // Re-fetch position để có supplyShares mới nhất
+      try {
+        const position = await publicClient.readContract({
+          address: MORPHO_BLUE,
+          abi: MORPHO_ABI,
+          functionName: "position",
+          args: [marketId, lenderAddress],
+        });
+        positionData.supplyShares = position[0];
+      } catch {
+        // Fall back to cached value — nếu không có thì báo lỗi
+      }
+
+      const shares = positionData.supplyShares;
+      if (!shares || shares === 0n) {
+        showPresignError("Bạn không có supply shares để rút.");
+        return;
+      }
+
+      isSigningInProgress = true;
+      const btn = document.getElementById("btn-sign-withdraw-all");
+      btn.disabled = true;
+      btn.textContent = "⏳ Đang ký...";
+      const statusEl = document.getElementById("presign-withdraw-all-status");
+      statusEl.innerHTML = '<span style="color:var(--yellow)">⏳ Đang ký giao dịch rút toàn bộ shares...</span>';
+
+      try {
+        const calldata = encodeFunctionData({
+          abi: MORPHO_ABI,
+          functionName: "withdraw",
+          args: [marketParams, 0n, shares, lenderAddress, currentAccount],
+        });
+
+        const txHash = await walletClient.sendTransaction({
+          to: MORPHO_BLUE,
+          data: calldata,
+          value: 0n,
+          nonce: presignedNonce,
+          gas: 200000n,
+          maxFeePerGas: presignedGas.maxFeePerGas,
+          maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas,
+          chain: mainnet,
+          account: currentAccount,
+        });
+
+        presignedWithdrawAll = {
+          sharesWei: shares.toString(),
+          txHash: txHash,
+          status: "signed",
+        };
+
+        btn.textContent = "✅ Đã Ký";
+        statusEl.innerHTML = '<span style="color:var(--green)">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>';
+        document.getElementById("btn-save-server").disabled = false;
+      } catch (err) {
+        presignedWithdrawAll = { status: "error", error: err.message };
+        btn.textContent = "🔄 Ký Rút Toàn Bộ Shares";
+        statusEl.innerHTML = `<span style="color:var(--red)">❌ Lỗi: ${err.message}</span>`;
+      } finally {
+        isSigningInProgress = false;
+        btn.disabled = false;
+      }
+    };
+
     function buildPresignedBundle() {
       // Đọc gas mới nhất từ input (phòng trường hợp user sửa sau khi ký)
       onGasInputChange();
       const signedTiers = presignedTiers.filter(t => t.status === "signed");
       // Gửi metadata (không signedTx) — proxy sẽ ghép với signed tx đã capture
+      const tiers = signedTiers.map((tier) => ({
+        amount: tier.amount,
+        amountWei: tier.amountWei,
+        amountFormatted: `${tier.amount} ${loanToken.symbol}`,
+        label: `${tier.amount} ${loanToken.symbol}`,
+        txHash: tier.txHash,       // match với signedTx trong proxy
+      }));
+
+      // Append withdraw-all-shares entry nếu đã ký
+      if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
+        tiers.push({
+          type: "all-shares",
+          sharesWei: presignedWithdrawAll.sharesWei,
+          amountWei: "0",
+          amountFormatted: "Toàn bộ shares",
+          label: "Rút toàn bộ shares",
+          txHash: presignedWithdrawAll.txHash,
+        });
+      }
+
       return {
-        tiers: signedTiers.map((tier) => ({
-          amount: tier.amount,
-          amountWei: tier.amountWei,
-          amountFormatted: `${tier.amount} ${loanToken.symbol}`,
-          label: `${tier.amount} ${loanToken.symbol}`,
-          txHash: tier.txHash,       // match với signedTx trong proxy
-        })),
+        tiers,
         morphoBlueAddress: MORPHO_BLUE,
         marketId: marketId,
         lenderAddress: lenderAddress,
@@ -1499,6 +1639,17 @@
       document.getElementById("presign-position-section").style.display = "block";
     }
 
+    function renderPresignWithdrawAllInfo() {
+      const sharesEl = document.getElementById("presign-supply-shares");
+      const assetsEl = document.getElementById("presign-supply-assets");
+      if (sharesEl && positionData.supplyShares != null) {
+        sharesEl.textContent = positionData.supplyShares.toString();
+      }
+      if (assetsEl && marketData.supplyAssets != null) {
+        assetsEl.textContent = formatToken(marketData.supplyAssets, loanToken);
+      }
+    }
+
     // ============================================================
     // PRESIGN: FETCH EXISTING BUNDLE
     // ============================================================
@@ -1532,11 +1683,17 @@
           : '<span style="color:var(--text-dim)">' + data.status + '</span>';
 
         const tiersHtml = data.tiers.length > 0
-          ? data.tiers.map((t, i) =>
-              `<div class="row"><span class="label">${t.label || t.amountFormatted}</span>` +
-              `<span class="value">${t.amountFormatted}` +
-              ` <button class="btn-outline" onclick="deleteTierFromBundle(${i})" style="padding:2px 8px;font-size:0.75rem;width:auto">✕</button></span></div>`
-            ).join("")
+          ? data.tiers.map((t, i) => {
+              const label = t.type === "all-shares"
+                ? `🔄 Rút toàn bộ shares (${t.sharesWei || "?"} shares)`
+                : (t.label || t.amountFormatted);
+              const display = t.type === "all-shares"
+                ? "Toàn bộ shares"
+                : t.amountFormatted;
+              return `<div class="row"><span class="label">${label}</span>` +
+                `<span class="value">${display}` +
+                ` <button class="btn-outline" onclick="deleteTierFromBundle(${i})" style="padding:2px 8px;font-size:0.75rem;width:auto">✕</button></span></div>`;
+            }).join("")
           : '<p style="color:var(--text-dim);font-size:0.85rem">Không có tier nào</p>';
 
         document.getElementById("presign-existing-info").innerHTML = [

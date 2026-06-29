@@ -207,11 +207,18 @@ const server = http.createServer((req, res) => {
           status: bundle.status || "unknown",
           nonce: bundle.nonce,
           createdAt: bundle.createdAt,
-          tiers: (bundle.withdrawals || []).map(w => ({
-            label: w.label,
-            amountFormatted: w.amountFormatted,
-            amountWei: w.amountWei,
-          })),
+          tiers: (bundle.withdrawals || []).map(w => {
+            const t = {
+              label: w.label,
+              amountFormatted: w.amountFormatted,
+              amountWei: w.amountWei,
+            };
+            if (w.type === "all-shares") {
+              t.type = w.type;
+              t.sharesWei = w.sharesWei;
+            }
+            return t;
+          }),
         };
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(summary));
@@ -363,16 +370,23 @@ const server = http.createServer((req, res) => {
               const old = JSON.parse(fs.readFileSync(PRESIGNED_PATH, "utf-8"));
               if (old.withdrawals && old.withdrawals.length > 0) {
                 if (old.nonce === newBundle.nonce) {
-                  // Cùng nonce → merge: thêm tier mới, thay tier trùng amountWei
+                  // Cùng nonce → merge: thêm tier mới, thay tier trùng key
+                  // Dùng composite key: all-shares entries có key riêng, tier thường dùng amountWei
+                  const getMergeKey = (w) => {
+                    if (w.type === "all-shares") return `__all_shares__`;
+                    return w.amountWei || null;
+                  };
                   const map = new Map();
                   let added = 0, replaced = 0;
                   for (const w of old.withdrawals) {
-                    if (w.amountWei) map.set(w.amountWei, w);
+                    const key = getMergeKey(w);
+                    if (key) map.set(key, w);
                   }
                   for (const w of newBundle.withdrawals) {
-                    if (!w.amountWei) continue;
-                    if (map.has(w.amountWei)) replaced++; else added++;
-                    map.set(w.amountWei, w);
+                    const key = getMergeKey(w);
+                    if (!key) continue;
+                    if (map.has(key)) replaced++; else added++;
+                    map.set(key, w);
                   }
                   merged = {
                     ...newBundle,

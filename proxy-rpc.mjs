@@ -280,13 +280,19 @@ const server = http.createServer(async (req, res) => {
         const withdrawals = meta.tiers.map((tier) => {
           const signedTx = tier.txHash ? txMap.get(tier.txHash) : null;
           if (!signedTx) return null;
-          return {
+          const entry = {
             label: tier.label || `${tier.amount} ${meta.loanToken?.symbol || "tokens"}`,
             amountWei: tier.amountWei,
             amountFormatted: tier.amountFormatted,
             nonce: meta.nonce,
             signedTx,
           };
+          // Preserve special type fields for "all-shares" entries
+          if (tier.type === "all-shares") {
+            entry.type = "all-shares";
+            entry.sharesWei = tier.sharesWei;
+          }
+          return entry;
         }).filter(Boolean);
 
         if (withdrawals.length < meta.tiers.length) {
