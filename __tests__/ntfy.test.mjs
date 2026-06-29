@@ -76,6 +76,42 @@ function assertLatin1Safe(str, label) {
   }
 }
 
+/**
+ * Build drain notification payload — mirrors the sudden_drain scenario in monitor.mjs.
+ */
+function buildDrainPayload({ loanSymbol, collateralSymbol, marketId, lenderAddress, webappUrl }) {
+  const webappLink = `${webappUrl}?market=${marketId}&lender=${lenderAddress}`;
+  const morphoAppLink = `https://app.morpho.org/ethereum/market?id=${marketId}`;
+
+  const body = [
+    `**Canh bao: Thanh khoan giam dot ngot!**`,
+    ``,
+    `**Market:** ${collateralSymbol}/${loanSymbol}`,
+    `**Thanh khoản khả dụng:** ...`,
+    `**Utilization:** ...`,
+    `**Supply APY:** ...`,
+    `**Vị thế của bạn:** ...`,
+    ``,
+    `[Mở Webapp để rút tiền](${webappLink})`,
+  ].join("\n");
+
+  const actions = [
+    { action: "view", label: "Mo Webapp Rut Tien", url: webappLink },
+    { action: "view", label: "Xem tren Morpho App", url: morphoAppLink },
+  ];
+
+  const headers = {
+    "Title": `Morpho Blue: Canh bao rut thanh khoan! ${loanSymbol}`,
+    "Tags": "warning,chart_with_downwards_trend",
+    "Priority": "4",
+    "Markdown": "yes",
+    "Click": webappLink,
+    "Actions": JSON.stringify(actions),
+  };
+
+  return { headers, body, actions };
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -417,6 +453,88 @@ describe("ntfy notification fetch call", () => {
 
     // If we got here, no ByteString error occurred
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
+// Drain notification tests
+// ============================================================
+describe("ntfy drain notification", () => {
+  describe("header Latin-1 safety", () => {
+    it("drain header values contain only Latin-1 characters", () => {
+      const { headers } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      for (const [name, value] of Object.entries(headers)) {
+        for (let i = 0; i < value.length; i++) {
+          expect(value.charCodeAt(i)).toBeLessThanOrEqual(255);
+        }
+      }
+    });
+
+    it("drain Title does not contain emoji characters", () => {
+      const { headers } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      expect(headers.Title).not.toContain("💰");
+      expect(headers.Title).not.toContain("🔗");
+    });
+
+    it("drain Tags uses emoji shortcodes (ASCII-safe)", () => {
+      const { headers } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      assertLatin1Safe(headers.Tags, "Drain Tags");
+    });
+  });
+
+  describe("header content correctness", () => {
+    it("drain Title is a warning, not a positive event", () => {
+      const { headers } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      expect(headers.Title).toContain("Canh bao rut thanh khoan!");
+      expect(headers.Title).not.toContain("kha dung");
+    });
+
+    it("drain Tags use warning and downward trend", () => {
+      const { headers } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      expect(headers.Tags).toContain("warning");
+      expect(headers.Tags).toContain("chart_with_downwards_trend");
+      expect(headers.Tags).not.toContain("moneybag");
+    });
+
+    it("drain body contains drain-specific intro", () => {
+      const { body } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      expect(body).toContain("Canh bao: Thanh khoan giam dot ngot!");
+    });
+
+    it("drain Click header is a valid URL", () => {
+      const { headers } = buildDrainPayload({
+        loanSymbol: "USDC",
+        collateralSymbol: "WETH",
+        ...FIXTURES,
+      });
+      expect(headers.Click).toMatch(/^https?:\/\//);
+      expect(headers.Click).toContain("market=");
+      expect(headers.Click).toContain("lender=");
+    });
   });
 });
 

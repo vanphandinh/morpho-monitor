@@ -49,6 +49,14 @@ export const MAX_NOTIFICATIONS_PER_DAY = envNum("MAX_NOTIFICATIONS_PER_DAY", 10)
 export const MIN_LIQUIDITY_THRESHOLD =
   BigInt(envNum("MIN_LIQUIDITY_THRESHOLD_USDC", 100)) * 1_000_000n;
 
+// Hệ số ngưỡng giảm thanh khoản đột ngột
+// drainThreshold = supplyAssets × SUDDEN_DRAIN_MULTIPLIER
+// Mặc định 2: cảnh báo khi liquidity ≤ 2× vị thế lender
+// Hỗ trợ số thập phân, vd: 1.5, 2.25
+const _drainMultiplier = envNum("SUDDEN_DRAIN_MULTIPLIER", 2);
+export const SUDDEN_DRAIN_MULTIPLIER =
+  _drainMultiplier >= 1 ? _drainMultiplier : 2;
+
 // ---- ntfy ----
 export const NTFY_SERVER = env("NTFY_SERVER", "https://ntfy.sh");
 export const NTFY_TOPIC = env("NTFY_TOPIC", ""); // empty = auto-generate
@@ -232,39 +240,103 @@ export function checkInternalSecret(req) {
  * All anti-spam rules live here so they can be unit-tested without
  * mocking any I/O.
  *
- * Returns { shouldNotify: boolean, reason: string }.
+ * Unified danger-zone logic: triggers when liquidity enters the zone
+ * [minLiquidityThreshold, supplyAssets × suddenDrainMultiplier] from outside.
+ * Two entry directions:
+ *   - "sudden_drain":     từ trên xuống (last > drainThreshold → now ≤ drainThreshold)
+ *   - "liquidity_appeared": từ dưới lên (last < threshold → now ≥ threshold)
+ *
+ * Returns { shouldNotify: boolean, reason: string, scenario: string|null }.
+ */
+
+/**
+ * Compute drainThreshold = supplyAssets × multiplier.
+ * Supports fractional multipliers (e.g., 1.5) via BigInt rational arithmetic.
+ */
+export function computeDrainThreshold(supplyAssets, multiplier) {
+  if (supplyAssets == null || supplyAssets === 0n) return 0n;
+  const str = String(multiplier);
+  const dot = str.indexOf(".");
+  if (dot === -1) {
+    return supplyAssets * BigInt(Number(multiplier));
+  }
+  // Fractional: 1.5 → (supplyAssets × 15) / 10
+  const decimals = str.length - dot - 1;
+  const numerator = BigInt(str.replace(".", ""));
+  const denominator = 10n ** BigInt(decimals);
+  return (supplyAssets * numerator) / denominator;
+}
+
+/**
+ * Pure function: determine whether a notification should be sent.
  */
 export function shouldNotify({
   liquidity,
   lastSeenLiquidity,
+  supplyAssets,
   hasNotifiedThisCycle,
   lastNotificationTime,
   notificationsToday,
   notificationDayStart,
   minLiquidityThreshold,
+  suddenDrainMultiplier,
   notificationCooldownMs,
   maxNotificationsPerDay,
 }) {
-  // 1. Threshold check
-  if (liquidity < minLiquidityThreshold) {
-    return { shouldNotify: false, reason: "below_threshold" };
+  // Guard: không có vị thế → không cần theo dõi
+  if (supplyAssets == null || supplyAssets === 0n) {
+    return { shouldNotify: false, reason: "no_position", scenario: null };
   }
 
-  // 2. Transition check: only alert when liquidity crosses above threshold.
-  // If it was already above threshold last cycle, this isn't a new event.
-  if (lastSeenLiquidity >= minLiquidityThreshold) {
-    return { shouldNotify: false, reason: "no_transition" };
+  const drainThreshold = computeDrainThreshold(supplyAssets, suddenDrainMultiplier);
+  const inZone =
+    liquidity >= minLiquidityThreshold && liquidity <= drainThreshold;
+
+  // ================================================================
+  // Xác định scenario: liquidity đi vào vùng nguy hiểm từ đâu?
+  // ================================================================
+  let scenario = null;
+
+  if (inZone && lastSeenLiquidity != null) {
+    if (lastSeenLiquidity > drainThreshold) {
+      // Từ trên xuống: sudden drain
+      scenario = "sudden_drain";
+    } else if (lastSeenLiquidity < minLiquidityThreshold) {
+      // Từ dưới lên: liquidity mới xuất hiện trong vùng nguy hiểm
+      scenario = "liquidity_appeared";
+    }
+    // else: đã ở trong zone từ trước → không phải transition mới
   }
 
-  // 3. Cycle check: don't notify twice for the same liquidity event
+  // ================================================================
+  // Không có scenario nào trigger → trả về reason để hiển thị
+  // ================================================================
+  if (!scenario) {
+    let reason;
+    if (liquidity < minLiquidityThreshold) {
+      reason = "below_threshold";
+    } else if (liquidity > drainThreshold) {
+      reason = "above_drain_threshold";
+    } else {
+      // inZone = true nhưng không có transition (đã ở trong zone từ trước)
+      reason = "in_zone_no_transition";
+    }
+    return { shouldNotify: false, reason, scenario: null };
+  }
+
+  // ================================================================
+  // Shared anti-spam checks (áp dụng cho cả 2 scenario)
+  // ================================================================
+
+  // 3. Cycle check: không gửi trùng trong cùng một chu kỳ
   if (hasNotifiedThisCycle) {
-    return { shouldNotify: false, reason: "already_notified_this_cycle" };
+    return { shouldNotify: false, reason: "already_notified_this_cycle", scenario };
   }
 
   // 4. Cooldown check
   const now = Date.now();
   if (now - lastNotificationTime < notificationCooldownMs) {
-    return { shouldNotify: false, reason: "cooldown" };
+    return { shouldNotify: false, reason: "cooldown", scenario };
   }
 
   // 5. Daily limit check (with day-roll detection)
@@ -273,8 +345,8 @@ export function shouldNotify({
     // Day has rolled over — counters will be reset by caller,
     // so we treat this as 0 notifications today.
   } else if (notificationsToday >= maxNotificationsPerDay) {
-    return { shouldNotify: false, reason: "daily_limit" };
+    return { shouldNotify: false, reason: "daily_limit", scenario };
   }
 
-  return { shouldNotify: true, reason: "all_checks_passed" };
+  return { shouldNotify: true, reason: "all_checks_passed", scenario };
 }

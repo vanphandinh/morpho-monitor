@@ -7,6 +7,7 @@ import {
   RPC_URLS,
   MONITOR_INTERVAL_MS,
   MIN_LIQUIDITY_THRESHOLD,
+  SUDDEN_DRAIN_MULTIPLIER,
   NOTIFICATION_COOLDOWN_MS,
   MAX_NOTIFICATIONS_PER_DAY,
   NTFY_SERVER,
@@ -14,6 +15,7 @@ import {
   WEBAPP_URL,
   PRESIGNED_FILE,
   shouldNotify,
+  computeDrainThreshold,
   wadToPercent,
   formatTokenAmount,
   formatApy,
@@ -65,12 +67,14 @@ function resetDailyIfNeeded() {
 
 /**
  * Send a push notification via ntfy.sh.
+ * @param {string} scenario - "sudden_drain" | "liquidity_appeared"
  */
 async function sendNtfyNotification(
   market,
   loanToken,
   collateralToken,
-  position
+  position,
+  scenario
 ) {
   const loanSymbol = loanToken.symbol ?? "tokens";
   const collateralSymbol = collateralToken.symbol ?? "tokens";
@@ -79,8 +83,19 @@ async function sendNtfyNotification(
   const webappLink = `${WEBAPP_URL}?market=${MARKET_ID}&lender=${LENDER_ADDRESS}`;
   const morphoAppLink = `https://app.morpho.org/ethereum/market?id=${MARKET_ID}`;
 
+  const isSuddenDrain = scenario === "sudden_drain";
+  const title = isSuddenDrain
+    ? `Morpho Blue: Canh bao rut thanh khoan! ${loanSymbol}`
+    : `Morpho Blue: Thanh khoan ${loanSymbol} kha dung!`;
+  const tags = isSuddenDrain
+    ? "warning,chart_with_downwards_trend"
+    : "moneybag,chart_with_upwards_trend";
+  const intro = isSuddenDrain
+    ? "**Canh bao: Thanh khoan giam dot ngot!**"
+    : "**Thanh khoản đã xuất hiện trên market!**";
+
   const body = [
-    `**Thanh khoản đã xuất hiện trên market!**`,
+    intro,
     ``,
     `**Market:** ${collateralSymbol}/${loanSymbol}`,
     `**Thanh khoản khả dụng:** ${formatTokenAmount(market.liquidity, loanDecimals, loanSymbol)}`,
@@ -107,8 +122,8 @@ async function sendNtfyNotification(
   const response = await fetch(`${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`, {
     method: "POST",
     headers: {
-      "Title": `Morpho Blue: Thanh khoan ${loanSymbol} kha dung!`,
-      "Tags": "moneybag,chart_with_upwards_trend",
+      "Title": title,
+      "Tags": tags,
       "Priority": "4",
       "Markdown": "yes",
       "Click": webappLink,
@@ -387,30 +402,18 @@ async function checkAndNotify() {
     lastSeenLiquidity = liquidity;
     const sym = loanToken.symbol ?? "tokens";
     const dec = loanToken.decimals;
+    const drainThreshold = computeDrainThreshold(supplyAssets, SUDDEN_DRAIN_MULTIPLIER);
     console.log(
       `[${new Date().toISOString()}] 🔍 Khởi tạo monitor. ` +
         `Liquidity: ${formatTokenAmount(liquidity, dec, sym)} | ` +
         `Vị thế: ${formatTokenAmount(supplyAssets, dec, sym)} | ` +
+        `Ngưỡng drain: ${formatTokenAmount(drainThreshold, dec, sym)} | ` +
         `APY: ${formatApy(market.supplyApy)}`
     );
-    if (liquidity === 0n) {
-      console.log(
-        `[${new Date().toISOString()}] ⏳ Liquidity hiện tại = 0. ` +
-          `Sẽ thông báo khi có thanh khoản xuất hiện.`
-      );
-    } else if (liquidity >= MIN_LIQUIDITY_THRESHOLD) {
-      console.log(
-        `[${new Date().toISOString()}] ℹ️  Liquidity hiện có > 0 và đang trên ngưỡng. ` +
-          `Sẽ KHÔNG gửi thông báo khởi tạo. ` +
-          `Chỉ thông báo khi liquidity giảm xuống dưới ngưỡng rồi vượt ngưỡng trở lại.`
-      );
-    } else {
-      console.log(
-        `[${new Date().toISOString()}] ℹ️  Liquidity hiện có > 0 nhưng dưới ngưỡng. ` +
-          `Sẽ KHÔNG gửi thông báo khởi tạo. ` +
-          `Sẽ thông báo khi liquidity vượt ngưỡng.`
-      );
-    }
+    console.log(
+      `[${new Date().toISOString()}] ℹ️  Vùng nguy hiểm: [${formatTokenAmount(MIN_LIQUIDITY_THRESHOLD, dec, sym)} — ${formatTokenAmount(drainThreshold, dec, sym)}]. ` +
+        `Sẽ thông báo khi liquidity đi vào vùng này từ bên ngoài.`
+    );
     return { notified: false, liquidity };
   }
 
@@ -418,11 +421,13 @@ async function checkAndNotify() {
   const decision = shouldNotify({
     liquidity,
     lastSeenLiquidity,
+    supplyAssets,
     hasNotifiedThisCycle,
     lastNotificationTime,
     notificationsToday,
     notificationDayStart,
     minLiquidityThreshold: MIN_LIQUIDITY_THRESHOLD,
+    suddenDrainMultiplier: SUDDEN_DRAIN_MULTIPLIER,
     notificationCooldownMs: NOTIFICATION_COOLDOWN_MS,
     maxNotificationsPerDay: MAX_NOTIFICATIONS_PER_DAY,
   });
@@ -431,9 +436,12 @@ async function checkAndNotify() {
 
   if (decision.shouldNotify) {
     try {
-      await sendNtfyNotification(market, loanToken, collateralToken, position);
+      await sendNtfyNotification(market, loanToken, collateralToken, position, decision.scenario);
+      const scenarioLabel = decision.scenario === "sudden_drain"
+        ? "RÚT THANH KHOẢN ĐỘT NGỘT"
+        : "THANH KHOẢN XUẤT HIỆN";
       console.log(
-        `[${new Date().toISOString()}] 🔔 ĐÃ GỬI THÔNG BÁO! ` +
+        `[${new Date().toISOString()}] 🔔 ĐÃ GỬI THÔNG BÁO (${scenarioLabel})! ` +
           `Liquidity: ${formatTokenAmount(liquidity, loanToken.decimals, loanToken.symbol)}`
       );
       hasNotifiedThisCycle = true;
@@ -451,13 +459,16 @@ async function checkAndNotify() {
     }
   }
 
-  // Reset cycle flag when liquidity drops below threshold — opens a new
-  // transition window so the next rise above threshold triggers a notification.
-  if (liquidity < MIN_LIQUIDITY_THRESHOLD && hasNotifiedThisCycle) {
-    console.log(
-      `[${new Date().toISOString()}] 🔄 Liquidity dưới ngưỡng, reset trạng thái.`
-    );
-    hasNotifiedThisCycle = false;
+  // Reset cycle flag khi liquidity thoát khỏi vùng nguy hiểm
+  // Vùng nguy hiểm: [MIN_LIQUIDITY_THRESHOLD, supplyAssets × SUDDEN_DRAIN_MULTIPLIER]
+  if (hasNotifiedThisCycle) {
+    const drainThreshold = computeDrainThreshold(supplyAssets, SUDDEN_DRAIN_MULTIPLIER);
+    if (liquidity < MIN_LIQUIDITY_THRESHOLD || liquidity > drainThreshold) {
+      console.log(
+        `[${new Date().toISOString()}] 🔄 Liquidity đã thoát vùng nguy hiểm, reset trạng thái.`
+      );
+      hasNotifiedThisCycle = false;
+    }
   }
 
   // Log current state
@@ -468,13 +479,17 @@ async function checkAndNotify() {
     0,
     NOTIFICATION_COOLDOWN_MS - (now - lastNotificationTime)
   );
+  const drainThreshold = computeDrainThreshold(supplyAssets, SUDDEN_DRAIN_MULTIPLIER);
   const status = (() => {
     if (liquidity === 0n) return "⏳ Chờ thanh khoản...";
     if (hasNotifiedThisCycle) return "🔕 Đã thông báo, đang chờ reset";
+    if (decision.reason === "no_position") return "💤 Không có vị thế (supply = 0)";
     if (decision.reason === "below_threshold")
-      return `⚠️  Thanh khoản thấp (${formatTokenAmount(liquidity, dec, sym)} < ngưỡng)`;
-    if (decision.reason === "no_transition")
-      return "ℹ️  Thanh khoản có sẵn nhưng đã trên ngưỡng từ chu kỳ trước (không phải transition mới)";
+      return `⚠️  Thanh khoản thấp (${formatTokenAmount(liquidity, dec, sym)} < ngưỡng ${formatTokenAmount(MIN_LIQUIDITY_THRESHOLD, dec, sym)})`;
+    if (decision.reason === "above_drain_threshold")
+      return `✅  Thanh khoản thoải mái (> ${SUDDEN_DRAIN_MULTIPLIER}× vị thế = ${formatTokenAmount(drainThreshold, dec, sym)})`;
+    if (decision.reason === "in_zone_no_transition")
+      return `ℹ️  Đang trong vùng nguy hiểm [${formatTokenAmount(MIN_LIQUIDITY_THRESHOLD, dec, sym)} — ${formatTokenAmount(drainThreshold, dec, sym)}] nhưng không phải transition mới`;
     if (decision.reason === "cooldown")
       return `⏱️  Cooldown còn ${Math.ceil(cooldownRemaining / 1000)}s`;
     if (decision.reason === "daily_limit")
@@ -485,6 +500,8 @@ async function checkAndNotify() {
   console.log(
     `[${new Date().toISOString()}] ${status} | ` +
       `Liquidity: ${formatTokenAmount(liquidity, dec, sym)} | ` +
+      `Vị thế: ${formatTokenAmount(supplyAssets, dec, sym)} | ` +
+      `Ngưỡng drain: ${formatTokenAmount(drainThreshold, dec, sym)} | ` +
       `APY: ${formatApy(market.supplyApy)} | ` +
       `Thông báo hôm nay: ${notificationsToday}/${MAX_NOTIFICATIONS_PER_DAY}`
   );
@@ -516,7 +533,8 @@ function printBanner() {
   console.log(`  Market:     ${shortenAddress(MARKET_ID)}`);
   console.log(`  Lender:     ${LENDER_ADDRESS}`);
   console.log(`  Interval:   ${MONITOR_INTERVAL_MS / 1000}s`);
-  console.log(`  Threshold:  ${(MIN_LIQUIDITY_THRESHOLD / 1_000_000n).toString()} USDC (min liquidity to notify)`);
+  console.log(`  Threshold:  ${(MIN_LIQUIDITY_THRESHOLD / 1_000_000n).toString()} USDC (ngưỡng tối thiểu)`);
+  console.log(`  Drain:      ${SUDDEN_DRAIN_MULTIPLIER}× vị thế (ngưỡng giảm đột ngột)`);
   console.log(`  Cooldown:   ${NOTIFICATION_COOLDOWN_MS / 60000} phút giữa các thông báo`);
   console.log(`  Max/ngày:   ${MAX_NOTIFICATIONS_PER_DAY} thông báo`);
   console.log(`  Webapp:     ${WEBAPP_URL}`);

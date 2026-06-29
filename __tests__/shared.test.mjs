@@ -1,4 +1,3 @@
-import { describe, it, expect } from "vitest";
 import { describe, it, expect, vi } from "vitest";
 import {
   env,
@@ -8,6 +7,7 @@ import {
   formatApy,
   shortenAddress,
   shouldNotify,
+  computeDrainThreshold,
   createSessionToken,
   verifySessionToken,
 } from "../shared.mjs";
@@ -174,14 +174,17 @@ describe("shouldNotify()", () => {
   const COOLDOWN = 30 * 60 * 1000; // 30 min
   const MAX_PER_DAY = 10;
 
+  const HUGE_SUPPLY = 100_000_000_000_000n; // rất lớn để tests cũ vẫn pass (luôn trong zone)
   const base = {
     liquidity: 5_000_000n, // 5 USDC — above threshold
     lastSeenLiquidity: 0n, // was zero → now positive (transition!)
+    supplyAssets: HUGE_SUPPLY,
     hasNotifiedThisCycle: false,
     lastNotificationTime: 0,
     notificationsToday: 0,
     notificationDayStart: Date.now(),
     minLiquidityThreshold: THRESHOLD,
+    suddenDrainMultiplier: 2,
     notificationCooldownMs: COOLDOWN,
     maxNotificationsPerDay: MAX_PER_DAY,
   };
@@ -190,30 +193,34 @@ describe("shouldNotify()", () => {
     const result = shouldNotify(base);
     expect(result.shouldNotify).toBe(true);
     expect(result.reason).toBe("all_checks_passed");
+    expect(result.scenario).toBe("liquidity_appeared");
   });
 
   it("returns false when below threshold", () => {
     const result = shouldNotify({ ...base, liquidity: 500_000n });
     expect(result.shouldNotify).toBe(false);
     expect(result.reason).toBe("below_threshold");
+    expect(result.scenario).toBeNull();
   });
 
-  it("returns false when last liquidity was already above threshold (no new transition)", () => {
-    const result = shouldNotify({ ...base, lastSeenLiquidity: 2_000_000n }); // above threshold
+  it("returns false when last liquidity was already in zone (no new transition)", () => {
+    const result = shouldNotify({ ...base, lastSeenLiquidity: 2_000_000n }); // in zone
     expect(result.shouldNotify).toBe(false);
-    expect(result.reason).toBe("no_transition");
+    expect(result.reason).toBe("in_zone_no_transition");
   });
 
-  it("returns true when last liquidity was below threshold (crosses above threshold)", () => {
+  it("returns true when last liquidity was below threshold (crosses into zone)", () => {
     const result = shouldNotify({ ...base, lastSeenLiquidity: 500_000n }); // below threshold
     expect(result.shouldNotify).toBe(true);
     expect(result.reason).toBe("all_checks_passed");
+    expect(result.scenario).toBe("liquidity_appeared");
   });
 
-  it("returns true when last liquidity was 0 (0-to-positive transition)", () => {
+  it("returns true when last liquidity was 0 (0-to-positive transition into zone)", () => {
     const result = shouldNotify({ ...base, lastSeenLiquidity: 0n }); // was zero
     expect(result.shouldNotify).toBe(true);
     expect(result.reason).toBe("all_checks_passed");
+    expect(result.scenario).toBe("liquidity_appeared");
   });
 
   it("returns false when already notified this cycle", () => {
@@ -258,10 +265,218 @@ describe("shouldNotify()", () => {
     expect(result.shouldNotify).toBe(true);
   });
 
-  it("returns false when liquidity exactly equals threshold (not >=)", () => {
-    // threshold check is strict less-than: liquidity < minLiquidityThreshold
+  it("returns true when liquidity equals threshold (>= means in zone)", () => {
     const result = shouldNotify({ ...base, liquidity: THRESHOLD });
-    expect(result.shouldNotify).toBe(true); // equal is NOT less than
+    expect(result.shouldNotify).toBe(true); // equal to threshold → in zone
+  });
+});
+
+// ============================================================
+// shouldNotify() — Sudden drain (downward into danger zone)
+// ============================================================
+describe("shouldNotify() — sudden drain", () => {
+  const THRESHOLD = 1_000_000n; // 1 USDC
+  const COOLDOWN = 30 * 60 * 1000;
+  const SUPPLY = 10_000_000n;   // 10 USDC supply
+  const MULTIPLIER = 2;
+  const DRAIN = computeDrainThreshold(SUPPLY, MULTIPLIER); // 20 USDC với MULTIPLIER=2
+
+  const base = {
+    supplyAssets: SUPPLY,
+    hasNotifiedThisCycle: false,
+    lastNotificationTime: 0,
+    notificationsToday: 0,
+    notificationDayStart: Date.now(),
+    minLiquidityThreshold: THRESHOLD,
+    suddenDrainMultiplier: MULTIPLIER,
+    notificationCooldownMs: COOLDOWN,
+    maxNotificationsPerDay: 10,
+  };
+
+  it("triggers sudden_drain when liquidity drops from > drainThreshold to ≤ drainThreshold", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 15_000_000n,       // 15 USDC — in zone
+      lastSeenLiquidity: 25_000_000n, // 25 USDC — was above drain
+    });
+    expect(result.shouldNotify).toBe(true);
+    expect(result.scenario).toBe("sudden_drain");
+  });
+
+  it("does not trigger when still above drainThreshold", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 25_000_000n,
+      lastSeenLiquidity: 30_000_000n,
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("above_drain_threshold");
+  });
+
+  it("does not trigger when already in zone last cycle (no downward crossing)", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 15_000_000n,
+      lastSeenLiquidity: 18_000_000n, // was also in zone
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("in_zone_no_transition");
+  });
+
+  it("triggers liquidity_appeared when entering zone from below threshold", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 8_000_000n,
+      lastSeenLiquidity: 500_000n, // was below threshold
+    });
+    expect(result.shouldNotify).toBe(true);
+    expect(result.scenario).toBe("liquidity_appeared");
+  });
+
+  it("applies anti-spam cooldown for sudden_drain", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 15_000_000n,
+      lastSeenLiquidity: 25_000_000n,
+      lastNotificationTime: Date.now() - 1000,
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("cooldown");
+  });
+
+  it("applies daily limit for sudden_drain", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 15_000_000n,
+      lastSeenLiquidity: 25_000_000n,
+      notificationsToday: 10,
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("daily_limit");
+  });
+
+  it("applies cycle dedup for sudden_drain", () => {
+    const result = shouldNotify({
+      ...base,
+      liquidity: 15_000_000n,
+      lastSeenLiquidity: 25_000_000n,
+      hasNotifiedThisCycle: true,
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("already_notified_this_cycle");
+  });
+});
+
+// ============================================================
+// shouldNotify() — Edge cases
+// ============================================================
+describe("shouldNotify() — edge cases", () => {
+  const THRESHOLD = 1_000_000n;
+  const COOLDOWN = 30 * 60 * 1000;
+  const base = {
+    hasNotifiedThisCycle: false,
+    lastNotificationTime: 0,
+    notificationsToday: 0,
+    notificationDayStart: Date.now(),
+    minLiquidityThreshold: THRESHOLD,
+    suddenDrainMultiplier: 2,
+    notificationCooldownMs: COOLDOWN,
+    maxNotificationsPerDay: 10,
+  };
+
+  it("returns no_position when supplyAssets is 0", () => {
+    const result = shouldNotify({
+      ...base,
+      supplyAssets: 0n,
+      liquidity: 5_000_000n,
+      lastSeenLiquidity: 0n,
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("no_position");
+    expect(result.scenario).toBeNull();
+  });
+
+  it("returns no_position when supplyAssets is null/undefined", () => {
+    const result = shouldNotify({
+      ...base,
+      supplyAssets: null,
+      liquidity: 5_000_000n,
+      lastSeenLiquidity: 0n,
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("no_position");
+  });
+
+  it("skips straight to healthy when liquidity jumps above drainThreshold", () => {
+    const result = shouldNotify({
+      ...base,
+      supplyAssets: 10_000_000n,
+      liquidity: 25_000_000n,     // > 2× supply
+      lastSeenLiquidity: 0n,      // was zero
+    });
+    expect(result.shouldNotify).toBe(false);
+    expect(result.reason).toBe("above_drain_threshold");
+  });
+
+  it("sudden_drain takes priority over liquidity_appeared", () => {
+    // Both could trigger: last > drain AND last < threshold cannot both be true
+    // But if multiplier=1, drainThreshold = supplyAssets
+    // Test that downward is checked before upward
+    const result = shouldNotify({
+      ...base,
+      supplyAssets: 10_000_000n,
+      suddenDrainMultiplier: 1,
+      liquidity: 10_000_000n,      // = drainThreshold (in zone)
+      lastSeenLiquidity: 15_000_000n, // > drainThreshold → sudden_drain
+    });
+    expect(result.shouldNotify).toBe(true);
+    expect(result.scenario).toBe("sudden_drain");
+  });
+});
+
+// ============================================================
+// computeDrainThreshold()
+// ============================================================
+describe("computeDrainThreshold()", () => {
+  it("computes with integer multiplier", () => {
+    const result = computeDrainThreshold(10_000_000n, 2);
+    expect(result).toBe(20_000_000n);
+  });
+
+  it("computes with fractional multiplier (1 decimal)", () => {
+    const result = computeDrainThreshold(10_000_000n, 1.5);
+    expect(result).toBe(15_000_000n); // (10M × 15) / 10
+  });
+
+  it("computes with fractional multiplier (2 decimals)", () => {
+    const result = computeDrainThreshold(10_000_000n, 2.25);
+    expect(result).toBe(22_500_000n); // (10M × 225) / 100
+  });
+
+  it("computes with fractional multiplier (3 decimals)", () => {
+    const result = computeDrainThreshold(1_000_000_000n, 1.333);
+    expect(result).toBe(1_333_000_000n); // (1B × 1333) / 1000
+  });
+
+  it("returns 0n when supplyAssets is 0n", () => {
+    const result = computeDrainThreshold(0n, 2);
+    expect(result).toBe(0n);
+  });
+
+  it("returns 0n when supplyAssets is null", () => {
+    const result = computeDrainThreshold(null, 2);
+    expect(result).toBe(0n);
+  });
+
+  it("handles multiplier = 1 (exactly at supply)", () => {
+    const result = computeDrainThreshold(10_000_000n, 1);
+    expect(result).toBe(10_000_000n);
+  });
+
+  it("handles multiplier as string from env (e.g., '1.5')", () => {
+    // envNum returns number, but this tests robustness for manual calls
+    const result = computeDrainThreshold(10_000_000n, "1.5");
+    expect(result).toBe(15_000_000n);
   });
 });
 

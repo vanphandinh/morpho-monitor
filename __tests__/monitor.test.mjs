@@ -7,7 +7,7 @@
  * end-to-end with mocked I/O.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { shouldNotify } from "../shared.mjs";
+import { shouldNotify, computeDrainThreshold } from "../shared.mjs";
 
 // ============================================================
 // Integration: shouldNotify() wired with real-world scenarios
@@ -16,17 +16,22 @@ describe("monitor anti-spam scenarios (integration)", () => {
   const THRESHOLD = 1_000_000n; // 1 USDC
   const COOLDOWN_MS = 30 * 60 * 1000;
   const MAX_PER_DAY = 10;
+  const SUPPLY = 100_000_000_000_000n; // rất lớn để tests tập trung vào anti-spam
+  const DRAIN_MULTIPLIER = 2;
+  const DRAIN = computeDrainThreshold(SUPPLY, DRAIN_MULTIPLIER);
 
   // Simulate what the monitor passes to shouldNotify each cycle
   function simulateCycle(state, liquidity) {
     const decision = shouldNotify({
       liquidity,
       lastSeenLiquidity: state.lastSeenLiquidity,
+      supplyAssets: state.supplyAssets,
       hasNotifiedThisCycle: state.hasNotifiedThisCycle,
       lastNotificationTime: state.lastNotificationTime,
       notificationsToday: state.notificationsToday,
       notificationDayStart: state.notificationDayStart,
       minLiquidityThreshold: THRESHOLD,
+      suddenDrainMultiplier: DRAIN_MULTIPLIER,
       notificationCooldownMs: COOLDOWN_MS,
       maxNotificationsPerDay: MAX_PER_DAY,
     });
@@ -37,9 +42,13 @@ describe("monitor anti-spam scenarios (integration)", () => {
       state.notificationsToday++;
     }
 
-    // Reset cycle flag when liquidity returns to 0
-    if (liquidity === 0n && state.hasNotifiedThisCycle) {
-      state.hasNotifiedThisCycle = false;
+    // Reset cycle flag when liquidity exits the danger zone
+    // Danger zone: [THRESHOLD, SUPPLY * DRAIN_MULTIPLIER]
+    if (state.hasNotifiedThisCycle) {
+      const drainThreshold = computeDrainThreshold(state.supplyAssets, DRAIN_MULTIPLIER);
+      if (liquidity < THRESHOLD || liquidity > drainThreshold) {
+        state.hasNotifiedThisCycle = false;
+      }
     }
 
     state.lastSeenLiquidity = liquidity;
@@ -52,6 +61,7 @@ describe("monitor anti-spam scenarios (integration)", () => {
   beforeEach(() => {
     state = {
       lastSeenLiquidity: null,
+      supplyAssets: SUPPLY,
       hasNotifiedThisCycle: false,
       lastNotificationTime: 0,
       notificationsToday: 0,
@@ -59,14 +69,12 @@ describe("monitor anti-spam scenarios (integration)", () => {
     };
   });
 
-  it("first cycle: records state, does NOT notify even with liquidity", () => {
-    // First run is handled separately in monitor.mjs (first-run path).
-    // shouldNotify is only called after initialization.
-    // Here we simulate the first post-init cycle.
+  it("first post-init cycle: notifies when liquidity enters zone from below", () => {
     state.lastSeenLiquidity = 0n; // initialized to 0
 
-    const r1 = simulateCycle(state, 5_000_000n); // liquidity appears
+    const r1 = simulateCycle(state, 5_000_000n); // liquidity appears → enters zone from below
     expect(r1.shouldNotify).toBe(true);
+    expect(r1.scenario).toBe("liquidity_appeared");
     expect(r1.state.hasNotifiedThisCycle).toBe(true);
     expect(r1.state.notificationsToday).toBe(1);
   });
@@ -77,40 +85,42 @@ describe("monitor anti-spam scenarios (integration)", () => {
     // First notification
     simulateCycle(state, 5_000_000n);
 
-    // Same cycle, liquidity still present
+    // Same cycle, liquidity still in zone
     const r2 = simulateCycle(state, 5_000_000n);
     expect(r2.shouldNotify).toBe(false);
+    expect(r2.reason).toBe("in_zone_no_transition");
     expect(r2.state.hasNotifiedThisCycle).toBe(true);
     expect(r2.state.notificationsToday).toBe(1); // still 1
   });
 
-  it("resets cycle flag when liquidity returns to 0", () => {
+  it("resets cycle flag when liquidity drops below threshold", () => {
     state.lastSeenLiquidity = 0n;
 
     // Liquidity appears → notify
     simulateCycle(state, 5_000_000n);
     expect(state.hasNotifiedThisCycle).toBe(true);
 
-    // Liquidity gone → reset
-    const r = simulateCycle(state, 0n);
+    // Liquidity drops below threshold → reset
+    simulateCycle(state, 500_000n); // 0.5 USDC < threshold
     expect(state.hasNotifiedThisCycle).toBe(false);
   });
 
-  it("notifies again after full 0→positive→0→positive cycle (with cooldown elapsed)", () => {
+  it("notifies again after full enter→exit→enter cycle (with cooldown elapsed)", () => {
     state.lastSeenLiquidity = 0n;
 
-    // Round 1: 0 → positive
+    // Round 1: 0 → in zone
     const r1 = simulateCycle(state, 5_000_000n);
     expect(r1.shouldNotify).toBe(true);
     expect(state.notificationsToday).toBe(1);
 
-    // Liquidity goes to 0 (reset cycle flag)
+    // Exit zone (below threshold → reset)
     simulateCycle(state, 0n);
+    expect(state.hasNotifiedThisCycle).toBe(false);
 
     // Simulate cooldown passing before next round
     state.lastNotificationTime = Date.now() - COOLDOWN_MS - 1000;
 
-    // Round 2: 0 → positive again
+    // Round 2: enter zone again
     const r2 = simulateCycle(state, 5_000_000n);
     expect(r2.shouldNotify).toBe(true);
     expect(state.notificationsToday).toBe(2);
@@ -145,11 +155,11 @@ describe("monitor anti-spam scenarios (integration)", () => {
     expect(r.reason).toBe("cooldown");
   });
 
-  it("does not notify when liquidity stays positive (no transition)", () => {
-    state.lastSeenLiquidity = 5_000_000n; // was positive, stays positive
+  it("does not notify when liquidity stays in zone (no new transition)", () => {
+    state.lastSeenLiquidity = 5_000_000n; // was in zone, stays in zone
 
     const r = simulateCycle(state, 6_000_000n);
     expect(r.shouldNotify).toBe(false);
-    expect(r.reason).toBe("no_transition");
+    expect(r.reason).toBe("in_zone_no_transition");
   });
 });
