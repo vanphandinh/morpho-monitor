@@ -80,88 +80,163 @@ async function handleRpc(method, params) {
       return "0x1";
 
     case "eth_blockNumber":
-      return blockNumber;
+      try {
+        return await publicClient.getBlockNumber();
+      } catch (err) {
+        console.warn(`[proxy] eth_blockNumber forwarding failed: ${err.message}`);
+        return blockNumber;
+      }
 
     case "eth_getBalance":
       // Trả về 10 ETH (0x8AC7230489E80000) để ví không báo "insufficient balance"
       return "0x8AC7230489E80000";
 
     case "eth_gasPrice": {
-      // Return current base fee * 1.5 as gas price
-      const gasPrice = (baseFee * 150n) / 100n;
-      return "0x" + gasPrice.toString(16);
+      try {
+        return await publicClient.getGasPrice();
+      } catch (err) {
+        console.warn(`[proxy] eth_gasPrice forwarding failed: ${err.message}`);
+        const gasPrice = (baseFee * 150n) / 100n;
+        return "0x" + gasPrice.toString(16);
+      }
     }
 
     case "eth_maxPriorityFeePerGas":
-      return "0x" + (1_000_000_000n).toString(16); // 1 gwei
+      try {
+        return await publicClient.estimateMaxPriorityFeePerGas();
+      } catch (err) {
+        console.warn(`[proxy] eth_maxPriorityFeePerGas forwarding failed: ${err.message}`);
+        return "0x" + (1_000_000_000n).toString(16); // 1 gwei fallback
+      }
 
     case "eth_feeHistory": {
-      // Return minimal fee history
-      return {
-        oldestBlock: blockNumber,
-        baseFeePerGas: ["0x" + baseFee.toString(16), "0x" + baseFee.toString(16)],
-        reward: [["0x" + (1_000_000_000n).toString(16)]],
-      };
+      try {
+        const blockCount = typeof params[0] === "number" ? params[0] : parseInt(String(params[0] || "0x4"), 16);
+        const newestBlock = params[1] || "latest";
+        const rewardPercentiles = params[2] || [25, 50, 75];
+        return await publicClient.getFeeHistory({ blockCount, newestBlock, rewardPercentiles });
+      } catch (err) {
+        console.warn(`[proxy] eth_feeHistory forwarding failed: ${err.message}`);
+        return {
+          oldestBlock: blockNumber,
+          baseFeePerGas: ["0x" + baseFee.toString(16), "0x" + baseFee.toString(16)],
+          reward: [["0x" + (1_000_000_000n).toString(16)]],
+        };
+      }
     }
 
     case "eth_estimateGas":
       return "0x" + (200000n).toString(16); // 200k gas for Morpho withdraw
 
     case "eth_getCode":
-      return "0x";
+      try {
+        const address = params[0];
+        const blockTag = params[1] || "latest";
+        return await publicClient.getCode({ address, blockTag });
+      } catch (err) {
+        console.warn(`[proxy] eth_getCode forwarding failed: ${err.message}`);
+        return "0x";
+      }
 
     case "eth_call": {
-      return "0x";
+      try {
+        const callParams = params[0] || {};
+        const blockTag = params[1] || "latest";
+        return await publicClient.call({ ...callParams, blockTag });
+      } catch (err) {
+        console.warn(`[proxy] eth_call forwarding failed: ${err.message}`);
+        return "0x";
+      }
     }
 
     case "eth_getBlockByNumber": {
-      return {
-        number: blockNumber,
-        hash: blockHash,
-        parentHash: keccak256(toHex(parseInt(blockNumber, 16) - 1)),
-        timestamp: "0x" + Math.floor(Date.now() / 1000).toString(16),
-        baseFeePerGas: "0x" + baseFee.toString(16),
-        gasLimit: "0x" + (30_000_000n).toString(16),
-        gasUsed: "0x" + (10_000_000n).toString(16),
-        miner: "0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5",
-        mixHash: "0x" + "00".repeat(32),
-        nonce: "0x0000000000000000",
-        receiptsRoot: keccak256(toHex(0)),
-        sha3Uncles: keccak256(toHex(0)),
-        size: "0x10000",
-        stateRoot: keccak256(toHex(1)),
-        totalDifficulty: "0x0",
-        transactionsRoot: keccak256(toHex(2)),
-        uncles: [],
-        transactions: [],
-        logsBloom: "0x" + "00".repeat(256),
-        extraData: "0x",
-        difficulty: "0x0",
-      };
+      try {
+        const rawTag = params[0] || "latest";
+        const fullTxObjects = params[1] === true || params[1] === "true";
+        const blockParams = { includeTransactions: fullTxObjects };
+        // Phân biệt block tag ("latest", "pending"...) với block number (hex)
+        if (rawTag === "latest" || rawTag === "earliest" || rawTag === "pending" || rawTag === "safe" || rawTag === "finalized") {
+          blockParams.blockTag = rawTag;
+        } else {
+          blockParams.blockNumber = BigInt(rawTag);
+        }
+        return await publicClient.getBlock(blockParams);
+      } catch (err) {
+        console.warn(`[proxy] eth_getBlockByNumber forwarding failed: ${err.message}`);
+        return {
+          number: blockNumber,
+          hash: blockHash,
+          parentHash: keccak256(toHex(parseInt(blockNumber, 16) - 1)),
+          timestamp: "0x" + Math.floor(Date.now() / 1000).toString(16),
+          baseFeePerGas: "0x" + baseFee.toString(16),
+          gasLimit: "0x" + (30_000_000n).toString(16),
+          gasUsed: "0x" + (10_000_000n).toString(16),
+          miner: "0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5",
+          mixHash: "0x" + "00".repeat(32),
+          nonce: "0x0000000000000000",
+          receiptsRoot: keccak256(toHex(0)),
+          sha3Uncles: keccak256(toHex(0)),
+          size: "0x10000",
+          stateRoot: keccak256(toHex(1)),
+          totalDifficulty: "0x0",
+          transactionsRoot: keccak256(toHex(2)),
+          uncles: [],
+          transactions: [],
+          logsBloom: "0x" + "00".repeat(256),
+          extraData: "0x",
+          difficulty: "0x0",
+        };
+      }
     }
 
-    case "eth_getTransactionReceipt":
-      return null;
+    case "eth_getTransactionReceipt": {
+      try {
+        return await publicClient.getTransactionReceipt({ hash: params[0] });
+      } catch {
+        return null;
+      }
+    }
 
-    case "eth_getLogs":
-      return [];
+    case "eth_getLogs": {
+      try {
+        const filter = params[0] || {};
+        return await publicClient.getLogs(filter);
+      } catch (err) {
+        console.warn(`[proxy] eth_getLogs forwarding failed: ${err.message}`);
+        return [];
+      }
+    }
 
-    case "eth_getTransactionByHash":
-      return null;
+    case "eth_getTransactionByHash": {
+      try {
+        return await publicClient.getTransaction({ hash: params[0] });
+      } catch {
+        return null;
+      }
+    }
 
     case "eth_getTransactionCount": {
       // Forward to real RPC to get the actual on-chain nonce.
-      // The robust client handles retry + round-robin across all URLs.
-      // If ALL URLs fail after retries, the error propagates to the
-      // JSON-RPC handler which returns a proper error response to the wallet.
       const address = params[0];
       const blockTag = params[1] || "latest";
       const count = await publicClient.getTransactionCount({ address, blockTag });
+      console.log(
+        `[proxy] eth_getTransactionCount: address=${address.slice(0, 10)}..., blockTag=${blockTag}, nonce=${count}`
+      );
       return "0x" + count.toString(16);
     }
 
-    case "eth_getStorageAt":
-      return "0x" + "00".repeat(32);
+    case "eth_getStorageAt": {
+      try {
+        const address = params[0];
+        const slot = params[1];
+        const blockTag = params[2] || "latest";
+        return await publicClient.getStorageAt({ address, slot, blockTag });
+      } catch (err) {
+        console.warn(`[proxy] eth_getStorageAt forwarding failed: ${err.message}`);
+        return "0x" + "00".repeat(32);
+      }
+    }
 
     case "eth_getProof":
       return null;
@@ -223,6 +298,13 @@ function jsonRpcError(id, code, message) {
 
 function jsonRpcResult(id, result) {
   return { jsonrpc: "2.0", id, result };
+}
+
+function safeStringify(obj) {
+  return JSON.stringify(obj, (key, value) => {
+    if (typeof value === "bigint") return "0x" + value.toString(16);
+    return value;
+  });
 }
 
 // Auth helpers (verifyToken, checkInternalSecret) imported from shared.mjs
@@ -429,7 +511,7 @@ const server = createServer(async (req, res) => {
         request = JSON.parse(body);
       } catch {
         res.writeHead(400);
-        res.end(JSON.stringify(jsonRpcError(null, -32700, "Parse error")));
+        res.end(safeStringify(jsonRpcError(null, -32700, "Parse error")));
         return;
       }
 
@@ -448,7 +530,7 @@ const server = createServer(async (req, res) => {
           }
         }));
         res.writeHead(200);
-        res.end(JSON.stringify(responses));
+        res.end(safeStringify(responses));
         return;
       }
 
@@ -457,15 +539,15 @@ const server = createServer(async (req, res) => {
         const result = await handleRpc(request.method, request.params);
         if (result instanceof Error) {
           res.writeHead(200);
-          res.end(JSON.stringify(jsonRpcError(request.id, -32603, result.message)));
+          res.end(safeStringify(jsonRpcError(request.id, -32603, result.message)));
           return;
         }
         res.writeHead(200);
-        res.end(JSON.stringify(jsonRpcResult(request.id, result)));
+        res.end(safeStringify(jsonRpcResult(request.id, result)));
       } catch (err) {
         console.error(`[proxy] RPC error (${request.method}): ${err.message}`);
         res.writeHead(200);
-        res.end(JSON.stringify(jsonRpcError(request.id, -32603, `RPC error: ${err.message}`)));
+        res.end(safeStringify(jsonRpcError(request.id, -32603, `RPC error: ${err.message}`)));
       }
     });
     return;
