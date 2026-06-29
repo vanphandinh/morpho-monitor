@@ -16,6 +16,7 @@ import {
   PRESIGNED_FILE,
   shouldNotify,
   computeDrainThreshold,
+  shouldBroadcastPresigned,
   wadToPercent,
   formatTokenAmount,
   formatApy,
@@ -646,8 +647,8 @@ async function checkAndNotify() {
       `Thông báo hôm nay: ${notificationsToday}/${MAX_NOTIFICATIONS_PER_DAY}`
   );
 
-  // Try presigned broadcast (independent of notification logic)
-  if (liquidity > 0n) {
+  // Try presigned broadcast (only when liquidity is in the danger zone)
+  if (shouldBroadcastPresigned(liquidity, drainThreshold)) {
     const presignResult = await broadcastPresigned(liquidity, loanToken, collateralToken, market);
     if (presignResult.broadcasted) {
       console.log(

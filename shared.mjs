@@ -275,6 +275,17 @@ export function computeDrainThreshold(supplyAssets, multiplier) {
 }
 
 /**
+ * Pure function: determine whether a presigned bundle should be broadcast.
+ * Returns true only when liquidity is positive AND in the danger zone
+ * (at or below the drain threshold).
+ */
+export function shouldBroadcastPresigned(liquidity, drainThreshold) {
+  if (liquidity == null || liquidity === 0n) return false;
+  if (drainThreshold == null) return false;
+  return liquidity <= drainThreshold;
+}
+
+/**
  * Pure function: determine whether a notification should be sent.
  */
 export function shouldNotify({

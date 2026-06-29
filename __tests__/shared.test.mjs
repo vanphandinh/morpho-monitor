@@ -8,6 +8,7 @@ import {
   shortenAddress,
   shouldNotify,
   computeDrainThreshold,
+  shouldBroadcastPresigned,
   createSessionToken,
   verifySessionToken,
 } from "../shared.mjs";
@@ -477,6 +478,46 @@ describe("computeDrainThreshold()", () => {
     // envNum returns number, but this tests robustness for manual calls
     const result = computeDrainThreshold(10_000_000n, "1.5");
     expect(result).toBe(15_000_000n);
+  });
+});
+
+// ============================================================
+// shouldBroadcastPresigned()
+// ============================================================
+describe("shouldBroadcastPresigned()", () => {
+  it("returns true when liquidity is in danger zone (below drainThreshold)", () => {
+    const result = shouldBroadcastPresigned(5_000_000n, 10_000_000n);
+    expect(result).toBe(true);
+  });
+
+  it("returns true when liquidity equals drainThreshold (boundary)", () => {
+    const result = shouldBroadcastPresigned(10_000_000n, 10_000_000n);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when liquidity exceeds drainThreshold (ample liquidity)", () => {
+    const result = shouldBroadcastPresigned(15_000_000n, 10_000_000n);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when liquidity is 0n", () => {
+    const result = shouldBroadcastPresigned(0n, 10_000_000n);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when liquidity is null", () => {
+    const result = shouldBroadcastPresigned(null, 10_000_000n);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when drainThreshold is 0n (no position)", () => {
+    const result = shouldBroadcastPresigned(5_000_000n, 0n);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when drainThreshold is null", () => {
+    const result = shouldBroadcastPresigned(5_000_000n, null);
+    expect(result).toBe(false);
   });
 });
 
