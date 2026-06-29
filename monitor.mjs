@@ -51,6 +51,7 @@ let hasNotifiedThisCycle = false;
 let lastNotificationTime = 0;
 let notificationsToday = 0;
 let notificationDayStart = Date.now();
+let checkInProgress = false;
 
 // Reset daily counter at midnight
 function resetDailyIfNeeded() {
@@ -157,7 +158,7 @@ function estimateSharesValue(sharesWei, totalSupplyAssets, totalSupplyShares) {
  * Prioritizes "withdraw-all-shares" entries over fixed-amount tiers.
  * Returns { broadcasted: boolean, txHash?, tier? }.
  */
-async function broadcastPresigned(liquidity, loanToken, market) {
+async function broadcastPresigned(liquidity, loanToken, collateralToken, market) {
   // 1. Check file exists
   if (!fs.existsSync(PRESIGNED_FILE)) {
     return { broadcasted: false };
@@ -300,8 +301,56 @@ async function broadcastPresigned(liquidity, loanToken, market) {
       bundle.status = "expired";
       bundle.error = err.message;
       const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
-      fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
-      fs.unlinkSync(PRESIGNED_FILE);
+      try {
+        fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+        fs.unlinkSync(PRESIGNED_FILE);
+      } catch (fileErr) {
+        console.warn(
+          `[${new Date().toISOString()}] ⚠️  Không thể xóa presigned file: ${fileErr.message}`
+        );
+        try {
+          fs.writeFileSync(PRESIGNED_FILE, JSON.stringify({ ...bundle, status: "expired" }, null, 2));
+        } catch (writeErr) {
+          console.error(
+            `[${new Date().toISOString()}] ❌ Không thể cập nhật presigned file: ${writeErr.message}`
+          );
+        }
+      }
+
+      // Gửi thông báo ntfy
+      try {
+        const webappLink = `${WEBAPP_URL}?market=${MARKET_ID}&lender=${LENDER_ADDRESS}`;
+        const loanSymbol = loanToken?.symbol ?? "tokens";
+        const collateralSymbol = collateralToken?.symbol ?? "tokens";
+        await fetch(`${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`, {
+          method: "POST",
+          headers: {
+            "Title": `Morpho Blue: Pre-signed bundle da het han! ${loanSymbol}`,
+            "Tags": "warning",
+            "Priority": "4",
+            "Markdown": "yes",
+            "Click": webappLink,
+          },
+          body: [
+            `**Pre-signed bundle đã bị xóa do nonce đã được sử dụng.**`,
+            ``,
+            `**Market:** ${collateralSymbol}/${loanSymbol}`,
+            `**Nonce bundle:** ${bundle.nonce}`,
+            `**Lỗi:** ${err.message}`,
+            `**Lý do:** Giao dịch với nonce này đã được broadcast (có thể do bạn đã gửi giao dịch khác).`,
+            ``,
+            `[Mở Webapp để tạo bundle mới](${webappLink})`,
+          ].join("\n"),
+        });
+        console.log(
+          `[${new Date().toISOString()}] 🔔 Đã gửi thông báo bundle hết hạn do nonce`
+        );
+      } catch (notifyErr) {
+        console.error(
+          `[${new Date().toISOString()}] ❌ Lỗi gửi ntfy bundle hết hạn: ${notifyErr.message}`
+        );
+      }
+
       return { broadcasted: false, error: err.message };
     }
 
@@ -334,6 +383,14 @@ async function expireStaleBundle(client, market, loanToken, collateralToken) {
 
   if (bundle.status !== "pending") return;
 
+  // Guard: bundle must have a valid nonce
+  if (bundle.nonce == null) {
+    console.warn(
+      `[${new Date().toISOString()}] ⚠️  Bundle thiếu nonce, bỏ qua.`
+    );
+    return;
+  }
+
   // Fetch current nonce for lender from chain
   const currentNonce = await client.getTransactionCount({
     address: LENDER_ADDRESS,
@@ -350,8 +407,22 @@ async function expireStaleBundle(client, market, loanToken, collateralToken) {
     bundle.error = `Nonce tăng: bundle=${bundle.nonce}, chain=${currentNonce}`;
     bundle.expiredAt = new Date().toISOString();
     const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
-    fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
-    fs.unlinkSync(PRESIGNED_FILE);
+    try {
+      fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+      fs.unlinkSync(PRESIGNED_FILE);
+    } catch (fileErr) {
+      // If unlink fails, update the original file's status so it won't re-trigger
+      console.warn(
+        `[${new Date().toISOString()}] ⚠️  Không thể xóa presigned file: ${fileErr.message}`
+      );
+      try {
+        fs.writeFileSync(PRESIGNED_FILE, JSON.stringify({ ...bundle, status: "expired" }, null, 2));
+      } catch (writeErr) {
+        console.error(
+          `[${new Date().toISOString()}] ❌ Không thể cập nhật presigned file: ${writeErr.message}`
+        );
+      }
+    }
     console.log(
       `[${new Date().toISOString()}] 📁 Đã lưu bundle expired → ${usedPath}`
     );
@@ -408,11 +479,21 @@ async function expireStaleBundle(client, market, loanToken, collateralToken) {
  * Single check cycle. Returns { notified, liquidity } for logging.
  */
 async function checkAndNotify() {
+  // Guard: prevent overlapping cycles if previous one takes longer than interval
+  if (checkInProgress) {
+    console.log(
+      `[${new Date().toISOString()}] ⏭️  Chu kỳ trước chưa hoàn thành, bỏ qua chu kỳ này.`
+    );
+    return { notified: false, liquidity: null };
+  }
+  checkInProgress = true;
+  try {
   // Reset daily counter early — must run even if RPC is down
   // to ensure counters don't stay stale during extended outages.
   resetDailyIfNeeded();
 
   let market, position, loanToken, collateralToken;
+  let dataFetchOk = true;
   try {
     [market, position] = await Promise.all([
       fetchMarket(MARKET_ID, publicClient, { deployless: false }),
@@ -425,14 +506,31 @@ async function checkAndNotify() {
       fetchToken(market.params.loanToken, publicClient, { deployless: false }),
     ]);
   } catch (err) {
+    dataFetchOk = false;
     console.warn(
       `[${new Date().toISOString()}] ⚠️  Lỗi fetch dữ liệu: ${err.message}`
     );
-    return { notified: false, liquidity: null };
   }
 
-  // Check for stale presigned bundle (nonce mismatch with chain)
-  await expireStaleBundle(publicClient, market, loanToken, collateralToken);
+  // Always try to expire stale bundle (independent of data fetch).
+  // If data fetch succeeded, full notification is sent.
+  // If data fetch failed, run cleanup-only without notification.
+  try {
+    if (dataFetchOk) {
+      await expireStaleBundle(publicClient, market, loanToken, collateralToken);
+    } else {
+      // Fallback: cleanup without notification (no token info available)
+      await expireStaleBundle(publicClient, null, null, null);
+    }
+  } catch (err) {
+    console.warn(
+      `[${new Date().toISOString()}] ⚠️  Lỗi expireStaleBundle: ${err.message}`
+    );
+  }
+
+  if (!dataFetchOk) {
+    return { notified: false, liquidity: null };
+  }
 
   const liquidity = market.liquidity;
   const supplyAssets = position.supplyAssets;
@@ -550,7 +648,7 @@ async function checkAndNotify() {
 
   // Try presigned broadcast (independent of notification logic)
   if (liquidity > 0n) {
-    const presignResult = await broadcastPresigned(liquidity, loanToken, market);
+    const presignResult = await broadcastPresigned(liquidity, loanToken, collateralToken, market);
     if (presignResult.broadcasted) {
       console.log(
         `[${new Date().toISOString()}] 🎯 Presigned broadcast thành công: ` +
@@ -559,8 +657,17 @@ async function checkAndNotify() {
     }
   }
 
-  lastSeenLiquidity = liquidity;
+  // Only update lastSeenLiquidity when:
+  // - Notification sent successfully, OR
+  // - No notification was needed (shouldNotify returned false)
+  // Skip update when ntfy failed — allows retry on next cycle
+  if (notified || !decision.shouldNotify) {
+    lastSeenLiquidity = liquidity;
+  }
   return { notified, liquidity };
+  } finally {
+    checkInProgress = false;
+  }
 }
 
 // ============================================================

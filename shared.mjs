@@ -255,6 +255,13 @@ export function checkInternalSecret(req) {
  */
 export function computeDrainThreshold(supplyAssets, multiplier) {
   if (supplyAssets == null || supplyAssets === 0n) return 0n;
+  // Guard: multiplier must be a positive finite number (or string that converts to one)
+  if (typeof multiplier === "string") {
+    multiplier = Number(multiplier);
+  }
+  if (multiplier == null || typeof multiplier !== "number" || !isFinite(multiplier) || multiplier <= 0) {
+    return 0n;
+  }
   const str = String(multiplier);
   const dot = str.indexOf(".");
   if (dot === -1) {
@@ -288,7 +295,11 @@ export function shouldNotify({
     return { shouldNotify: false, reason: "no_position", scenario: null };
   }
 
-  const drainThreshold = computeDrainThreshold(supplyAssets, suddenDrainMultiplier);
+  let drainThreshold = computeDrainThreshold(supplyAssets, suddenDrainMultiplier);
+  // Guard: prevent empty zone when drainThreshold < minLiquidityThreshold
+  if (drainThreshold < minLiquidityThreshold) {
+    drainThreshold = minLiquidityThreshold;
+  }
   const inZone =
     liquidity >= minLiquidityThreshold && liquidity <= drainThreshold;
 

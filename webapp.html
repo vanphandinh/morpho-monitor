@@ -1221,6 +1221,17 @@
       }
     };
 
+    window.readGasInputs = function() {
+      const maxFeeVal = parseFloat(document.getElementById("presign-gas-maxfee").value);
+      const priorityVal = parseFloat(document.getElementById("presign-gas-priority").value);
+      if (!isNaN(maxFeeVal) && maxFeeVal > 0) {
+        presignedGas.maxFeePerGas = parseUnits(String(maxFeeVal), 9);
+      }
+      if (!isNaN(priorityVal) && priorityVal > 0) {
+        presignedGas.maxPriorityFeePerGas = parseUnits(String(priorityVal), 9);
+      }
+    };
+
     window.onGasInputChange = function() {
       const maxFeeVal = parseFloat(document.getElementById("presign-gas-maxfee").value);
       const priorityVal = parseFloat(document.getElementById("presign-gas-priority").value);
@@ -1237,16 +1248,26 @@
       // Reset signed state if gas changed (cần ký lại)
       let gasChanged = false;
       if (presignedTiers.some(t => t.status === "signed")) {
+        // Reset all signed tiers back to pending
+        for (const tier of presignedTiers) {
+          if (tier.status === "signed") {
+            tier.status = "pending";
+            tier.txHash = null;
+            tier.amountWei = null;
+          }
+        }
         document.getElementById("btn-save-server").disabled = true;
         gasChanged = true;
       }
       if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
+        presignedWithdrawAll.status = "pending";
+        presignedWithdrawAll.txHash = null;
         document.getElementById("btn-save-server").disabled = true;
-        presignedWithdrawAll = null;
         gasChanged = true;
       }
       if (gasChanged) {
         showPresignError("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
+        renderTierList();
       }
       updateSignButton();
     };
@@ -1255,6 +1276,8 @@
       const btn = document.getElementById("btn-sign-all");
       if (currentAccount && presignedNonce !== null && presignedGas.maxFeePerGas && presignedTiers.length > 0) {
         btn.disabled = false;
+      } else {
+        btn.disabled = true;
       }
       // Enable/disable nút rút toàn bộ shares
       const btnAll = document.getElementById("btn-sign-withdraw-all");
@@ -1277,6 +1300,7 @@
     window.addTier = function() {
       presignedTiers.push({ amount: "", amountWei: null, signedTx: null, status: "pending" });
       renderTierList();
+      updateSignButton();
     };
 
     window.removeTier = function(index) {
@@ -1506,7 +1530,7 @@
 
     function buildPresignedBundle() {
       // Đọc gas mới nhất từ input (phòng trường hợp user sửa sau khi ký)
-      onGasInputChange();
+      readGasInputs();
       const signedTiers = presignedTiers.filter(t => t.status === "signed");
       // Gửi metadata (không signedTx) — proxy sẽ ghép với signed tx đã capture
       const tiers = signedTiers.map((tier) => ({
@@ -1587,7 +1611,7 @@
           );
           document.getElementById("btn-save-server").textContent = "✅ Đã Lưu";
         } else if (result.error?.includes("No captured transactions")) {
-          showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier.");
+          showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier hoặc 'Ký Rút Toàn Bộ Shares'.");
           document.getElementById("btn-save-server").disabled = false;
           document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
         } else {
