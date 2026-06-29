@@ -321,7 +321,7 @@ async function broadcastPresigned(liquidity, loanToken, market) {
  * If the lender's on-chain nonce has increased beyond the bundle nonce,
  * the bundle is stale and should be cleared.
  */
-async function expireStaleBundle(client) {
+async function expireStaleBundle(client, market, loanToken, collateralToken) {
   if (!fs.existsSync(PRESIGNED_FILE)) return;
 
   let bundle;
@@ -355,6 +355,48 @@ async function expireStaleBundle(client) {
     console.log(
       `[${new Date().toISOString()}] 📁 Đã lưu bundle expired → ${usedPath}`
     );
+
+    // Gửi thông báo qua ntfy
+    if (market && loanToken && collateralToken) {
+      try {
+        const loanSymbol = loanToken.symbol ?? "tokens";
+        const collateralSymbol = collateralToken.symbol ?? "tokens";
+        const webappLink = `${WEBAPP_URL}?market=${MARKET_ID}&lender=${LENDER_ADDRESS}`;
+
+        const title = `Morpho Blue: Pre-signed bundle da het han! ${loanSymbol}`;
+        const body = [
+          `**Pre-signed bundle đã bị xóa do nonce tăng.**`,
+          ``,
+          `**Market:** ${collateralSymbol}/${loanSymbol}`,
+          `**Nonce bundle:** ${bundle.nonce}`,
+          `**Nonce on-chain:** ${currentNonce}`,
+          `**Lý do:** Ví lender đã gửi một giao dịch khác với nonce cao hơn, ` +
+            `khiến pre-signed bundle không còn hợp lệ.`,
+          ``,
+          `[Mở Webapp để tạo bundle mới](${webappLink})`,
+        ].join("\n");
+
+        await fetch(`${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`, {
+          method: "POST",
+          headers: {
+            "Title": title,
+            "Tags": "warning",
+            "Priority": "4",
+            "Markdown": "yes",
+            "Click": webappLink,
+          },
+          body,
+        });
+
+        console.log(
+          `[${new Date().toISOString()}] 🔔 Đã gửi thông báo bundle hết hạn`
+        );
+      } catch (err) {
+        console.error(
+          `[${new Date().toISOString()}] ❌ Lỗi gửi ntfy bundle hết hạn: ${err.message}`
+        );
+      }
+    }
   }
 }
 
@@ -369,9 +411,6 @@ async function checkAndNotify() {
   // Reset daily counter early — must run even if RPC is down
   // to ensure counters don't stay stale during extended outages.
   resetDailyIfNeeded();
-
-  // Check for stale presigned bundle (nonce mismatch with chain)
-  await expireStaleBundle(publicClient);
 
   let market, position, loanToken, collateralToken;
   try {
@@ -391,6 +430,9 @@ async function checkAndNotify() {
     );
     return { notified: false, liquidity: null };
   }
+
+  // Check for stale presigned bundle (nonce mismatch with chain)
+  await expireStaleBundle(publicClient, market, loanToken, collateralToken);
 
   const liquidity = market.liquidity;
   const supplyAssets = position.supplyAssets;
