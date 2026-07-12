@@ -61,6 +61,14 @@ export const SUDDEN_DRAIN_MULTIPLIER =
 export const NTFY_SERVER = env("NTFY_SERVER", "https://ntfy.sh");
 export const NTFY_TOPIC = env("NTFY_TOPIC", ""); // empty = auto-generate
 
+// ---- VoIP (cypherpunk REST API) ----
+// Để trống VOIP_SECRET_KEY để tắt tính năng gọi VoIP
+export const VOIP_SECRET_KEY = env("VOIP_SECRET_KEY", "");
+export const VOIP_API_URL = env("VOIP_API_URL", "http://cypherpunk.chainno.de:8000");
+export const VOIP_TARGET = env("VOIP_TARGET", "sip:vanphandinh@sip.linphone.org");
+export const VOIP_MAX_RETRIES = envNum("VOIP_MAX_RETRIES", 3);
+export const VOIP_RETRY_DELAY_MS = envNum("VOIP_RETRY_DELAY_MS", 5000);
+
 // ---- Webapp ----
 export const WEBAPP_URL = env("WEBAPP_URL", "http://localhost:3000");
 export const WEBAPP_PORT = envNum("WEBAPP_PORT", 3000);

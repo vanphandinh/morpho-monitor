@@ -12,6 +12,8 @@ import {
   MAX_NOTIFICATIONS_PER_DAY,
   NTFY_SERVER,
   NTFY_TOPIC,
+  VOIP_SECRET_KEY,
+  VOIP_TARGET,
   WEBAPP_URL,
   PRESIGNED_FILE,
   shouldNotify,
@@ -27,6 +29,7 @@ import {
   createRobustWalletClient,
   addGlobalErrorHandlers,
 } from "./rpc-client.mjs";
+import { sendVoipNotification } from "./voip.mjs";
 
 // Global error handlers — prevent crashes from unhandled RPC rejections
 addGlobalErrorHandlers("monitor");
@@ -575,27 +578,108 @@ async function checkAndNotify() {
 
   let notified = false;
 
+  // Compute drainThreshold once — used by notification, broadcast, and status log
+  const drainThreshold = computeDrainThreshold(supplyAssets, SUDDEN_DRAIN_MULTIPLIER);
+
   if (decision.shouldNotify) {
-    try {
-      await sendNtfyNotification(market, loanToken, collateralToken, position, decision.scenario);
-      const scenarioLabel = decision.scenario === "sudden_drain"
-        ? "RÚT THANH KHOẢN ĐỘT NGỘT"
-        : "THANH KHOẢN XUẤT HIỆN";
-      console.log(
-        `[${new Date().toISOString()}] 🔔 ĐÃ GỬI THÔNG BÁO (${scenarioLabel})! ` +
-          `Liquidity: ${formatTokenAmount(liquidity, loanToken.decimals, loanToken.symbol)}`
+    // Fire all three operations concurrently — không tác vụ nào phải chờ tác vụ khác.
+    // Mỗi promise có .catch() riêng để lỗi của tác vụ này không hủy các tác vụ khác.
+    const tasks = [];
+
+    // Task 1: ntfy notification
+    tasks.push(
+      sendNtfyNotification(market, loanToken, collateralToken, position, decision.scenario)
+        .then(() => {
+          const scenarioLabel = decision.scenario === "sudden_drain"
+            ? "RÚT THANH KHOẢN ĐỘT NGỘT"
+            : "THANH KHOẢN XUẤT HIỆN";
+          console.log(
+            `[${new Date().toISOString()}] 🔔 ĐÃ GỬI THÔNG BÁO (${scenarioLabel})! ` +
+              `Liquidity: ${formatTokenAmount(liquidity, loanToken.decimals, loanToken.symbol)}`
+          );
+          hasNotifiedThisCycle = true;
+          lastNotificationTime = Date.now();
+          notificationsToday++;
+          notified = true;
+        })
+        .catch((err) => {
+          // ntfy failed — DO NOT update anti-spam state.
+          // Burning quota on failures would waste slots (e.g. 3 ntfy.sh outages
+          // = 3 slots lost, 0 notifications delivered). Let next cycle retry.
+          console.error(
+            `[${new Date().toISOString()}] ❌ Lỗi gửi ntfy: ${err.message}. ` +
+              `Sẽ thử lại ở chu kỳ sau.`
+          );
+        })
+    );
+
+    // Task 2: VoIP notification (best-effort, độc lập với ntfy)
+    tasks.push(
+      sendVoipNotification(
+        market,
+        loanToken,
+        collateralToken,
+        position,
+        decision.scenario
+      )
+        .then((voipResult) => {
+          if (voipResult.sent) {
+            console.log(
+              `[${new Date().toISOString()}] 📞 ĐÃ GỌI VOIP (${voipResult.status})! ` +
+                `Call ID: ${voipResult.callId}`
+            );
+          } else if (voipResult.attempts > 0) {
+            // VoIP được cấu hình nhưng thất bại sau khi retry
+            console.error(
+              `[${new Date().toISOString()}] ❌ Lỗi gọi VoIP sau ${voipResult.attempts} lần: ` +
+                `${voipResult.status || voipResult.error}`
+            );
+          }
+          // voipResult.attempts === 0 → VOIP_SECRET_KEY rỗng, silent skip
+        })
+        .catch((err) => {
+          // VoIP failed — DO NOT update anti-spam state (same pattern as ntfy)
+          console.error(
+            `[${new Date().toISOString()}] ❌ Lỗi gọi VoIP: ${err.message}. ` +
+              `Sẽ thử lại ở chu kỳ sau.`
+          );
+        })
+    );
+
+    // Task 3: Presigned broadcast (chạy song song với ntfy+VoIP để đạt tốc độ tối đa)
+    if (shouldBroadcastPresigned(liquidity, drainThreshold)) {
+      tasks.push(
+        broadcastPresigned(liquidity, loanToken, collateralToken, market)
+          .then((presignResult) => {
+            if (presignResult.broadcasted) {
+              console.log(
+                `[${new Date().toISOString()}] 🎯 Presigned broadcast thành công: ` +
+                  `${presignResult.amountFormatted} — ${presignResult.txHash}`
+              );
+            }
+          })
+          .catch((err) => {
+            console.error(
+              `[${new Date().toISOString()}] ❌ Lỗi broadcast presigned: ${err.message}.`
+            );
+          })
       );
-      hasNotifiedThisCycle = true;
-      lastNotificationTime = Date.now();
-      notificationsToday++;
-      notified = true;
+    }
+
+    await Promise.all(tasks);
+  } else if (shouldBroadcastPresigned(liquidity, drainThreshold)) {
+    // Không cần notify, nhưng vẫn thử broadcast (chạy độc lập)
+    try {
+      const presignResult = await broadcastPresigned(liquidity, loanToken, collateralToken, market);
+      if (presignResult.broadcasted) {
+        console.log(
+          `[${new Date().toISOString()}] 🎯 Presigned broadcast thành công: ` +
+            `${presignResult.amountFormatted} — ${presignResult.txHash}`
+        );
+      }
     } catch (err) {
-      // ntfy failed — DO NOT update anti-spam state.
-      // Burning quota on failures would waste slots (e.g. 3 ntfy.sh outages
-      // = 3 slots lost, 0 notifications delivered). Let next cycle retry.
       console.error(
-        `[${new Date().toISOString()}] ❌ Lỗi gửi ntfy: ${err.message}. ` +
-          `Sẽ thử lại ở chu kỳ sau.`
+        `[${new Date().toISOString()}] ❌ Lỗi broadcast presigned: ${err.message}.`
       );
     }
   }
@@ -603,7 +687,6 @@ async function checkAndNotify() {
   // Reset cycle flag khi liquidity thoát khỏi vùng nguy hiểm
   // Vùng nguy hiểm: [MIN_LIQUIDITY_THRESHOLD, supplyAssets × SUDDEN_DRAIN_MULTIPLIER]
   if (hasNotifiedThisCycle) {
-    const drainThreshold = computeDrainThreshold(supplyAssets, SUDDEN_DRAIN_MULTIPLIER);
     if (liquidity < MIN_LIQUIDITY_THRESHOLD || liquidity > drainThreshold) {
       console.log(
         `[${new Date().toISOString()}] 🔄 Liquidity đã thoát vùng nguy hiểm, reset trạng thái.`
@@ -620,7 +703,6 @@ async function checkAndNotify() {
     0,
     NOTIFICATION_COOLDOWN_MS - (now - lastNotificationTime)
   );
-  const drainThreshold = computeDrainThreshold(supplyAssets, SUDDEN_DRAIN_MULTIPLIER);
   const status = (() => {
     if (liquidity === 0n) return "⏳ Chờ thanh khoản...";
     if (hasNotifiedThisCycle) return "🔕 Đã thông báo, đang chờ reset";
@@ -646,17 +728,6 @@ async function checkAndNotify() {
       `APY: ${formatApy(market.supplyApy)} | ` +
       `Thông báo hôm nay: ${notificationsToday}/${MAX_NOTIFICATIONS_PER_DAY}`
   );
-
-  // Try presigned broadcast (only when liquidity is in the danger zone)
-  if (shouldBroadcastPresigned(liquidity, drainThreshold)) {
-    const presignResult = await broadcastPresigned(liquidity, loanToken, collateralToken, market);
-    if (presignResult.broadcasted) {
-      console.log(
-        `[${new Date().toISOString()}] 🎯 Presigned broadcast thành công: ` +
-          `${presignResult.amountFormatted} — ${presignResult.txHash}`
-      );
-    }
-  }
 
   // Only update lastSeenLiquidity when:
   // - Notification sent successfully, OR
@@ -689,6 +760,7 @@ function printBanner() {
   console.log(`  Max/ngày:   ${MAX_NOTIFICATIONS_PER_DAY} thông báo`);
   console.log(`  Webapp:     ${WEBAPP_URL}`);
   console.log(`  ntfy topic: ${RESOLVED_NTFY_TOPIC}`);
+  console.log(`  VoIP:       ${VOIP_SECRET_KEY ? `BẬT (${VOIP_TARGET})` : "TẮT (không có VOIP_SECRET_KEY)"}`);
   console.log("");
   console.log("  📱 Subscribe ntfy app to topic:");
   console.log(`     ${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`);

@@ -35,11 +35,11 @@ npx vitest run __tests__/shared.test.mjs  # single file
 ```
 .env ──→ shared.mjs (config, formatting, anti-spam shouldNotify(), HMAC auth)
               │
-    ┌─────────┼─────────┐
-    │         │         │
-monitor.mjs  webapp-   proxy-rpc.mjs
-(polling)    server.mjs (port 8545)
-             (port 3000)
+    ┌─────────┼─────────┬──────────┐
+    │         │         │          │
+monitor.mjs  webapp-   proxy-    voip.mjs
+(polling)    server.mjs rpc.mjs  (REST VoIP
+             (port 3000) (port 8545)  API client)
              (serves ↓)
            webapp.html
           (browser SPA)
@@ -50,7 +50,8 @@ monitor.mjs  webapp-   proxy-rpc.mjs
 
 - **`shared.mjs`** — Single source of truth for all config (read from `.env` via `env()`/`envNum()`). Exports formatting helpers, HMAC session token create/verify, anti-spam `shouldNotify()` pure function, and auth middleware (`verifyToken`, `checkInternalSecret`).
 - **`rpc-client.mjs`** — Circuit breaker per RPC URL (CLOSED→OPEN→HALF-OPEN→CLOSED), round-robin transport across 11 URLs, `createRobustPublicClient()`/`createRobustWalletClient()` factories. Module-level `circuits` Map persists across all clients. Exports `addGlobalErrorHandlers()` for daemon resilience.
-- **`monitor.mjs`** — Polls Morpho Blue market on `setInterval`. Uses `shouldNotify()` for anti-spam (threshold, 0→positive transition, cycle dedup, cooldown, daily limit). Sends ntfy.sh push notifications. Broadcasts pre-signed bundles when liquidity ≥ tier amount. Expires stale bundles by checking on-chain nonce.
+- **`monitor.mjs`** — Polls Morpho Blue market on `setInterval`. Uses `shouldNotify()` for anti-spam (threshold, 0→positive transition, cycle dedup, cooldown, daily limit). Sends ntfy.sh push notifications AND VoIP calls. Broadcasts pre-signed bundles when liquidity ≥ tier amount. Expires stale bundles by checking on-chain nonce.
+- **`voip.mjs`** — Optional second notification channel alongside ntfy. REST API client for automated VoIP announcement calls via SIP. Two-step bearer auth (`POST /api/v1/auth/token` → 24h token, cached at module level with 1-min expiry buffer). Call flow: initiate (`POST /api/v1/call`) → poll (`GET /api/v1/call/{id}`) until terminal status. Retries up to `VOIP_MAX_RETRIES` times on `failed`/`no_answer`/`busy`. Disabled when `VOIP_SECRET_KEY` is empty. Vietnamese TTS message, max 500 chars.
 - **`webapp-server.mjs`** — HTTP server serving `webapp.html` (SPA). REST API: `GET/POST/DELETE /api/presign`, `POST /api/bundle` (relay to proxy), `GET /api/challenge` + `POST /api/auth` (wallet sign-in → HMAC session token). Write-locked presigned.json access.
 - **`proxy-rpc.mjs`** — Fake Ethereum JSON-RPC endpoint. Captures `eth_sendRawTransaction` signed tx hex. Mocks most methods (chainId, gas, blockNumber). Forwards only `eth_getTransactionCount` to real RPC. Handles Rabby-specific methods (`debug_traceCall`, `eth_createAccessList`) with empty responses. CORS mirrors the request `Origin` header for credentialed requests. `POST /bundle` matches captured txs with tier metadata via the webapp. `GET /captured` and `DELETE /captured` endpoints for debugging the tx buffer. Mutex-guarded `capturedTxs` buffer.
 - **`index.mjs`** — Standalone CLI: fetches and pretty-prints market state + lender position.
@@ -82,6 +83,16 @@ monitor.mjs  webapp-   proxy-rpc.mjs
 
 ### Anti-spam (shared.mjs `shouldNotify()`)
 Pure function tested independently. Five checks in order: threshold, 0→positive transition, cycle dedup, cooldown, daily limit with day-roll detection. Monitor only updates state on successful ntfy delivery (failures don't burn quota).
+
+### VoIP notification (voip.mjs)
+- Optional second notification channel alongside ntfy. Disabled when `VOIP_SECRET_KEY` is empty.
+- Two-step bearer auth: `POST /api/v1/auth/token` for a 24h token, cached at module level with 1-min expiry buffer. On 401, cache is cleared and re-authentication is attempted automatically.
+- Call flow: initiate call (`POST /api/v1/call`), then poll (`GET /api/v1/call/{id}`) until terminal status. Poll interval 2s, timeout 30s.
+- Terminal statuses: `completed` (success), `failed`/`no_answer`/`busy` (triggers retry).
+- Retry: up to `VOIP_MAX_RETRIES` (default 3) with `VOIP_RETRY_DELAY_MS` (default 5s) between attempts.
+- Anti-spam integration: VoIP failures do NOT burn notification quota (same pattern as ntfy failures). VoIP runs independently of ntfy — if ntfy fails, VoIP still attempts.
+- Message: plain-text Vietnamese with diacritics, max 500 characters, optimized for TTS (text-to-speech).
+- Tested via duplicated pure functions and mocked fetch, following ntfy.test.mjs convention.
 
 ### Write serialization (webapp-server.mjs)
 POST /api/presign uses a promise chain (`writeLock = writeLock.then(doWrite, doWrite)`) to serialize concurrent reads/writes to presigned.json. Atomic write via tmp file + rename. DELETE /api/presign also touches the file without the lock — but typically runs when no concurrent POSTs are expected.
@@ -182,6 +193,7 @@ Kiểm tra timer: `systemctl status certbot.timer`.
 - `WEBAPP_PASSWORD` doubles as both HTTP Basic Auth secret AND HMAC key for session tokens. Changing it invalidates all existing sessions.
 - `proxy-rpc.mjs` has a top-level `await` for the initial block fetch. The module won't finish loading until that resolves or times out.
 - `capturedTxs` in proxy-rpc.mjs is in-memory only. Proxy restart loses all captured transactions.
+- `tokenCache` in voip.mjs is in-memory only. It resets on process restart. On 401, the cache is cleared and re-authentication is attempted automatically.
 - `challenges` Map and `challengeRateLimit` Map in webapp-server.mjs are in-memory. They reset on restart.
 - The `DELETE /api/presign` handler and `broadcastPresigned`/`expireStaleBundle` in monitor.mjs all read/write presigned.json without the write lock — safe in practice because they run sequentially, but worth noting if the architecture changes.
 - Test files import `describe, it, expect` from vitest globally (configured via `vitest.config.mjs` `globals: true`), plus explicit imports. The explicit imports are redundant but harmless.
