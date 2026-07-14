@@ -7,6 +7,7 @@ import {
   formatTokenAmount,
   wadToPercent,
   formatApy,
+  toTtsFriendly,
 } from "./shared.mjs";
 
 // ============================================================
@@ -88,8 +89,8 @@ function clearTokenCache() {
  * @returns {string} Tin nhắn tiếng Việt có dấu
  */
 function buildVoipMessage(market, loanToken, collateralToken, position, scenario) {
-  const loanSymbol = loanToken?.symbol ?? "token";
-  const collateralSymbol = collateralToken?.symbol ?? "token";
+  const loanSymbol = toTtsFriendly(loanToken?.symbol);
+  const collateralSymbol = toTtsFriendly(collateralToken?.symbol);
   const loanDecimals = loanToken?.decimals ?? 18;
   const isSuddenDrain = scenario === "sudden_drain";
 
@@ -100,7 +101,7 @@ function buildVoipMessage(market, loanToken, collateralToken, position, scenario
 
   if (isSuddenDrain) {
     return (
-      `Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol}/${loanSymbol} đã giảm mạnh. ` +
+      `Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol} & ${loanSymbol} đã giảm mạnh. ` +
       `Thanh khoản hiện tại: ${liquidityStr}. ` +
       `Vị thế của bạn: ${supplyStr}. ` +
       `Tỉ lệ sử dụng: ${utilizationStr}. ` +
@@ -109,7 +110,7 @@ function buildVoipMessage(market, loanToken, collateralToken, position, scenario
     );
   } else {
     return (
-      `Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol}/${loanSymbol}. ` +
+      `Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol} & ${loanSymbol}. ` +
       `Thanh khoản hiện tại: ${liquidityStr}. ` +
       `Vị thế của bạn: ${supplyStr}. ` +
       `Tỉ lệ sử dụng: ${utilizationStr}. ` +

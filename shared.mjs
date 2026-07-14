@@ -135,6 +135,16 @@ export function formatApy(apy) {
 }
 
 /**
+ * Chuyển token symbol thành dạng thân thiện với TTS.
+ * Tách từng ký tự ra để TTS đọc từng chữ cái thay vì cố phát âm.
+ * "USDC" → "U S D C", "WETH" → "W E T H"
+ */
+export function toTtsFriendly(symbol) {
+  const s = symbol ?? "token";
+  return s.split("").join(" ").toUpperCase();
+}
+
+/**
  * Shorten an Ethereum address for display (0x1234...abcd).
  */
 export function shortenAddress(address) {

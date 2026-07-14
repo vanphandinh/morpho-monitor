@@ -3,6 +3,7 @@ import {
   formatTokenAmount,
   wadToPercent,
   formatApy,
+  toTtsFriendly,
 } from "../shared.mjs";
 
 // ============================================================
@@ -46,8 +47,8 @@ function makeMockPosition(overrides = {}) {
 // ============================================================
 
 function buildVoipMessage(market, loanToken, collateralToken, position, scenario) {
-  const loanSymbol = loanToken?.symbol ?? "token";
-  const collateralSymbol = collateralToken?.symbol ?? "token";
+  const loanSymbol = toTtsFriendly(loanToken?.symbol);
+  const collateralSymbol = toTtsFriendly(collateralToken?.symbol);
   const loanDecimals = loanToken?.decimals ?? 18;
   const isSuddenDrain = scenario === "sudden_drain";
 
@@ -58,7 +59,7 @@ function buildVoipMessage(market, loanToken, collateralToken, position, scenario
 
   if (isSuddenDrain) {
     return (
-      `Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol}/${loanSymbol} đã giảm mạnh. ` +
+      `Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol} & ${loanSymbol} đã giảm mạnh. ` +
       `Thanh khoản hiện tại: ${liquidityStr}. ` +
       `Vị thế của bạn: ${supplyStr}. ` +
       `Tỉ lệ sử dụng: ${utilizationStr}. ` +
@@ -67,7 +68,7 @@ function buildVoipMessage(market, loanToken, collateralToken, position, scenario
     );
   } else {
     return (
-      `Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol}/${loanSymbol}. ` +
+      `Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol} & ${loanSymbol}. ` +
       `Thanh khoản hiện tại: ${liquidityStr}. ` +
       `Vị thế của bạn: ${supplyStr}. ` +
       `Tỉ lệ sử dụng: ${utilizationStr}. ` +
@@ -91,7 +92,7 @@ describe("buildVoipMessage", () => {
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "sudden_drain");
 
     expect(msg).toContain("Cảnh báo!");
-    expect(msg).toContain("WETH/USDC");
+    expect(msg).toContain("W E T H & U S D C");
     expect(msg).toContain("đã giảm mạnh");
     expect(msg).toContain("5000");
     expect(msg).toContain("1000");
@@ -110,7 +111,7 @@ describe("buildVoipMessage", () => {
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "liquidity_appeared");
 
     expect(msg).toContain("Thông báo!");
-    expect(msg).toContain("WETH/USDC");
+    expect(msg).toContain("W E T H & U S D C");
     expect(msg).toContain("đã xuất hiện");
     expect(msg).toContain("Hãy vào trang web để rút tiền");
   });
@@ -136,7 +137,7 @@ describe("buildVoipMessage", () => {
 
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "sudden_drain");
 
-    expect(msg).toContain("token/token");
+    expect(msg).toContain("T O K E N & T O K E N");
     expect(msg).not.toContain("null");
     expect(msg).not.toContain("undefined");
   });
@@ -150,7 +151,7 @@ describe("buildVoipMessage", () => {
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "sudden_drain");
 
     // With 18 decimals, 1 WAD = 1 token (formatUnits strips trailing zeros)
-    expect(msg).toContain("1 USDC");
+    expect(msg).toContain("1 U S D C");
   });
 });
 
