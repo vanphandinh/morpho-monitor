@@ -39,6 +39,18 @@ export const RPC_URLS = env("RPC_URLS",
   "https://ethereum-mainnet.core.chainstack.com/9a4bbcc8b9369e3c7247274b75736e64"
 ).split(",").map(u => u.trim()).filter(Boolean);
 
+// ---- WebSocket RPC (real-time event trigger, tùy chọn) ----
+// WSS endpoints để nhận events real-time từ Morpho Blue.
+// Để trống để chạy HTTP-only mode. Phân cách bằng dấu phẩy.
+// VD: wss://ethereum-rpc.publicnode.com,wss://eth-mainnet.g.alchemy.com/v2/KEY
+export const WSS_URLS = env("WSS_URLS",
+  "wss://ethereum-rpc.publicnode.com"
+).split(",").map(u => u.trim()).filter(Boolean);
+
+// Debounce window cho WebSocket events (ms) — gộp nhiều events trong cùng block
+// thành 1 lần check duy nhất để tránh gọi fetchMarket() quá nhiều.
+export const WSS_DEBOUNCE_MS = envNum("WSS_DEBOUNCE_MS", 3000);
+
 // ---- Monitor ----
 export const MONITOR_INTERVAL_MS = envNum("MONITOR_INTERVAL_MS", 30000);
 export const NOTIFICATION_COOLDOWN_MS =

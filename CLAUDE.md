@@ -35,11 +35,11 @@ npx vitest run __tests__/shared.test.mjs  # single file
 ```
 .env ──→ shared.mjs (config, formatting, anti-spam shouldNotify(), HMAC auth)
               │
-    ┌─────────┼─────────┬──────────┐
-    │         │         │          │
-monitor.mjs  webapp-   proxy-    voip.mjs
-(polling)    server.mjs rpc.mjs  (REST VoIP
-             (port 3000) (port 8545)  API client)
+    ┌─────────┼─────────┬──────────┬──────────┐
+    │         │         │          │          │
+monitor.mjs  webapp-   proxy-    voip.mjs   WSS watcher
+(polling +   server.mjs rpc.mjs  (REST VoIP  (webSocket
+ WSS hybrid) (port 3000)(port 8545) API client)  trigger)
              (serves ↓)
            webapp.html
           (browser SPA)
@@ -50,7 +50,7 @@ monitor.mjs  webapp-   proxy-    voip.mjs
 
 - **`shared.mjs`** — Single source of truth for all config (read from `.env` via `env()`/`envNum()`). Exports formatting helpers, HMAC session token create/verify, anti-spam `shouldNotify()` pure function, and auth middleware (`verifyToken`, `checkInternalSecret`).
 - **`rpc-client.mjs`** — Circuit breaker per RPC URL (CLOSED→OPEN→HALF-OPEN→CLOSED), round-robin transport across 11 URLs, `createRobustPublicClient()`/`createRobustWalletClient()` factories. Module-level `circuits` Map persists across all clients. Exports `addGlobalErrorHandlers()` for daemon resilience.
-- **`monitor.mjs`** — Polls Morpho Blue market on `setInterval`. Uses `shouldNotify()` for anti-spam (threshold, 0→positive transition, cycle dedup, cooldown, daily limit). Sends ntfy.sh push notifications AND VoIP calls. Broadcasts pre-signed bundles when liquidity ≥ tier amount. Expires stale bundles by checking on-chain nonce.
+- **`monitor.mjs`** — Polls Morpho Blue market on `setInterval`. ALSO runs a WebSocket watcher (`startWsWatcher()`) that creates 5 separate `watchContractEvent` subscriptions (one per event: Supply, Withdraw, Borrow, Repay, Liquidate) via `eth_subscribe` as real-time triggers. Each subscription uses `eventName` as a SINGLE STRING with `args: { id: MARKET_ID }` for correct RPC-level topic filtering (`topics[1] = MARKET_ID`). Events fire a debounced `checkAndNotify()` immediately instead of waiting for the next poll cycle. Uses `shouldNotify()` for anti-spam (threshold, 0→positive transition, cycle dedup, cooldown, daily limit). Sends ntfy.sh push notifications AND VoIP calls. Broadcasts pre-signed bundles when liquidity ≥ tier amount. Expires stale bundles by checking on-chain nonce.
 - **`voip.mjs`** — Optional second notification channel alongside ntfy. REST API client for automated VoIP announcement calls via SIP. Two-step bearer auth (`POST /api/v1/auth/token` → 24h token, cached at module level with 1-min expiry buffer). Call flow: initiate (`POST /api/v1/call`) → poll (`GET /api/v1/call/{id}`) until terminal status. Retries up to `VOIP_MAX_RETRIES` times on `failed`/`no_answer`/`busy`. Disabled when `VOIP_SECRET_KEY` is empty. Vietnamese TTS message, max 500 chars.
 - **`webapp-server.mjs`** — HTTP server serving `webapp.html` (SPA). REST API: `GET/POST/DELETE /api/presign`, `POST /api/bundle` (relay to proxy), `GET /api/challenge` + `POST /api/auth` (wallet sign-in → HMAC session token). Write-locked presigned.json access.
 - **`proxy-rpc.mjs`** — Fake Ethereum JSON-RPC endpoint. Captures `eth_sendRawTransaction` signed tx hex. Mocks most methods (chainId, gas, blockNumber). Forwards only `eth_getTransactionCount` to real RPC. Handles Rabby-specific methods (`debug_traceCall`, `eth_createAccessList`) with empty responses. CORS mirrors the request `Origin` header for credentialed requests. `POST /bundle` matches captured txs with tier metadata via the webapp. `GET /captured` and `DELETE /captured` endpoints for debugging the tx buffer. Mutex-guarded `capturedTxs` buffer.
@@ -103,6 +103,36 @@ POST /api/presign uses a promise chain (`writeLock = writeLock.then(doWrite, doW
 ### Dependency injection for testing (expire-bundle.test.mjs)
 `expireStaleBundle` in `monitor.mjs` accepts `fs` and `client` as explicit parameters (injected) rather than importing them directly. The test file passes mocks for `existsSync`, `readFileSync`, `writeFileSync`, `unlinkSync`, and `getTransactionCount`. This separates business logic from I/O, making the function testable without real filesystem or chain calls.
 
+### WebSocket hybrid trigger (monitor.mjs)
+
+WebSocket `eth_subscribe` được dùng làm **trigger** (không phải data source) để giảm độ trễ phát hiện từ 0-30s xuống 0-3s. Kiến trúc additive — không sửa đổi logic hiện có, chỉ thêm trigger bổ sung.
+
+```
+5 × watchContractEvent(eventName="Supply", args={id: MARKET_ID})
+  → topics = [[Supply_sig], MARKET_ID]    ← lọc CHÍNH XÁC ở RPC level
+5 × watchContractEvent(eventName="Withdraw", args={id: MARKET_ID})
+... (Borrow, Repay, Liquidate)
+
+→ Chỉ nhận events cho đúng market, không nhận event thừa từ market khác
+→ Mỗi event → debouncedCheck() [gộp trong WSS_DEBOUNCE_MS window, mặc định 3s]
+  → checkAndNotify() [GIỮ NGUYÊN 100%, fetch dữ liệu qua HTTP]
+    → fetchMarket()     ← HTTP RPC (dữ liệu chính xác, không delta tracking)
+    → shouldNotify()    ← anti-spam không đổi
+    → broadcastPresigned()
+
+setInterval(30s) → vẫn chạy song song làm fallback
+```
+
+- **5 subscription riêng biệt** — mỗi event (Supply, Withdraw, Borrow, Repay, Liquidate) một `watchContractEvent` với `eventName` là SINGLE STRING. `viem` encode `args: { id: MARKET_ID }` chính xác thành `topics[1] = MARKET_ID`, lọc ở RPC level. 5 subscription dùng chung 1 WebSocket connection → không tốn thêm tài nguyên.
+- **Tại sao không dùng `watchEvent` với `events[]`?** — `watchEvent` trong viem 2.53 bị lỗi encode topics khi dùng `events` (plural) + `args`: `flatMap` nhét tất cả event signatures + args values vào `topics[0]`, khiến `args.id` bị coi là event signature thay vì filter `topics[1]`. Hậu quả: subscription khớp MỌI market thay vì chỉ market được chỉ định.
+- **WebSocket chỉ làm trigger** — không tham gia vào data pipeline. Mọi quyết định vẫn dựa trên HTTP `fetchMarket()`.
+- **Debounce 3s** — gộp nhiều events trong cùng block thành 1 lần check, tránh spam RPC calls. 5 events cùng block → `clearTimeout` reset timer → chỉ 1 `checkAndNotify()`.
+- **Sequential failover** — thử từng WSS URL theo thứ tự. `createPublicClient` + `webSocket()` là synchronous, cần gọi `client.getChainId()` để test kết nối thực sự. Connection failure → chuyển URL tiếp theo.
+- **3 lớp guard trong `onError`**: (1) `wsState === null` — chặn duplicate failover từ nhiều subscription cùng lúc; (2) `wsState.url !== url` — chặn error từ connection cũ kill connection mới sau khi đã failover; (3) `msg.includes("ethod not found")` — chỉ failover khi endpoint thực sự không hỗ trợ `eth_subscribe`, các lỗi network tạm thời để viem tự reconnect.
+- **Không phải critical path** — nếu tất cả WSS endpoints thất bại, HTTP interval vẫn chạy bình thường. Không có circuit breaker phức tạp như HTTP transport.
+- **Config**: `WSS_URLS` (comma-separated WSS endpoints), `WSS_DEBOUNCE_MS` (debounce window, mặc định 3000ms).
+- **Shutdown**: `stopWsWatcher()` gọi tất cả 5 `unwatch()` + `clearTimeout(debounceTimer)`.
+
 ### Browser fallback transport (webapp.html)
 A simplified round-robin transport without circuit breaker. Each request starts at a random URL index. On failure, it tries the next URL. On success, it advances the index for the next request. No circuit breaker because browser sessions are short-lived and the user can simply refresh.
 
@@ -119,6 +149,7 @@ Detects the user's wallet by checking EIP-1193 provider flags: `e.isRabby`, `e.i
   - `presign-broadcast.test.mjs` — duplicates `selectBestPresignedTx` and `validatePresignedBundle` from `monitor.mjs`
   - `expire-bundle.test.mjs` — duplicates `expireStaleBundle` from `monitor.mjs` (uses dependency injection: accepts `fs` and `client` as parameters)
   - `ntfy.test.mjs` — duplicates `buildNtfyPayload` from `monitor.mjs`; includes 6 live integration tests that POST to `ntfy.sh`
+  - `wss-watcher.test.mjs` — duplicates `debouncedCheck` debounce logic and sequential failover pattern from `monitor.mjs` (15 tests); uses fake timers for debounce verification
 - **Vietnamese comments and log messages** throughout. UI is in Vietnamese.
 - **`--env-file=.env`** flag required for all `node` commands. The `.env` file is gitignored; `.env.example` is the template.
 - **Port conventions:** webapp=3000, proxy=8545. Proxy URL is auto-derived from `WEBAPP_URL` host + `PROXY_PORT`.
@@ -204,3 +235,6 @@ Kiểm tra timer: `systemctl status certbot.timer`.
 - `proxy-rpc.mjs` CORS mirrors the request `Origin` header. Any origin can make credentialed requests — acceptable since the proxy only listens on localhost, but worth noting if exposed.
 - `ntfy.test.mjs` contains 6 live integration tests that make real HTTP requests to ntfy.sh. These require `NTFY_SERVER` env var (defaults to `https://ntfy.sh`). Included in `npm test` — may fail in offline environments.
 - `docker-entrypoint.sh` uses `wait -n` to detect when any child process exits, then checks each PID via `kill -0` and restarts any dead service. This provides self-healing without a full process manager.
+- `monitor.mjs` WSS watcher uses 5 separate `watchContractEvent` calls (one per event) instead of `watchEvent` with `events[]`. Reason: `watchEvent` in viem 2.53 has a bug where `flatMap` over multiple events + `args` flattens topic encodings incorrectly — `args.id` values end up mixed with event signatures in `topics[0]` instead of being placed in `topics[1]` as a proper indexed filter. Using `watchContractEvent` with a SINGLE STRING `eventName` per call avoids this bug and correctly filters at the RPC level.
+- `createPublicClient` with `webSocket()` transport is synchronous and doesn't throw on connection failure. To detect failures and enable sequential failover, `_tryConnectWss()` calls `client.getChainId()` after creating the client. Without this test call, the first URL would silently fail and subsequent URLs would never be tried.
+- WSS endpoints must support `eth_subscribe` with `logs` subscription type. If an endpoint doesn't support it, `onError` fires with "method not found" and the watcher fails over to the next URL.

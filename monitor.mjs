@@ -1,10 +1,14 @@
-import { fetchMarket, fetchAccrualPosition, fetchToken } from "@morpho-org/blue-sdk-viem";
+import { fetchMarket, fetchAccrualPosition, fetchToken, blueAbi } from "@morpho-org/blue-sdk-viem";
+import { createPublicClient, webSocket } from "viem";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import {
   MARKET_ID,
   LENDER_ADDRESS,
+  MORPHO_BLUE_ADDRESS,
   RPC_URLS,
+  WSS_URLS,
+  WSS_DEBOUNCE_MS,
   MONITOR_INTERVAL_MS,
   MIN_LIQUIDITY_THRESHOLD,
   SUDDEN_DRAIN_MULTIPLIER,
@@ -57,6 +61,12 @@ let notificationsToday = 0;
 let notificationDayStart = Date.now();
 let checkInProgress = false;
 
+// ============================================================
+// WEBSOCKET STATE (hybrid trigger — không phải critical path)
+// ============================================================
+let wsState = null;        // { client, unwatchers, url } | null
+let debounceTimer = null;  // setTimeout handle cho debounce
+
 // Reset daily counter at midnight
 function resetDailyIfNeeded() {
   const now = Date.now();
@@ -64,6 +74,142 @@ function resetDailyIfNeeded() {
     notificationsToday = 0;
     notificationDayStart = now;
   }
+}
+
+// ============================================================
+// WEBSOCKET EVENT WATCHER (hybrid trigger)
+// ============================================================
+
+/**
+ * Debounced trigger: gộp nhiều WSS events trong DEBOUNCE_MS window
+ * thành 1 lần gọi checkAndNotify(). Tránh gọi fetchMarket() quá nhiều
+ * khi market có nhiều events trong cùng 1 block.
+ */
+function debouncedCheck() {
+  if (checkInProgress) return;
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    checkAndNotify().catch((err) => {
+      console.error(
+        `[${new Date().toISOString()}] ❌ Lỗi checkAndNotify (WSS trigger): ${err.message}`
+      );
+    });
+  }, WSS_DEBOUNCE_MS);
+}
+
+/**
+ * Thử kết nối và subscribe events tại 1 WSS endpoint.
+ * Returns true nếu thành công, false nếu thất bại.
+ * Gọi lại chính nó với index+1 khi cần failover (kể cả lỗi async onError).
+ */
+async function _tryConnectWss(index) {
+  if (index >= WSS_URLS.length) {
+    console.warn("[WSS] ⚠️  Tất cả endpoints thất bại. Chạy HTTP-only mode.");
+    return false;
+  }
+
+  const url = WSS_URLS[index];
+
+  try {
+    const client = createPublicClient({
+      transport: webSocket(url, {
+        key: "morpho-wss",
+        name: "Morpho Blue WSS",
+        reconnect: { delay: 3000, maxRetries: 10 },
+        keepAlive: { interval: 30_000 },
+        timeout: 10_000,
+      }),
+    });
+
+    // Test kết nối thực sự — throws nếu WebSocket không kết nối được.
+    await client.getChainId();
+
+    // 5 subscription riêng biệt — mỗi event 1 subscription với SINGLE STRING
+    // eventName. Cách này encode args CHÍNH XÁC (topics[1] = MARKET_ID)
+    // thay vì bị lỗi flatMap như watchEvent với events[] + args.
+    // Lọc ở RPC level → không nhận event thừa từ market khác.
+    const EVENT_NAMES = ["Supply", "Withdraw", "Borrow", "Repay", "Liquidate"];
+    const unwatchers = [];
+
+    for (const eventName of EVENT_NAMES) {
+      const unwatch = client.watchContractEvent({
+        address: MORPHO_BLUE_ADDRESS,
+        abi: blueAbi,
+        eventName,               // SINGLE STRING → encodeEventTopics chính xác
+        args: { id: MARKET_ID }, // → topics = [[eventSig], MARKET_ID]
+        onLogs: () => {
+          try {
+            debouncedCheck();
+          } catch (err) {
+            console.error(
+              `[${new Date().toISOString()}] ❌ Lỗi trong WSS onLogs (${eventName}): ${err.message}`
+            );
+          }
+        },
+        onError: (err) => {
+          const msg = err?.message || String(err);
+          console.error(
+            `[${new Date().toISOString()}] ❌ Lỗi WSS subscription ${eventName} (${url}): ${msg}`
+          );
+          if (
+            msg.includes("ethod not found") ||
+            msg.includes("-32601") ||
+            msg.includes("eth_subscribe") ||
+            msg.includes("not supported")
+          ) {
+            // Guard 1: wsState đã bị clear → đang failover, bỏ qua
+            if (wsState === null) return;
+            // Guard 2: wsState thuộc về connection mới (đã failover trước đó)
+            // → error này từ connection cũ, bỏ qua để không kill connection mới
+            if (wsState.url !== url) return;
+            // Unwatch tất cả 5 subscription rồi failover
+            for (const fn of unwatchers) {
+              try { fn(); } catch { /* ignore */ }
+            }
+            wsState = null;
+            _tryConnectWss(index + 1);
+          }
+        },
+      });
+      unwatchers.push(unwatch);
+    }
+
+    console.log(`[WSS] ✅ Đã kết nối & đăng ký 5 events: ${url}`);
+    wsState = { client, unwatchers, url };
+    return true;
+  } catch (err) {
+    console.warn(`[WSS] ❌ Kết nối thất bại (${url}): ${err.message}`);
+    return _tryConnectWss(index + 1);
+  }
+}
+
+/**
+ * Khởi động WebSocket watcher với sequential failover qua các WSS endpoints.
+ * Fire-and-forget — không block main loop. HTTP interval vẫn chạy song song.
+ */
+async function startWsWatcher() {
+  if (!WSS_URLS.length) {
+    console.log("[WSS] Không có WSS_URLS, chạy HTTP-only mode.");
+    return;
+  }
+
+  console.log(`[WSS] Đang thử kết nối qua ${WSS_URLS.length} endpoint(s)...`);
+  // Fire-and-forget: không await để không block checkAndNotify() đầu tiên
+  _tryConnectWss(0);
+}
+
+/**
+ * Dọn dẹp WebSocket resources khi shutdown.
+ */
+function stopWsWatcher() {
+  if (wsState?.unwatchers) {
+    for (const fn of wsState.unwatchers) {
+      try { fn(); } catch { /* ignore */ }
+    }
+    wsState = null;
+  }
+  clearTimeout(debounceTimer);
+  debounceTimer = null;
 }
 
 // ============================================================
@@ -761,6 +907,7 @@ function printBanner() {
   console.log(`  Webapp:     ${WEBAPP_URL}`);
   console.log(`  ntfy topic: ${RESOLVED_NTFY_TOPIC}`);
   console.log(`  VoIP:       ${VOIP_SECRET_KEY ? `BẬT (${VOIP_TARGET})` : "TẮT (không có VOIP_SECRET_KEY)"}`);
+  console.log(`  WSS:        ${WSS_URLS.length ? `BẬT (${WSS_URLS.length} endpoint(s), debounce ${WSS_DEBOUNCE_MS}ms)` : "TẮT (không có WSS_URLS)"}`);
   console.log("");
   console.log("  📱 Subscribe ntfy app to topic:");
   console.log(`     ${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`);
@@ -773,6 +920,10 @@ function printBanner() {
 async function main() {
   printBanner();
 
+  // Khởi động WebSocket watcher (không block — chạy song song với HTTP polling)
+  // Nếu WSS không được cấu hình hoặc thất bại, HTTP interval vẫn hoạt động bình thường.
+  startWsWatcher();
+
   // Run first check immediately
   await checkAndNotify();
 
@@ -782,6 +933,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = (signal) => {
     console.log(`\n[${new Date().toISOString()}] 🛑 Nhận ${signal}, đang dừng...`);
+    stopWsWatcher();
     clearInterval(interval);
     process.exit(0);
   };
