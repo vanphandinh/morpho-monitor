@@ -128,10 +128,11 @@ setInterval(30s) → vẫn chạy song song làm fallback
 - **WebSocket chỉ làm trigger** — không tham gia vào data pipeline. Mọi quyết định vẫn dựa trên HTTP `fetchMarket()`.
 - **Debounce 3s** — gộp nhiều events trong cùng block thành 1 lần check, tránh spam RPC calls. 5 events cùng block → `clearTimeout` reset timer → chỉ 1 `checkAndNotify()`.
 - **Sequential failover** — thử từng WSS URL theo thứ tự. `createPublicClient` + `webSocket()` là synchronous, cần gọi `client.getChainId()` để test kết nối thực sự. Connection failure → chuyển URL tiếp theo.
-- **3 lớp guard trong `onError`**: (1) `wsState === null` — chặn duplicate failover từ nhiều subscription cùng lúc; (2) `wsState.url !== url` — chặn error từ connection cũ kill connection mới sau khi đã failover; (3) `msg.includes("ethod not found")` — chỉ failover khi endpoint thực sự không hỗ trợ `eth_subscribe`, các lỗi network tạm thời để viem tự reconnect.
-- **Không phải critical path** — nếu tất cả WSS endpoints thất bại, HTTP interval vẫn chạy bình thường. Không có circuit breaker phức tạp như HTTP transport.
+- **3 lớp guard trong `onError`**: (1) `wsState === null` — chặn duplicate failover từ nhiều subscription cùng lúc; (2) `wsState.url !== url` — chặn error từ connection cũ kill connection mới sau khi đã failover; (3) Phân loại lỗi: "socket closed"/"timeout" → `console.warn` + `return` (viem tự reconnect), "method not found"/"-32601" → failover sang URL tiếp theo.
+- **Reconnect poll** — Khi socket đóng, `_reconnectTimer = setInterval(10s)` gọi `client.getChainId()` đến khi thành công → log "✅ Đã reconnect" + `debouncedCheck()`. Nếu `onLogs` nhận event trước khi timer chạy → clear timer + log reconnect ngay. Timer được cleanup trong failover và shutdown.
+- **Dedup `onError` log** — 5 subscription dùng chung 1 WebSocket → cùng lỗi. `_lastWsError` lưu message + timestamp, bỏ qua nếu trùng message trong 1s.
 - **Config**: `WSS_URLS` (comma-separated WSS endpoints), `WSS_DEBOUNCE_MS` (debounce window, mặc định 3000ms).
-- **Shutdown**: `stopWsWatcher()` gọi tất cả 5 `unwatch()` + `clearTimeout(debounceTimer)`.
+- **Shutdown**: `stopWsWatcher()` gọi tất cả 5 `unwatch()` + `clearTimeout(debounceTimer)` + `clearInterval(_reconnectTimer)`.
 
 ### Browser fallback transport (webapp.html)
 A simplified round-robin transport without circuit breaker. Each request starts at a random URL index. On failure, it tries the next URL. On success, it advances the index for the next request. No circuit breaker because browser sessions are short-lived and the user can simply refresh.

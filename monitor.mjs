@@ -66,6 +66,10 @@ let checkInProgress = false;
 // ============================================================
 let wsState = null;        // { client, unwatchers, url } | null
 let debounceTimer = null;  // setTimeout handle cho debounce
+let _wssDisconnected = false;     // true khi socket đã đóng, chờ reconnect
+let _reconnectTimer = null;       // setInterval handle cho reconnect poll
+let _reconnectAttempts = 0;       // đếm số lần thử reconnect thất bại
+let _lastWsError = { msg: "", time: 0 };  // dedup onError log
 
 // Reset daily counter at midnight
 function resetDailyIfNeeded() {
@@ -139,6 +143,11 @@ async function _tryConnectWss(index) {
         args: { id: MARKET_ID }, // → topics = [[eventSig], MARKET_ID]
         onLogs: () => {
           try {
+            if (_wssDisconnected) {
+              if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
+              console.log(`[WSS] ✅ Đã reconnect thành công: ${url}`);
+              _wssDisconnected = false;
+            }
             debouncedCheck();
           } catch (err) {
             console.error(
@@ -148,6 +157,63 @@ async function _tryConnectWss(index) {
         },
         onError: (err) => {
           const msg = err?.message || String(err);
+          const now = Date.now();
+
+          // Dedup: cả 5 subscription dùng chung 1 WebSocket → cùng lỗi
+          if (msg === _lastWsError.msg && now - _lastWsError.time < 1000) return;
+          _lastWsError = { msg, time: now };
+
+          // Phân loại: lỗi network tạm thời → viem tự reconnect; lỗi vĩnh viễn → failover
+          const isTransient =
+            msg.includes("socket has been closed") ||
+            msg.includes("connection") ||
+            msg.includes("timeout");
+          if (isTransient) {
+            // Guard: error từ connection cũ sau khi đã failover → bỏ qua
+            if (wsState === null || wsState.url !== url) return;
+            console.warn(
+              `[${new Date().toISOString()}] ⚠️  WSS ${url}: ${msg} — bắt đầu reconnect check...`
+            );
+            _wssDisconnected = true;
+            // Poll reconnect: gọi getChainId() mỗi 10s đến khi kết nối lại.
+            // Sau 6 lần thất bại (~60s) → failover sang URL tiếp theo.
+            if (!_reconnectTimer) {
+              _reconnectAttempts = 0;
+              _reconnectTimer = setInterval(async () => {
+                try {
+                  await client.getChainId();
+                  // Guard: onLogs có thể đã phát hiện reconnect trước khi timer chạy
+                  if (!_wssDisconnected) {
+                    clearInterval(_reconnectTimer);
+                    _reconnectTimer = null;
+                    return;
+                  }
+                  clearInterval(_reconnectTimer);
+                  _reconnectTimer = null;
+                  _wssDisconnected = false;
+                  console.log(`[WSS] ✅ Đã reconnect thành công: ${url}`);
+                  debouncedCheck();
+                } catch {
+                  _reconnectAttempts++;
+                  if (_reconnectAttempts >= 6) {
+                    clearInterval(_reconnectTimer);
+                    _reconnectTimer = null;
+                    _wssDisconnected = false;
+                    console.warn(
+                      `[WSS] ⚠️  Không thể reconnect sau 6 lần (~60s). Failover...`
+                    );
+                    for (const fn of unwatchers) {
+                      try { fn(); } catch { /* ignore */ }
+                    }
+                    wsState = null;
+                    _tryConnectWss(index + 1);
+                  }
+                }
+              }, 10000);
+            }
+            return;
+          }
+
           console.error(
             `[${new Date().toISOString()}] ❌ Lỗi WSS subscription ${eventName} (${url}): ${msg}`
           );
@@ -166,6 +232,8 @@ async function _tryConnectWss(index) {
             for (const fn of unwatchers) {
               try { fn(); } catch { /* ignore */ }
             }
+            if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
+            _wssDisconnected = false;
             wsState = null;
             _tryConnectWss(index + 1);
           }
@@ -210,6 +278,7 @@ function stopWsWatcher() {
   }
   clearTimeout(debounceTimer);
   debounceTimer = null;
+  if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
 }
 
 // ============================================================
