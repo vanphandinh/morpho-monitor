@@ -141,12 +141,21 @@ async function _tryConnectWss(index) {
         abi: blueAbi,
         eventName,               // SINGLE STRING → encodeEventTopics chính xác
         args: { id: MARKET_ID }, // → topics = [[eventSig], MARKET_ID]
-        onLogs: () => {
+        onLogs: (logs) => {
           try {
             if (_wssDisconnected) {
               if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
               console.log(`[WSS] ✅ Đã reconnect thành công: ${url}`);
               _wssDisconnected = false;
+            }
+            for (const log of logs) {
+              const caller = log.args?.caller ? shortenAddress(log.args.caller) : "unknown";
+              const assets = log.args?.assets != null
+                ? `${(log.args.assets / 1_000_000n).toString()} USDC`
+                : "N/A";
+              console.log(
+                `[${new Date().toISOString()}] [WSS] 📡 ${eventName}: ${caller} → ${assets}`
+              );
             }
             debouncedCheck();
           } catch (err) {
