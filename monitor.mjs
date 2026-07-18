@@ -44,6 +44,7 @@ addGlobalErrorHandlers("monitor");
 // This also avoids viem re-building its internal transport state every cycle.
 const publicClient = createRobustPublicClient(RPC_URLS);
 const walletClient = createRobustWalletClient(RPC_URLS);
+console.log(`[rpc] Khởi tạo với ${RPC_URLS.length} RPC endpoint(s)`);
 
 // ============================================================
 // CONFIG (resolved from .env or defaults)

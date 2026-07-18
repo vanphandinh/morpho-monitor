@@ -34,6 +34,7 @@ let bundleInProgress = false; // mutex for POST /bundle — prevents concurrent 
 // retry with backoff, and circuit breaker per URL.
 // Used for forwarding eth_getTransactionCount + startup block fetch.
 const publicClient = createRobustPublicClient(RPC_URLS);
+console.log(`[proxy] Khởi tạo với ${RPC_URLS.length} RPC endpoint(s)`);
 
 // Fetch real block number once at startup for realistic mock
 let blockNumber = "0x1400000";
