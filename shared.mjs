@@ -20,23 +20,13 @@ export const envNum = (key, fallback) => {
 export const MARKET_ID = env("MARKET_ID",
   "0x24852d8d7464402ddcd717415e009d42bf7427d6a8893487f83c75ee0f4a0ea6");
 export const LENDER_ADDRESS = env("LENDER_ADDRESS",
-  "0x0A5e1Db3671faCcD146404925bDa5c59929f66c3");
+  "0x0000000000000000000000000000000000000000");
 export const MORPHO_BLUE_ADDRESS = env("MORPHO_BLUE_ADDRESS",
   "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb");
 
 // ---- RPC ----
 export const RPC_URLS = env("RPC_URLS",
-  "https://lb.drpc.live/ethereum/AlqTJ3Pbb0gGqQof0HI4hLunOH9fcQYR8aFWVjewFaCJ," +
-  "https://lb.drpc.live/ethereum/AunJZVj7QEqckownxj_qxRnQ2DzbcQYR8aFXVjewFaCJ," +
-  "https://ethereum-rpc.publicnode.com," +
-  "https://eth-mainnet.g.alchemy.com/v2/usw2oMtZYpOnwPTrHcEGL," +
-  "https://eth-mainnet.g.alchemy.com/v2/WeGRNBp6KnWDuMSuyE7r9," +
-  "https://rpc.ankr.com/eth/0bda9fd26145d611152a6eec8b728bf7747688a87037d5da4a0bb1feb42977f8," +
-  "https://rpc.ankr.com/eth/75c3d8f64c68d868b9e194da044b3f61849506bef26508a419985bfc5c46c338," +
-  "https://mainnet.infura.io/v3/a8e97104e75046a58490a844b734c274," +
-  "https://mainnet.infura.io/v3/70c484519b7646d7820601e5071474e8," +
-  "https://ethereum-mainnet.core.chainstack.com/ea59b26bd098e71a4ad2cf8292ae4f3a," +
-  "https://ethereum-mainnet.core.chainstack.com/9a4bbcc8b9369e3c7247274b75736e64"
+  "https://ethereum-rpc.publicnode.com"
 ).split(",").map(u => u.trim()).filter(Boolean);
 
 // ---- WebSocket RPC (real-time event trigger, tùy chọn) ----
@@ -76,8 +66,8 @@ export const NTFY_TOPIC = env("NTFY_TOPIC", ""); // empty = auto-generate
 // ---- VoIP (cypherpunk REST API) ----
 // Để trống VOIP_SECRET_KEY để tắt tính năng gọi VoIP
 export const VOIP_SECRET_KEY = env("VOIP_SECRET_KEY", "");
-export const VOIP_API_URL = env("VOIP_API_URL", "http://cypherpunk.chainno.de:8000");
-export const VOIP_TARGET = env("VOIP_TARGET", "sip:vanphandinh@sip.linphone.org");
+export const VOIP_API_URL = env("VOIP_API_URL", "http://localhost:8000");
+export const VOIP_TARGET = env("VOIP_TARGET", "sip:0123456789@sip.linphone.org");
 export const VOIP_MAX_RETRIES = envNum("VOIP_MAX_RETRIES", 3);
 export const VOIP_RETRY_DELAY_MS = envNum("VOIP_RETRY_DELAY_MS", 5000);
 
