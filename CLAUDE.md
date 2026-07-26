@@ -95,7 +95,8 @@ Pure function tested independently. Five checks in order: threshold, 0→positiv
 - Tested via duplicated pure functions and mocked fetch, following ntfy.test.mjs convention.
 
 ### Write serialization (webapp-server.mjs)
-POST /api/presign uses a promise chain (`writeLock = writeLock.then(doWrite, doWrite)`) to serialize concurrent reads/writes to presigned.json. Atomic write via tmp file + rename. DELETE /api/presign also touches the file without the lock — but typically runs when no concurrent POSTs are expected.
+- POST /api/presign uses a promise chain + cross-process `withFileLock` (`.lock` file) to serialize concurrent reads/writes to presigned.json (webapp POST/DELETE and monitor broadcast/expire). Atomic write via tmp file + rename.
+
 
 ### Challenge rate limiting (webapp-server.mjs)
 `GET /api/challenge` is rate-limited to 10 requests per minute per IP via the `challengeRateLimit` Map. IPs exceeding the limit receive HTTP 429. Expired rate-limit entries are cleaned up every 2 minutes along with expired challenges.
@@ -193,6 +194,8 @@ Mount `/etc/letsencrypt` đã được cấu hình sẵn (dòng `- /etc/letsencr
 ### 4. Mở port trên firewall
 
 ```bash
+# Mở webapp (3000) và proxy RPC (8545) cho MetaMask mobile.
+# Capture gated bởi from===LENDER; đặt WEBAPP_PASSWORD khi public.
 sudo ufw allow 3000/tcp
 sudo ufw allow 8545/tcp
 ```
@@ -227,7 +230,9 @@ Kiểm tra timer: `systemctl status certbot.timer`.
 - `capturedTxs` in proxy-rpc.mjs is in-memory only. Proxy restart loses all captured transactions.
 - `tokenCache` in voip.mjs is in-memory only. It resets on process restart. On 401, the cache is cleared and re-authentication is attempted automatically.
 - `challenges` Map and `challengeRateLimit` Map in webapp-server.mjs are in-memory. They reset on restart.
-- The `DELETE /api/presign` handler and `broadcastPresigned`/`expireStaleBundle` in monitor.mjs all read/write presigned.json without the write lock — safe in practice because they run sequentially, but worth noting if the architecture changes.
+- The `DELETE /api/presign` handler and `broadcastPresigned`/`expireStaleBundle` in monitor.mjs coordinate via `withFileLock` on `presigned.json.lock` (same lock as webapp POST).
+- Proxy binds `PROXY_HOST` (default `127.0.0.1`). Docker publishes `8545:8545` for MetaMask mobile. Capture gated by lender sender + Morpho withdraw decode; `/bundle` and `/captured` require lender Bearer or Basic auth.
+- `presign-verify.mjs` verifies Morpho `withdraw` calldata on save (proxy + webapp) and before broadcast (monitor).
 - Test files import `describe, it, expect` from vitest globally (configured via `vitest.config.mjs` `globals: true`), plus explicit imports. The explicit imports are redundant but harmless.
 - `webapp.html` hardcodes the 11 RPC URLs (duplicated from `shared.mjs`). Changing RPC URLs requires editing both files.
 - `webapp.html` uses a simplified `fallbackTransport()` without circuit breaker. If all 11 URLs are slow, the browser may hang for up to 165s (11 × 15s timeout).

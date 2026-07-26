@@ -8,18 +8,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Nhận fs và client làm tham số để mock hoàn toàn trong test.
 // ============================================================
 
+const BROADCASTING_STUCK_MS = 180_000; // 3 phút — khớp monitor.mjs
+
 /**
  * Check if the pre-signed bundle's nonce is still valid.
- * If the lender's on-chain nonce has increased beyond the bundle nonce,
- * the bundle is stale and should be cleared.
+ * Also recovers stuck status="broadcasting" after crash.
  *
  * @param {object} opts
  * @param {string} opts.presignedFile - path to presigned.json
  * @param {string} opts.lenderAddress - lender's Ethereum address
  * @param {object} opts.fs - filesystem mock (existsSync, readFileSync, writeFileSync, unlinkSync)
  * @param {object} opts.client - viem client mock (getTransactionCount)
+ * @param {number} [opts.now] - injectable Date.now() for stuck-age tests
  */
-async function expireStaleBundle({ presignedFile, lenderAddress, fs, client }) {
+async function expireStaleBundle({
+  presignedFile,
+  lenderAddress,
+  fs,
+  client,
+  now = Date.now(),
+  stuckMs = BROADCASTING_STUCK_MS,
+}) {
   if (!fs.existsSync(presignedFile)) return;
 
   let bundle;
@@ -30,22 +39,46 @@ async function expireStaleBundle({ presignedFile, lenderAddress, fs, client }) {
     return;
   }
 
-  if (bundle.status !== "pending") return;
+  const status = bundle.status;
+  if (status !== "pending" && status !== "broadcasting") return;
 
-  // Fetch current nonce for lender from chain
+  if (bundle.nonce == null) return;
+
   const currentNonce = await client.getTransactionCount({
     address: lenderAddress,
     blockTag: "pending",
   });
 
-  if (currentNonce > bundle.nonce) {
-    bundle.status = "expired";
-    bundle.error = `Nonce tăng: bundle=${bundle.nonce}, chain=${currentNonce}`;
-    bundle.expiredAt = new Date().toISOString();
-    const usedPath = presignedFile.replace(".json", ".used.json");
-    fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
-    fs.unlinkSync(presignedFile);
+  if (status === "broadcasting") {
+    if (currentNonce > bundle.nonce) {
+      // fall through to expire
+    } else {
+      const claimedAt = bundle.broadcastingAt
+        ? Date.parse(bundle.broadcastingAt)
+        : NaN;
+      const ageMs = Number.isFinite(claimedAt) ? now - claimedAt : Infinity;
+      if (ageMs >= stuckMs) {
+        bundle.status = "pending";
+        delete bundle.broadcastingTier;
+        delete bundle.broadcastingAt;
+        fs.writeFileSync(presignedFile, JSON.stringify(bundle, null, 2));
+      }
+      return { recovered: ageMs >= stuckMs ? "pending" : null };
+    }
+  } else if (currentNonce <= bundle.nonce) {
+    return;
   }
+
+  // Expire path (pending or broadcasting with advanced nonce)
+  bundle.status = "expired";
+  bundle.error = `Nonce tăng: bundle=${bundle.nonce}, chain=${currentNonce}`;
+  bundle.expiredAt = new Date().toISOString();
+  delete bundle.broadcastingTier;
+  delete bundle.broadcastingAt;
+  const usedPath = presignedFile.replace(".json", ".used.json");
+  fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+  fs.unlinkSync(presignedFile);
+  return { expired: true };
 }
 
 // ============================================================
@@ -181,8 +214,8 @@ describe("expireStaleBundle", () => {
     expect(fs.unlinkSync).not.toHaveBeenCalled();
   });
 
-  // --- Case 3: Bundle status không phải "pending" ---
-  it("bỏ qua bundle có status không phải 'pending'", async () => {
+  // --- Case 3: Bundle status không phải pending/broadcasting ---
+  it("bỏ qua bundle có status không phải 'pending'/'broadcasting'", async () => {
     const bundle = makeBundle({ status: "broadcast", nonce: 5 });
     fs = makeMockFs({ exists: true, readData: JSON.stringify(bundle) });
     client = makeMockClient(10);
@@ -194,7 +227,6 @@ describe("expireStaleBundle", () => {
       client,
     });
 
-    // Không gọi getTransactionCount vì status != "pending"
     expect(client.getTransactionCount).not.toHaveBeenCalled();
     expect(fs.writeFileSync).not.toHaveBeenCalled();
     expect(fs.unlinkSync).not.toHaveBeenCalled();
@@ -295,5 +327,106 @@ describe("expireStaleBundle", () => {
     const writtenBundle = JSON.parse(usedContent);
     expect(writtenBundle.status).toBe("expired");
     expect(fs.unlinkSync).toHaveBeenCalledTimes(1);
+  });
+
+  // --- Broadcasting recovery ---
+  it("broadcasting + nonce tăng → expire", async () => {
+    const bundle = makeBundle({
+      status: "broadcasting",
+      nonce: 5,
+      broadcastingAt: new Date().toISOString(),
+      broadcastingTier: "50k",
+    });
+    fs = makeMockFs({ exists: true, readData: JSON.stringify(bundle) });
+    client = makeMockClient(6);
+
+    await expireStaleBundle({
+      presignedFile: PRESIGNED_FILE,
+      lenderAddress: LENDER_ADDRESS,
+      fs,
+      client,
+    });
+
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+    const [usedPath, usedContent] = fs.writeFileSync.mock.calls[0];
+    expect(usedPath).toBe(USED_FILE);
+    const written = JSON.parse(usedContent);
+    expect(written.status).toBe("expired");
+    expect(written.broadcastingAt).toBeUndefined();
+    expect(fs.unlinkSync).toHaveBeenCalledWith(PRESIGNED_FILE);
+  });
+
+  it("broadcasting mới (age < stuck) + nonce bằng → giữ nguyên", async () => {
+    const now = Date.now();
+    const bundle = makeBundle({
+      status: "broadcasting",
+      nonce: 5,
+      broadcastingAt: new Date(now - 30_000).toISOString(), // 30s ago
+      broadcastingTier: "50k",
+    });
+    fs = makeMockFs({ exists: true, readData: JSON.stringify(bundle) });
+    client = makeMockClient(5);
+
+    await expireStaleBundle({
+      presignedFile: PRESIGNED_FILE,
+      lenderAddress: LENDER_ADDRESS,
+      fs,
+      client,
+      now,
+    });
+
+    expect(fs.writeFileSync).not.toHaveBeenCalled();
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  it("broadcasting kẹt (age >= stuck) + nonce bằng → reset pending", async () => {
+    const now = Date.now();
+    const bundle = makeBundle({
+      status: "broadcasting",
+      nonce: 5,
+      broadcastingAt: new Date(now - 200_000).toISOString(), // > 180s
+      broadcastingTier: "50k",
+    });
+    fs = makeMockFs({ exists: true, readData: JSON.stringify(bundle) });
+    client = makeMockClient(5);
+
+    await expireStaleBundle({
+      presignedFile: PRESIGNED_FILE,
+      lenderAddress: LENDER_ADDRESS,
+      fs,
+      client,
+      now,
+    });
+
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+    const [path, content] = fs.writeFileSync.mock.calls[0];
+    expect(path).toBe(PRESIGNED_FILE);
+    const written = JSON.parse(content);
+    expect(written.status).toBe("pending");
+    expect(written.broadcastingAt).toBeUndefined();
+    expect(written.broadcastingTier).toBeUndefined();
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  it("broadcasting thiếu broadcastingAt → reset pending ngay", async () => {
+    const bundle = makeBundle({
+      status: "broadcasting",
+      nonce: 5,
+      broadcastingTier: "50k",
+      // no broadcastingAt
+    });
+    fs = makeMockFs({ exists: true, readData: JSON.stringify(bundle) });
+    client = makeMockClient(5);
+
+    await expireStaleBundle({
+      presignedFile: PRESIGNED_FILE,
+      lenderAddress: LENDER_ADDRESS,
+      fs,
+      client,
+    });
+
+    expect(fs.writeFileSync).toHaveBeenCalledTimes(1);
+    const written = JSON.parse(fs.writeFileSync.mock.calls[0][1]);
+    expect(written.status).toBe("pending");
   });
 });

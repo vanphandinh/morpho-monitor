@@ -3,9 +3,12 @@ services:
     build: .
     container_name: morpho
     restart: unless-stopped
+    environment:
+      # Trong container phải listen mọi interface; host publish 8545 cho MetaMask mobile.
+      PROXY_HOST: "0.0.0.0"
     ports:
-      - "3000:3000"   # webapp
-      - "8545:8545"   # proxy RPC (ký trước)
+      - "3000:3000"              # webapp
+      - "8545:8545"              # proxy RPC (public) — capture gated by lender sender check
     volumes:
       - ./.env:/app/.env:ro
       - presigned_data:/app/data

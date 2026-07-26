@@ -5,20 +5,34 @@ import { keccak256, toHex } from "viem";
 import {
   RPC_URLS,
   PROXY_PORT,
+  PROXY_HOST,
   WEBAPP_URL,
   WEBAPP_PASSWORD,
   USE_SSL,
   SSL_CERT_PATH,
   SSL_KEY_PATH,
-  verifyToken,
-  checkInternalSecret,
+  MARKET_ID,
+  LENDER_ADDRESS,
+  MORPHO_BLUE_ADDRESS,
+  MAX_BODY_BYTES,
+  requireLenderOrInternal,
+  readBodyLimited,
 } from "./shared.mjs";
 import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
+import {
+  verifyPresignedBundle,
+  matchTiersToCaptured,
+  resolveBundleServerUrl,
+  clearMatchedCaptured,
+  assertCaptureTx,
+} from "./presign-verify.mjs";
 
 // Install global error handlers so unhandled RPC rejections don't crash the process
 addGlobalErrorHandlers("proxy-rpc");
 
 const PORT = PROXY_PORT || 8545;
+const BIND_HOST = PROXY_HOST || "127.0.0.1";
+const MAX_CAPTURED_TXS = 50;
 
 // ============================================================
 // STATE
@@ -64,14 +78,27 @@ async function handleRpc(method, params) {
     // === THE CAPTURE ===
     case "eth_sendRawTransaction": {
       const signedTx = params[0];
+      const check = await assertCaptureTx(signedTx, {
+        morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+        lenderAddress: LENDER_ADDRESS,
+        marketId: MARKET_ID,
+      });
+      if (!check.ok) {
+        console.warn(`[proxy] ❌ Từ chối capture: ${check.error}`);
+        return new Error(check.error);
+      }
       const txHash = keccak256(signedTx); // real tx hash — dùng để match tier sau này
+      if (capturedTxs.length >= MAX_CAPTURED_TXS) {
+        // Drop oldest to bound memory / DoS surface
+        capturedTxs.shift();
+      }
       capturedTxs.push({
         hash: txHash,
         signedTx,
         capturedAt: new Date().toISOString(),
       });
       console.log(
-        `[proxy] 📝 Captured signed tx #${capturedTxs.length}: ${txHash.slice(0, 10)}...`
+        `[proxy] 📝 Captured signed tx #${capturedTxs.length}: ${txHash.slice(0, 10)}... (from ${check.from.slice(0, 10)}...)`
       );
       return txHash;
     }
@@ -308,7 +335,7 @@ function safeStringify(obj) {
   });
 }
 
-// Auth helpers (verifyToken, checkInternalSecret) imported from shared.mjs
+// Auth helper (requireLenderOrInternal) imported from shared.mjs
 
 // ---- SSL/TLS setup ----
 let sslOptions = null;
@@ -348,10 +375,8 @@ const server = createServer(async (req, res) => {
 
   // ---- API: POST /bundle — webapp gửi metadata, proxy ghép bundle → POST server ----
   if (req.method === "POST" && req.url === "/bundle") {
-    // Accept either internal secret (webapp→proxy) or Bearer token (user→proxy)
-    const session = verifyToken(req);
-    const isInternal = checkInternalSecret(req);
-    if (!session && !isInternal) {
+    const authz = requireLenderOrInternal(req, LENDER_ADDRESS);
+    if (!authz.ok) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -366,55 +391,54 @@ const server = createServer(async (req, res) => {
     }
     bundleInProgress = true;
 
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("error", (err) => {
-      bundleInProgress = false;
-      console.error(`[proxy] Request stream error on /bundle: ${err.message}`);
-    });
-    req.on("end", async () => {
+    try {
+      let body;
+      try {
+        body = await readBodyLimited(req, MAX_BODY_BYTES);
+      } catch (err) {
+        const status = err.code === "PAYLOAD_TOO_LARGE" ? 413 : 400;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+        return;
+      }
+
       try {
         const meta = JSON.parse(body);
+        if (!Array.isArray(meta.tiers) || meta.tiers.length === 0) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "tiers empty" }));
+          return;
+        }
         if (capturedTxs.length === 0) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: "No captured transactions" }));
           return;
         }
 
-        // Match captured txs with tier metadata by txHash
-        const txMap = new Map(capturedTxs.map(tx => [tx.hash, tx.signedTx]));
-        const withdrawals = meta.tiers.map((tier) => {
-          const signedTx = tier.txHash ? txMap.get(tier.txHash) : null;
-          if (!signedTx) return null;
-          const entry = {
-            label: tier.label || `${tier.amount} ${meta.loanToken?.symbol || "tokens"}`,
-            amountWei: tier.amountWei,
-            amountFormatted: tier.amountFormatted,
-            nonce: meta.nonce,
-            signedTx,
-          };
-          // Preserve special type fields for "all-shares" entries
-          if (tier.type === "all-shares") {
-            entry.type = "all-shares";
-            entry.sharesWei = tier.sharesWei;
-          }
-          return entry;
-        }).filter(Boolean);
-
-        if (withdrawals.length < meta.tiers.length) {
-          console.warn(
-            `[proxy] ⚠️  ${meta.tiers.length - withdrawals.length}/${meta.tiers.length} tiers ` +
-            `không match được txHash (proxy đã restart?).`
-          );
+        const matched = matchTiersToCaptured(meta.tiers, capturedTxs);
+        if (!matched.ok) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            ok: false,
+            error: matched.error,
+            unmatched: matched.unmatched || null,
+          }));
+          return;
         }
+
+        const withdrawals = matched.withdrawals.map((w) => ({
+          ...w,
+          label: w.label || `${meta.loanToken?.symbol || "tokens"}`,
+          nonce: meta.nonce,
+        }));
 
         const bundle = {
           version: 1,
           createdAt: new Date().toISOString(),
           chainId: 1,
-          morphoBlueAddress: meta.morphoBlueAddress,
-          marketId: meta.marketId,
-          lenderAddress: meta.lenderAddress,
+          morphoBlueAddress: meta.morphoBlueAddress || MORPHO_BLUE_ADDRESS,
+          marketId: meta.marketId || MARKET_ID,
+          lenderAddress: meta.lenderAddress || LENDER_ADDRESS,
           nonce: meta.nonce,
           gas: meta.gas || "200000",
           maxFeePerGas: meta.maxFeePerGas,
@@ -424,8 +448,20 @@ const server = createServer(async (req, res) => {
           status: "pending",
         };
 
-        // POST to webapp server (internal, same Basic Auth)
-        const serverUrl = meta.serverUrl || (WEBAPP_URL || "http://localhost:3000").replace(/\/+$/, "");
+        // Verify Morpho withdraw calldata trước khi POST sang webapp
+        const verified = await verifyPresignedBundle(bundle, {
+          morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+          lenderAddress: LENDER_ADDRESS,
+          marketId: MARKET_ID,
+        });
+        if (!verified.ok) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: `Calldata verify failed: ${verified.error}` }));
+          return;
+        }
+
+        // Luôn dùng WEBAPP_URL — không bao giờ tin meta.serverUrl (SSRF)
+        const serverUrl = resolveBundleServerUrl(meta, WEBAPP_URL);
         const authHeader = WEBAPP_PASSWORD
           ? "Basic " + Buffer.from(":" + WEBAPP_PASSWORD).toString("base64")
           : null;
@@ -438,7 +474,6 @@ const server = createServer(async (req, res) => {
           body: JSON.stringify(bundle),
         });
 
-        // Safe JSON parse — handle non-JSON responses gracefully
         let postResult;
         const respText = await postResp.text();
         try {
@@ -449,8 +484,7 @@ const server = createServer(async (req, res) => {
 
         if (postResult.ok) {
           console.log(`[proxy] ✅ Bundle sent to server: ${withdrawals.length} tiers`);
-          // Clear captured txs after successful bundle
-          capturedTxs.length = 0;
+          clearMatchedCaptured(capturedTxs, matched.matchedHashes);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, tiers: withdrawals.length, saved: true }));
         } else {
@@ -460,32 +494,34 @@ const server = createServer(async (req, res) => {
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, error: err.message }));
-      } finally {
-        bundleInProgress = false;
       }
-    });
+    } finally {
+      bundleInProgress = false;
+    }
     return;
   }
 
   // ---- API: GET /captured — xem danh sách tx đã capture ----
   if (req.method === "GET" && req.url === "/captured") {
-    const session = verifyToken(req);
-    const isInternal = checkInternalSecret(req);
-    if (!session && !isInternal) {
+    const authz = requireLenderOrInternal(req, LENDER_ADDRESS);
+    if (!authz.ok) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
     }
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ count: capturedTxs.length, txs: capturedTxs.map(t => ({ capturedAt: t.capturedAt })) }));
+    // Không trả signedTx — chỉ metadata + hash để debug
+    res.end(JSON.stringify({
+      count: capturedTxs.length,
+      txs: capturedTxs.map(t => ({ hash: t.hash, capturedAt: t.capturedAt })),
+    }));
     return;
   }
 
   // ---- API: DELETE /captured — xóa tất cả tx đã capture ----
   if (req.method === "DELETE" && req.url === "/captured") {
-    const session = verifyToken(req);
-    const isInternal = checkInternalSecret(req);
-    if (!session && !isInternal) {
+    const authz = requireLenderOrInternal(req, LENDER_ADDRESS);
+    if (!authz.ok) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
@@ -499,58 +535,60 @@ const server = createServer(async (req, res) => {
 
   // ---- JSON-RPC ----
   if (req.method === "POST") {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("error", (err) => {
-      console.error(`[proxy] Request stream error on JSON-RPC: ${err.message}`);
-    });
-    req.on("end", async () => {
-      res.setHeader("Content-Type", "application/json");
+    let body;
+    try {
+      body = await readBodyLimited(req, MAX_BODY_BYTES);
+    } catch (err) {
+      const status = err.code === "PAYLOAD_TOO_LARGE" ? 413 : 400;
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(safeStringify(jsonRpcError(null, -32700, err.message)));
+      return;
+    }
+    res.setHeader("Content-Type", "application/json");
 
-      let request;
-      try {
-        request = JSON.parse(body);
-      } catch {
-        res.writeHead(400);
-        res.end(safeStringify(jsonRpcError(null, -32700, "Parse error")));
-        return;
-      }
+    let request;
+    try {
+      request = JSON.parse(body);
+    } catch {
+      res.writeHead(400);
+      res.end(safeStringify(jsonRpcError(null, -32700, "Parse error")));
+      return;
+    }
 
-      // Handle batch
-      if (Array.isArray(request)) {
-        const responses = await Promise.all(request.map(async (r) => {
-          try {
-            const result = await handleRpc(r.method, r.params);
-            if (result instanceof Error) {
-              return jsonRpcError(r.id, -32603, result.message);
-            }
-            return jsonRpcResult(r.id, result);
-          } catch (err) {
-            console.error(`[proxy] RPC error (${r.method}): ${err.message}`);
-            return jsonRpcError(r.id, -32603, `RPC error: ${err.message}`);
+    // Handle batch
+    if (Array.isArray(request)) {
+      const responses = await Promise.all(request.map(async (r) => {
+        try {
+          const result = await handleRpc(r.method, r.params);
+          if (result instanceof Error) {
+            return jsonRpcError(r.id, -32603, result.message);
           }
-        }));
+          return jsonRpcResult(r.id, result);
+        } catch (err) {
+          console.error(`[proxy] RPC error (${r.method}): ${err.message}`);
+          return jsonRpcError(r.id, -32603, `RPC error: ${err.message}`);
+        }
+      }));
+      res.writeHead(200);
+      res.end(safeStringify(responses));
+      return;
+    }
+
+    // Single request
+    try {
+      const result = await handleRpc(request.method, request.params);
+      if (result instanceof Error) {
         res.writeHead(200);
-        res.end(safeStringify(responses));
+        res.end(safeStringify(jsonRpcError(request.id, -32603, result.message)));
         return;
       }
-
-      // Single request
-      try {
-        const result = await handleRpc(request.method, request.params);
-        if (result instanceof Error) {
-          res.writeHead(200);
-          res.end(safeStringify(jsonRpcError(request.id, -32603, result.message)));
-          return;
-        }
-        res.writeHead(200);
-        res.end(safeStringify(jsonRpcResult(request.id, result)));
-      } catch (err) {
-        console.error(`[proxy] RPC error (${request.method}): ${err.message}`);
-        res.writeHead(200);
-        res.end(safeStringify(jsonRpcError(request.id, -32603, `RPC error: ${err.message}`)));
-      }
-    });
+      res.writeHead(200);
+      res.end(safeStringify(jsonRpcResult(request.id, result)));
+    } catch (err) {
+      console.error(`[proxy] RPC error (${request.method}): ${err.message}`);
+      res.writeHead(200);
+      res.end(safeStringify(jsonRpcError(request.id, -32603, `RPC error: ${err.message}`)));
+    }
     return;
   }
 
@@ -560,20 +598,28 @@ const server = createServer(async (req, res) => {
 });
 
 const proto = sslOptions ? "https" : "http";
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, BIND_HOST, () => {
   console.log("");
   console.log("╔══════════════════════════════════════════════════════════╗");
   console.log("║   Morpho Blue — RPC Proxy (Capture Signed Tx)          ║");
   console.log("╚══════════════════════════════════════════════════════════╝");
   console.log("");
-  console.log(`  🔌 Proxy:    ${proto}://127.0.0.1:${PORT}`);
+  console.log(`  🔌 Proxy:    ${proto}://${BIND_HOST}:${PORT}`);
   console.log(`  📊 Status:   ${proto}://127.0.0.1:${PORT}/captured`);
   console.log(`  🔗 Bundle:   POST ${proto}://127.0.0.1:${PORT}/bundle`);
+  console.log(`  👛 Capture chỉ chấp nhận tx from=${LENDER_ADDRESS?.slice(0, 10)}... (Morpho withdraw)`);
+  if (BIND_HOST !== "127.0.0.1" && BIND_HOST !== "localhost") {
+    console.warn(`  ⚠️  Proxy bind ${BIND_HOST} (public). JSON-RPC không auth — gate bằng sender=lender.`);
+    if (!WEBAPP_PASSWORD) {
+      console.warn(`  ⚠️  WEBAPP_PASSWORD trống — /bundle và /captured mở (dev mode). Nên đặt mật khẩu khi public.`);
+    }
+  }
   if (sslOptions) console.log(`  🔒 SSL enabled — cert: ${SSL_CERT_PATH}`);
   console.log("");
   console.log("  📋 Hướng dẫn MetaMask:");
   console.log(`     1. Settings → Networks → Add Network`);
-  console.log(`     2. RPC URL: ${proto}://127.0.0.1:${PORT}`);
+  const hintHost = (BIND_HOST === "0.0.0.0" || BIND_HOST === "::") ? "<your-host>" : BIND_HOST;
+  console.log(`     2. RPC URL: ${proto}://${hintHost}:${PORT}`);
   console.log(`     3. Chain ID: 1`);
   console.log(`     4. Symbol: ETH`);
   console.log("");

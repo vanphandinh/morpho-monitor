@@ -89,6 +89,8 @@ export const CHALLENGE_EXPIRY_MS = envNum("CHALLENGE_EXPIRY_MINUTES", 5) * 60 * 
 // ---- Presigned Bundle ----
 export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
 export const PROXY_PORT = envNum("PROXY_PORT", 8545);
+// Bind address for proxy — mặc định localhost. Set PROXY_HOST=0.0.0.0 cho MetaMask mobile / VPS.
+export const PROXY_HOST = env("PROXY_HOST", "127.0.0.1");
 // Proxy URL: cùng host với webapp, port 8545
 export const PROXY_RPC_URL = (() => {
   const explicit = env("PROXY_RPC_URL", "");
@@ -102,6 +104,9 @@ export const PROXY_RPC_URL = (() => {
     return `http://127.0.0.1:${PROXY_PORT}`;
   }
 })();
+
+/** Max request body size for auth/bundle/presign/RPC (bytes). */
+export const MAX_BODY_BYTES = envNum("MAX_BODY_BYTES", 1_048_576); // 1 MiB
 
 // ---- Misc ----
 export const ETHERSCAN_BASE_URL = "https://etherscan.io";
@@ -203,6 +208,15 @@ export function createSessionToken(address, expiryMs) {
  * Verify a self-verifiable session token.
  * Returns { address, expiresAt } or null if invalid/expired.
  */
+/** Constant-time string compare (hex/utf8). Length mismatch → false. */
+export function safeEqualString(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export function verifySessionToken(token) {
   if (!token) return null;
   const secret = WEBAPP_PASSWORD || "dev-mode-no-secret";
@@ -210,7 +224,7 @@ export function verifySessionToken(token) {
   if (parts.length !== 2) return null;
   const [payload, hmac] = parts;
   const expectedHmac = crypto.createHmac("sha256", secret).update(payload).digest("hex");
-  if (hmac !== expectedHmac) return null;
+  if (!safeEqualString(hmac, expectedHmac)) return null;
   try {
     const decoded = Buffer.from(payload, "base64url").toString("utf-8");
     const [address, expiryStr] = decoded.split(":");
@@ -251,10 +265,83 @@ export function checkInternalSecret(req) {
   try {
     const [, encoded] = auth.split(" ");
     const [, pass] = Buffer.from(encoded, "base64").toString("utf-8").split(":");
-    return pass === WEBAPP_PASSWORD;
+    return safeEqualString(pass ?? "", WEBAPP_PASSWORD);
   } catch {
     return false;
   }
+}
+
+/**
+ * Authorize proxy HTTP APIs (/bundle, /captured): internal Basic OR Bearer whose
+ * embedded address matches lenderAddress.
+ * @returns {{ ok: true, kind: "internal"|"bearer", session?: object } | { ok: false }}
+ */
+export function requireLenderOrInternal(req, lenderAddress) {
+  if (!lenderAddress) return { ok: false };
+  if (checkInternalSecret(req)) return { ok: true, kind: "internal" };
+  const session = verifyToken(req, lenderAddress);
+  if (!session?.address) return { ok: false };
+  if (session.address.toLowerCase() !== lenderAddress.toLowerCase()) {
+    return { ok: false };
+  }
+  return { ok: true, kind: "bearer", session };
+}
+
+/**
+ * Read request body with a hard size cap. Rejects oversized payloads.
+ * @returns {Promise<string>}
+ */
+export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+      req.destroy();
+    };
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        fail(Object.assign(new Error("Payload too large"), { code: "PAYLOAD_TOO_LARGE" }));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    req.on("error", (err) => fail(err));
+  });
+}
+
+/**
+ * Cross-process file lock for presigned.json (webapp ↔ monitor).
+ * Uses exclusive create (`wx`) + retry. Always releases the lock.
+ */
+export async function withFileLock(lockPath, fn, { retries = 50, delayMs = 20 } = {}) {
+  const fs = await import("node:fs");
+  for (let i = 0; i < retries; i++) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, "wx");
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+      continue;
+    }
+    try {
+      return await fn();
+    } finally {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+      try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+    }
+  }
+  throw new Error(`Could not acquire lock: ${lockPath}`);
 }
 
 // ============================================================
@@ -302,13 +389,16 @@ export function computeDrainThreshold(supplyAssets, multiplier) {
 
 /**
  * Pure function: determine whether a presigned bundle should be broadcast.
- * Returns true only when liquidity is positive AND in the danger zone
- * (at or below the drain threshold).
+ * Aligns with shouldNotify danger zone: liquidity in
+ * [minLiquidityThreshold, max(drainThreshold, minLiquidityThreshold)].
  */
-export function shouldBroadcastPresigned(liquidity, drainThreshold) {
+export function shouldBroadcastPresigned(liquidity, drainThreshold, minLiquidityThreshold = 0n) {
   if (liquidity == null || liquidity === 0n) return false;
   if (drainThreshold == null) return false;
-  return liquidity <= drainThreshold;
+  const min = minLiquidityThreshold ?? 0n;
+  let effectiveDrain = drainThreshold;
+  if (effectiveDrain < min) effectiveDrain = min;
+  return liquidity >= min && liquidity <= effectiveDrain;
 }
 
 /**

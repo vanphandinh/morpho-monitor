@@ -1,50 +1,21 @@
 import fs from "node:fs";
-import { parseTransaction, decodeFunctionData, formatUnits } from "viem";
-import { mainnet } from "viem/chains";
+import { formatUnits } from "viem";
+import {
+  verifyPresignedBundle,
+  verifyWithdrawCalldata,
+  computeMarketId,
+  MORPHO_WITHDRAW_ABI,
+} from "./presign-verify.mjs";
+import { parseTransaction, decodeFunctionData } from "viem";
 
-// ============================================================
-// Morpho Blue ABI (hàm withdraw)
-// ============================================================
-const MORPHO_ABI = [{
-  type: "function",
-  name: "withdraw",
-  inputs: [
-    { name: "marketParams", type: "tuple", internalType: "MarketParams",
-      components: [
-        { name: "loanToken", type: "address" },
-        { name: "collateralToken", type: "address" },
-        { name: "oracle", type: "address" },
-        { name: "irm", type: "address" },
-        { name: "lltv", type: "uint256" },
-      ]
-    },
-    { name: "assets", type: "uint256" },
-    { name: "shares", type: "uint256" },
-    { name: "onBehalf", type: "address" },
-    { name: "receiver", type: "address" },
-  ],
-  outputs: [
-    { name: "withdrawnAssets", type: "uint256" },
-    { name: "withdrawnShares", type: "uint256" },
-  ],
-  stateMutability: "nonpayable",
-}];
-
-// ============================================================
-// Helpers
-// ============================================================
-function formatAmount(wei, decimals = 6) {
-  return `${formatUnits(BigInt(wei), decimals)} (${wei} wei)`;
-}
+// Re-export for callers that import from CLI path
+export { verifyPresignedBundle, verifyWithdrawCalldata, computeMarketId, MORPHO_WITHDRAW_ABI };
 
 function shorten(addr) {
   if (!addr) return "N/A";
   return `${addr.slice(0, 10)}...${addr.slice(-6)}`;
 }
 
-// ============================================================
-// Main
-// ============================================================
 const filePath = process.argv[2] || "./presigned.json";
 
 if (!fs.existsSync(filePath)) {
@@ -90,7 +61,6 @@ console.log("");
 
 let matched = 0;
 let mismatched = 0;
-const txNonces = []; // thu thập nonce từ tất cả tx để cross-check
 
 for (let i = 0; i < bundle.withdrawals.length; i++) {
   const w = bundle.withdrawals[i];
@@ -111,7 +81,6 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
     continue;
   }
 
-  // Parse signed transaction
   let tx;
   try {
     tx = parseTransaction(w.signedTx);
@@ -121,120 +90,54 @@ for (let i = 0; i < bundle.withdrawals.length; i++) {
     continue;
   }
 
-  txNonces.push(tx.nonce); // thu thập để cross-check sau
-
   console.log(`   ── Transaction ──`);
   console.log(`   chainId:           ${tx.chainId}`);
   console.log(`   nonce:             ${tx.nonce}`);
-  console.log(`   to:                ${tx.to} ${tx.to?.toLowerCase() === bundle.morphoBlueAddress?.toLowerCase() ? "(Morpho Blue)" : "⚠️ KHÔNG PHẢI MORPHO"}`);
-  console.log(`   value:             ${tx.value?.toString() || "0"} wei`);
+  console.log(`   to:                ${tx.to}`);
   console.log(`   gas:               ${tx.gas?.toString() || "N/A"}`);
-  console.log(`   maxFeePerGas:      ${tx.maxFeePerGas?.toString() || "N/A"} (${tx.maxFeePerGas ? formatUnits(tx.maxFeePerGas, 9) + " gwei" : "N/A"})`);
-  console.log(`   maxPriorityFee:    ${tx.maxPriorityFeePerGas?.toString() || "N/A"} (${tx.maxPriorityFeePerGas ? formatUnits(tx.maxPriorityFeePerGas, 9) + " gwei" : "N/A"})`);
-  console.log(`   type:              ${tx.type}`);
 
-  // Decode calldata
-  if (!tx.data || tx.data === "0x") {
-    console.log(`   ❌ KHÔNG CÓ calldata`);
-    mismatched++;
-    continue;
-  }
+  const result = await verifyWithdrawCalldata(w.signedTx, {
+    morphoBlueAddress: bundle.morphoBlueAddress,
+    lenderAddress: bundle.lenderAddress,
+    marketId: bundle.marketId,
+    nonce: bundle.nonce,
+    amountWei: w.amountWei,
+    sharesWei: w.sharesWei,
+    isAllShares,
+  });
 
-  let decoded;
-  try {
-    decoded = decodeFunctionData({ abi: MORPHO_ABI, data: tx.data });
-  } catch (err) {
-    console.log(`   ❌ Lỗi decode calldata: ${err.message}`);
-    mismatched++;
-    continue;
-  }
-
-  if (decoded.functionName !== "withdraw") {
-    console.log(`   ⚠️  Function: ${decoded.functionName} (không phải withdraw!)`);
-    mismatched++;
-    continue;
-  }
-
-  const args = decoded.args;
-  const assets = args[1]; // assets là param thứ 2
-
-  console.log(`   ── Morpho withdraw params ──`);
-  console.log(`   loanToken:         ${args[0]?.loanToken || "N/A"}`);
-  console.log(`   collateralToken:   ${args[0]?.collateralToken || "N/A"}`);
-  console.log(`   oracle:            ${args[0]?.oracle || "N/A"}`);
-  console.log(`   irm:               ${args[0]?.irm || "N/A"}`);
-  console.log(`   lltv:              ${args[0]?.lltv?.toString() || "N/A"}`);
-  console.log(`   assets:            ${assets?.toString() || "N/A"} (${assets ? formatUnits(assets, 6) + " USDC" : "N/A"})`);
-  console.log(`   shares:            ${args[2]?.toString() || "N/A"} (0 = max withdraw)`);
-  console.log(`   onBehalf:          ${args[3] || "N/A"}`);
-  console.log(`   receiver:          ${args[4] || "N/A"}`);
-
-  // Xác minh receiver = lender
-  const receiver = args[4];
-  if (bundle.lenderAddress) {
-    if (receiver?.toLowerCase() !== bundle.lenderAddress.toLowerCase()) {
-      console.log(`   ❌ RECEIVER SAI: receiver=${receiver}, lender=${bundle.lenderAddress}`);
-      mismatched++;
-    } else {
-      console.log(`   ✅ Receiver khớp lender: ${receiver}`);
-    }
-  }
-
-  // Compare
-  if (isAllShares) {
-    // All-shares: compare shares param (args[2]) with sharesWei label
-    const shares = args[2]; // shares là param thứ 3
-    console.log(`   ── All-Shares Withdraw ──`);
-    console.log(`   shares (signedTx): ${shares?.toString() || "N/A"}`);
-    console.log(`   sharesWei (label): ${w.sharesWei || "N/A"}`);
-    if (shares && w.sharesWei && BigInt(shares) === BigInt(w.sharesWei)) {
-      console.log(`   ✅ KHỚP: shares = sharesWei = ${shares.toString()}`);
-      matched++;
-    } else {
-      console.log(`   ❌ MISMATCH: signed shares=${shares?.toString()}, label sharesWei=${w.sharesWei}`);
-      mismatched++;
-    }
+  if (result.ok) {
+    const d = result.decoded;
+    console.log(`   ── Morpho withdraw params ──`);
+    console.log(`   assets:            ${d.assets?.toString()}`);
+    console.log(`   shares:            ${d.shares?.toString()}`);
+    console.log(`   onBehalf:          ${d.onBehalf}`);
+    console.log(`   receiver:          ${d.receiver}`);
+    console.log(`   from:              ${d.from}`);
+    console.log(`   ✅ KHỚP`);
+    matched++;
   } else {
-    if (assets && w.amountWei && BigInt(assets) === BigInt(w.amountWei)) {
-      console.log(`   ✅ KHỚP: assets = amountWei = ${assets.toString()}`);
-      matched++;
-    } else {
-      console.log(`   ❌ MISMATCH:`);
-      console.log(`      amountWei (label): ${w.amountWei} (${w.amountFormatted})`);
-      console.log(`      assets (signedTx): ${assets?.toString() || "N/A"} (${assets ? formatUnits(assets, 6) + " USDC" : "N/A"})`);
-      mismatched++;
-    }
+    // Still try to dump decode for debugging
+    try {
+      const decoded = decodeFunctionData({ abi: MORPHO_WITHDRAW_ABI, data: tx.data });
+      console.log(`   function:          ${decoded.functionName}`);
+      console.log(`   assets:            ${decoded.args[1]?.toString()}`);
+      console.log(`   shares:            ${decoded.args[2]?.toString()}`);
+    } catch { /* ignore */ }
+    console.log(`   ❌ ${result.error}`);
+    mismatched++;
   }
 }
 
-// ============================================================
-// Nonce cross-check (chỉ chạy khi tất cả tx parse thành công)
-// ============================================================
-// Chỉ cross-check khi tất cả withdrawal đều có signedTx parse thành công
-if (txNonces.length === bundle.withdrawals.length) {
-  const uniqueNonces = [...new Set(txNonces)];
-  if (uniqueNonces.length > 1) {
-    console.log("");
-    console.log(`❌ CÁC TX CÓ NONCE KHÁC NHAU: ${uniqueNonces.join(", ")}`);
-    mismatched++;
-  } else if (bundle.nonce == null) {
-    console.log("");
-    console.log(`⚠️  Tất cả ${txNonces.length} tx có cùng nonce=${uniqueNonces[0]}, nhưng bundle không có nonce để so sánh`);
-  } else if (uniqueNonces[0] !== Number(bundle.nonce)) {
-    console.log("");
-    console.log(`❌ NONCE KHÔNG KHỚP BUNDLE: tx nonce=${uniqueNonces[0]}, bundle nonce=${bundle.nonce}`);
-    mismatched++;
-  } else {
-    console.log("");
-    console.log(`✅ Tất cả ${txNonces.length} tx có cùng nonce=${uniqueNonces[0]}, khớp với bundle nonce=${bundle.nonce}`);
-  }
-}
-
+const bundleResult = await verifyPresignedBundle(bundle);
 console.log("");
 console.log("╔══════════════════════════════════════════════════════════╗");
 console.log(`║   Kết quả: ${matched} khớp, ${mismatched} mismatch / ${bundle.withdrawals.length} tiers`);
+if (!bundleResult.ok) {
+  console.log(`║   Bundle check: ${bundleResult.error}`);
+}
 console.log("╚══════════════════════════════════════════════════════════╝");
 
-if (mismatched > 0) {
+if (mismatched > 0 || !bundleResult.ok) {
   process.exit(1);
 }

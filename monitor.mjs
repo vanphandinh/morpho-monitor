@@ -27,6 +27,7 @@ import {
   formatTokenAmount,
   formatApy,
   shortenAddress,
+  withFileLock,
 } from "./shared.mjs";
 import {
   createRobustPublicClient,
@@ -34,6 +35,7 @@ import {
   addGlobalErrorHandlers,
 } from "./rpc-client.mjs";
 import { sendVoipNotification } from "./voip.mjs";
+import { verifyPresignedBundle, verifyWithdrawCalldata } from "./presign-verify.mjs";
 
 // Global error handlers — prevent crashes from unhandled RPC rejections
 addGlobalErrorHandlers("monitor");
@@ -45,6 +47,12 @@ addGlobalErrorHandlers("monitor");
 const publicClient = createRobustPublicClient(RPC_URLS);
 const walletClient = createRobustWalletClient(RPC_URLS);
 console.log(`[rpc] Khởi tạo với ${RPC_URLS.length} RPC endpoint(s)`);
+
+const PRESIGNED_LOCK_PATH = PRESIGNED_FILE + ".lock";
+/** Sau crash giữa claim→receipt: nếu status=broadcasting quá lâu → reset pending để retry. */
+const BROADCASTING_STUCK_MS = 180_000; // 3 phút (> waitForTransactionReceipt 120s)
+const WSS_EXHAUST_RETRY_MS = 60_000; // retry WSS sau khi hết URL
+let _wssExhaustRetryTimer = null;
 
 // ============================================================
 // CONFIG (resolved from .env or defaults)
@@ -91,7 +99,12 @@ function resetDailyIfNeeded() {
  * khi market có nhiều events trong cùng 1 block.
  */
 function debouncedCheck() {
-  if (checkInProgress) return;
+  // Reschedule khi check đang chạy — tránh miss spike trong lúc VoIP/broadcast dài
+  if (checkInProgress) {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => debouncedCheck(), WSS_DEBOUNCE_MS);
+    return;
+  }
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     checkAndNotify().catch((err) => {
@@ -109,7 +122,16 @@ function debouncedCheck() {
  */
 async function _tryConnectWss(index) {
   if (index >= WSS_URLS.length) {
-    console.warn("[WSS] ⚠️  Tất cả endpoints thất bại. Chạy HTTP-only mode.");
+    console.warn(
+      `[WSS] ⚠️  Tất cả endpoints thất bại. Chạy HTTP-only; sẽ thử lại sau ${WSS_EXHAUST_RETRY_MS / 1000}s.`
+    );
+    if (!_wssExhaustRetryTimer) {
+      _wssExhaustRetryTimer = setTimeout(() => {
+        _wssExhaustRetryTimer = null;
+        console.log("[WSS] 🔄 Retry kết nối sau khi hết URL...");
+        _tryConnectWss(0);
+      }, WSS_EXHAUST_RETRY_MS);
+    }
     return false;
   }
 
@@ -129,24 +151,23 @@ async function _tryConnectWss(index) {
     // Test kết nối thực sự — throws nếu WebSocket không kết nối được.
     await client.getChainId();
 
-    // 5 subscription riêng biệt — mỗi event 1 subscription với SINGLE STRING
-    // eventName. Cách này encode args CHÍNH XÁC (topics[1] = MARKET_ID)
-    // thay vì bị lỗi flatMap như watchEvent với events[] + args.
-    // Lọc ở RPC level → không nhận event thừa từ market khác.
-    const EVENT_NAMES = ["Supply", "Withdraw", "Borrow", "Repay", "Liquidate"];
+    // Gán wsState TRƯỚC subscriptions để early onError không bị drop (race fix)
     const unwatchers = [];
+    wsState = { client, unwatchers, url, connecting: true };
+
+    const EVENT_NAMES = ["Supply", "Withdraw", "Borrow", "Repay", "Liquidate"];
 
     for (const eventName of EVENT_NAMES) {
       const unwatch = client.watchContractEvent({
         address: MORPHO_BLUE_ADDRESS,
         abi: blueAbi,
-        eventName,               // SINGLE STRING → encodeEventTopics chính xác
-        args: { id: MARKET_ID }, // → topics = [[eventSig], MARKET_ID]
+        eventName,
+        args: { id: MARKET_ID },
         onLogs: (logs) => {
           try {
             if (_wssDisconnected) {
               if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
-              console.log(`[WSS] ✅ Đã reconnect thành công: ${url}`);
+              console.log(`[WSS] ✅ Đã reconnect thành công (nhận event): ${url}`);
               _wssDisconnected = false;
             }
             for (const log of logs) {
@@ -169,40 +190,51 @@ async function _tryConnectWss(index) {
           const msg = err?.message || String(err);
           const now = Date.now();
 
-          // Dedup: cả 5 subscription dùng chung 1 WebSocket → cùng lỗi
           if (msg === _lastWsError.msg && now - _lastWsError.time < 1000) return;
           _lastWsError = { msg, time: now };
 
-          // Phân loại: lỗi network tạm thời → viem tự reconnect; lỗi vĩnh viễn → failover
           const isTransient =
             msg.includes("socket has been closed") ||
             msg.includes("connection") ||
             msg.includes("timeout");
           if (isTransient) {
-            // Guard: error từ connection cũ sau khi đã failover → bỏ qua
             if (wsState === null || wsState.url !== url) return;
             console.warn(
-              `[${new Date().toISOString()}] ⚠️  WSS ${url}: ${msg} — bắt đầu reconnect check...`
+              `[${new Date().toISOString()}] ⚠️  WSS ${url}: ${msg} — chờ subscription health...`
             );
             _wssDisconnected = true;
-            // Poll reconnect: gọi getChainId() mỗi 10s đến khi kết nối lại.
-            // Sau 6 lần thất bại (~60s) → failover sang URL tiếp theo.
+            // Chỉ poll getChainId để phát hiện socket sống lại; clear disconnected
+            // khi onLogs nhận event (subscription health) hoặc sau failover timeout.
             if (!_reconnectTimer) {
               _reconnectAttempts = 0;
               _reconnectTimer = setInterval(async () => {
                 try {
                   await client.getChainId();
-                  // Guard: onLogs có thể đã phát hiện reconnect trước khi timer chạy
                   if (!_wssDisconnected) {
                     clearInterval(_reconnectTimer);
                     _reconnectTimer = null;
                     return;
                   }
-                  clearInterval(_reconnectTimer);
-                  _reconnectTimer = null;
-                  _wssDisconnected = false;
-                  console.log(`[WSS] ✅ Đã reconnect thành công: ${url}`);
+                  // Socket sống lại nhưng chưa chắc subscription còn — trigger check
+                  // và để onLogs clear _wssDisconnected khi event tới.
+                  _reconnectAttempts++;
+                  console.log(
+                    `[WSS] ℹ️  Socket sống lại (${url}); chờ event hoặc failover nếu im lặng...`
+                  );
                   debouncedCheck();
+                  if (_reconnectAttempts >= 6) {
+                    clearInterval(_reconnectTimer);
+                    _reconnectTimer = null;
+                    _wssDisconnected = false;
+                    console.warn(
+                      `[WSS] ⚠️  Không nhận event sau reconnect ~60s. Failover...`
+                    );
+                    for (const fn of unwatchers) {
+                      try { fn(); } catch { /* ignore */ }
+                    }
+                    wsState = null;
+                    _tryConnectWss(index + 1);
+                  }
                 } catch {
                   _reconnectAttempts++;
                   if (_reconnectAttempts >= 6) {
@@ -233,12 +265,9 @@ async function _tryConnectWss(index) {
             msg.includes("eth_subscribe") ||
             msg.includes("not supported")
           ) {
-            // Guard 1: wsState đã bị clear → đang failover, bỏ qua
+            // Cho phép failover cả khi connecting (wsState đã set trước subscribe)
             if (wsState === null) return;
-            // Guard 2: wsState thuộc về connection mới (đã failover trước đó)
-            // → error này từ connection cũ, bỏ qua để không kill connection mới
             if (wsState.url !== url) return;
-            // Unwatch tất cả 5 subscription rồi failover
             for (const fn of unwatchers) {
               try { fn(); } catch { /* ignore */ }
             }
@@ -252,10 +281,11 @@ async function _tryConnectWss(index) {
       unwatchers.push(unwatch);
     }
 
+    wsState.connecting = false;
     console.log(`[WSS] ✅ Đã kết nối & đăng ký 5 events: ${url}`);
-    wsState = { client, unwatchers, url };
     return true;
   } catch (err) {
+    if (wsState?.url === url) wsState = null;
     console.warn(`[WSS] ❌ Kết nối thất bại (${url}): ${err.message}`);
     return _tryConnectWss(index + 1);
   }
@@ -289,6 +319,7 @@ function stopWsWatcher() {
   clearTimeout(debounceTimer);
   debounceTimer = null;
   if (_reconnectTimer) { clearInterval(_reconnectTimer); _reconnectTimer = null; }
+  if (_wssExhaustRetryTimer) { clearTimeout(_wssExhaustRetryTimer); _wssExhaustRetryTimer = null; }
 }
 
 // ============================================================
@@ -385,134 +416,214 @@ function estimateSharesValue(sharesWei, totalSupplyAssets, totalSupplyShares) {
 /**
  * Load presigned bundle, select best tier ≤ liquidity, broadcast.
  * Prioritizes "withdraw-all-shares" entries over fixed-amount tiers.
+ * Waits for receipt before marking used; on revert marks failed (nonce burned).
  * Returns { broadcasted: boolean, txHash?, tier? }.
  */
 async function broadcastPresigned(liquidity, loanToken, collateralToken, market) {
-  // 1. Check file exists
-  if (!fs.existsSync(PRESIGNED_FILE)) {
-    return { broadcasted: false };
-  }
+  // Phase 1: short lock — đọc, verify, chọn tier, claim status=broadcasting
+  const claimed = await withFileLock(PRESIGNED_LOCK_PATH, async () => {
+    if (!fs.existsSync(PRESIGNED_FILE)) return null;
 
-  let bundle;
-  try {
-    const raw = fs.readFileSync(PRESIGNED_FILE, "utf-8");
-    bundle = JSON.parse(raw);
-  } catch (err) {
-    console.error(
-      `[${new Date().toISOString()}] ❌ Lỗi đọc presigned file: ${err.message}`
-    );
-    return { broadcasted: false };
-  }
-
-  // 2. Check status
-  if (bundle.status !== "pending") {
-    return { broadcasted: false };
-  }
-
-  // 3. Check nonce still valid (optional: could query chain)
-  if (!bundle.withdrawals || bundle.withdrawals.length === 0) {
-    console.log(
-      `[${new Date().toISOString()}] ⚠️  Presigned bundle rỗng, bỏ qua.`
-    );
-    return { broadcasted: false };
-  }
-
-  // Log discovery on first detection
-  const sym = loanToken.symbol ?? "tokens";
-  const dec = loanToken.decimals;
-  console.log(
-    `[${new Date().toISOString()}] 📄 Phát hiện presigned bundle: ` +
-      `${bundle.withdrawals.length} tiers, nonce=${bundle.nonce}`
-  );
-
-  // 4. First, check for "withdraw-all-shares" entry (prioritize over fixed tiers)
-  let best = null;
-  const allSharesEntry = bundle.withdrawals.find(
-    w => w.type === "all-shares" && w.sharesWei && w.signedTx
-  );
-
-  if (allSharesEntry && market?.totalSupplyAssets != null && market?.totalSupplyShares != null) {
-    const estimatedAssets = estimateSharesValue(
-      allSharesEntry.sharesWei,
-      market.totalSupplyAssets,
-      market.totalSupplyShares
-    );
-
-    console.log(
-      `[${new Date().toISOString()}] ℹ️  Phát hiện withdraw-all entry: ` +
-        `${allSharesEntry.sharesWei} shares, ước tính ${formatTokenAmount(estimatedAssets, dec, sym)}, ` +
-        `thanh khoản: ${formatTokenAmount(liquidity, dec, sym)}`
-    );
-
-    if (estimatedAssets > 0n && estimatedAssets <= liquidity) {
-      best = allSharesEntry;
-      console.log(
-        `[${new Date().toISOString()}] 🎯 Chọn withdraw-all (ước tính ${formatTokenAmount(estimatedAssets, dec, sym)} ≤ liquidity)`
+    let bundle;
+    try {
+      bundle = JSON.parse(fs.readFileSync(PRESIGNED_FILE, "utf-8"));
+    } catch (err) {
+      console.error(
+        `[${new Date().toISOString()}] ❌ Lỗi đọc presigned file: ${err.message}`
       );
-    } else {
-      console.log(
-        `[${new Date().toISOString()}] ℹ️  Withdraw-all cần ~${formatTokenAmount(estimatedAssets, dec, sym)} ` +
-          `nhưng thanh khoản chỉ ${formatTokenAmount(liquidity, dec, sym)} — fallback xuống tier`
-      );
+      return null;
     }
-  }
 
-  // 5. Fall back to tier selection if no all-shares entry chosen
-  if (!best) {
-    const sorted = [...bundle.withdrawals]
-      .filter(w => w.amountWei && w.signedTx && w.type !== "all-shares")
-      .sort((a, b) => {
-        const diff = BigInt(a.amountWei) - BigInt(b.amountWei);
-        if (diff > 0n) return 1;
-        if (diff < 0n) return -1;
-        return 0;
-      });
+    if (bundle.status !== "pending") return null;
+    if (!bundle.withdrawals || bundle.withdrawals.length === 0) {
+      console.log(
+        `[${new Date().toISOString()}] ⚠️  Presigned bundle rỗng, bỏ qua.`
+      );
+      return null;
+    }
 
-    // Find largest tier where amountWei ≤ liquidity
-    for (let i = sorted.length - 1; i >= 0; i--) {
-      if (BigInt(sorted[i].amountWei) <= liquidity) {
-        best = sorted[i];
-        break;
+    const verified = await verifyPresignedBundle(bundle, {
+      morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+      lenderAddress: LENDER_ADDRESS,
+      marketId: MARKET_ID,
+    });
+    if (!verified.ok) {
+      console.error(
+        `[${new Date().toISOString()}] ❌ Bundle calldata không hợp lệ: ${verified.error}`
+      );
+      return { error: verified.error };
+    }
+
+    const sym = loanToken.symbol ?? "tokens";
+    const dec = loanToken.decimals;
+    console.log(
+      `[${new Date().toISOString()}] 📄 Phát hiện presigned bundle: ` +
+        `${bundle.withdrawals.length} tiers, nonce=${bundle.nonce}`
+    );
+
+    let best = null;
+    const allSharesEntry = bundle.withdrawals.find(
+      w => w.type === "all-shares" && w.sharesWei && w.signedTx
+    );
+
+    if (allSharesEntry && market?.totalSupplyAssets != null && market?.totalSupplyShares != null) {
+      const estimatedAssets = estimateSharesValue(
+        allSharesEntry.sharesWei,
+        market.totalSupplyAssets,
+        market.totalSupplyShares
+      );
+      console.log(
+        `[${new Date().toISOString()}] ℹ️  Phát hiện withdraw-all entry: ` +
+          `${allSharesEntry.sharesWei} shares, ước tính ${formatTokenAmount(estimatedAssets, dec, sym)}, ` +
+          `thanh khoản: ${formatTokenAmount(liquidity, dec, sym)}`
+      );
+      if (estimatedAssets > 0n && estimatedAssets <= liquidity) {
+        best = allSharesEntry;
+        console.log(
+          `[${new Date().toISOString()}] 🎯 Chọn withdraw-all (ước tính ${formatTokenAmount(estimatedAssets, dec, sym)} ≤ liquidity)`
+        );
+      } else {
+        console.log(
+          `[${new Date().toISOString()}] ℹ️  Withdraw-all cần ~${formatTokenAmount(estimatedAssets, dec, sym)} ` +
+            `nhưng thanh khoản chỉ ${formatTokenAmount(liquidity, dec, sym)} — fallback xuống tier`
+        );
       }
     }
-  }
 
-  if (!best) {
-    console.log(
-      `[${new Date().toISOString()}] ℹ️  Presigned bundle có nhưng không tier nào ≤ ` +
-        `thanh khoản (${formatTokenAmount(liquidity, dec, sym)}).`
-    );
-    return { broadcasted: false };
-  }
+    if (!best) {
+      const sorted = [...bundle.withdrawals]
+        .filter(w => w.amountWei && w.signedTx && w.type !== "all-shares")
+        .sort((a, b) => {
+          const diff = BigInt(a.amountWei) - BigInt(b.amountWei);
+          if (diff > 0n) return 1;
+          if (diff < 0n) return -1;
+          return 0;
+        });
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        if (BigInt(sorted[i].amountWei) <= liquidity) {
+          best = sorted[i];
+          break;
+        }
+      }
+    }
 
-  // 6. Broadcast
+    if (!best) {
+      console.log(
+        `[${new Date().toISOString()}] ℹ️  Presigned bundle có nhưng không tier nào ≤ ` +
+          `thanh khoản (${formatTokenAmount(liquidity, dec, sym)}).`
+      );
+      return null;
+    }
+
+    const tierCheck = await verifyWithdrawCalldata(best.signedTx, {
+      morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+      lenderAddress: LENDER_ADDRESS,
+      marketId: MARKET_ID,
+      nonce: bundle.nonce,
+      amountWei: best.amountWei,
+      sharesWei: best.sharesWei,
+      isAllShares: best.type === "all-shares",
+    });
+    if (!tierCheck.ok) {
+      console.error(
+        `[${new Date().toISOString()}] ❌ Tier "${best.label}" calldata mismatch: ${tierCheck.error}`
+      );
+      return { error: tierCheck.error };
+    }
+
+    // Claim để tránh double-broadcast trong lúc chờ receipt
+    bundle.status = "broadcasting";
+    bundle.broadcastingTier = best.label;
+    bundle.broadcastingAt = new Date().toISOString();
+    fs.writeFileSync(PRESIGNED_FILE, JSON.stringify(bundle, null, 2));
+    return { bundle, best, sym, dec };
+  });
+
+  if (!claimed) return { broadcasted: false };
+  if (claimed.error) return { broadcasted: false, error: claimed.error };
+
+  const { bundle, best } = claimed;
+
+  const markBundle = async (status, extra = {}) => {
+    await withFileLock(PRESIGNED_LOCK_PATH, () => {
+      Object.assign(bundle, { status, ...extra });
+      const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
+      try {
+        fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+        if (fs.existsSync(PRESIGNED_FILE)) fs.unlinkSync(PRESIGNED_FILE);
+        console.log(`[${new Date().toISOString()}] 📁 Đã lưu ${usedPath} (status=${status})`);
+      } catch (fileErr) {
+        console.warn(
+          `[${new Date().toISOString()}] ⚠️  Không thể rename presigned file: ${fileErr.message}`
+        );
+        try {
+          fs.writeFileSync(PRESIGNED_FILE, JSON.stringify(bundle, null, 2));
+        } catch (writeErr) {
+          console.error(
+            `[${new Date().toISOString()}] ❌ Không thể cập nhật: ${writeErr.message}`
+          );
+        }
+      }
+    });
+  };
+
   console.log(
     `[${new Date().toISOString()}] 🔄 Đang broadcast presigned tier ` +
       `"${best.label}" (${best.amountFormatted})...`
   );
 
+  // Phase 2: broadcast + chờ receipt (KHÔNG giữ lock)
   try {
     const txHash = await walletClient.sendRawTransaction({
       serializedTransaction: best.signedTx,
     });
 
     console.log(
-      `[${new Date().toISOString()}] ✅ Đã broadcast presigned tx: ${txHash}`
+      `[${new Date().toISOString()}] ✅ Đã submit presigned tx: ${txHash} — chờ receipt...`
     );
 
-    // 7. Mark as used — rename file
-    bundle.status = "broadcast";
-    bundle.broadcastedAt = new Date().toISOString();
-    bundle.broadcastedTier = best.label;
-    bundle.txHash = txHash;
+    let receipt;
+    try {
+      receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+        timeout: 120_000,
+      });
+    } catch (waitErr) {
+      console.warn(
+        `[${new Date().toISOString()}] ⚠️  Chưa nhận receipt: ${waitErr.message}. ` +
+          `Đánh dấu submitted (nonce có thể đã cháy).`
+      );
+      await markBundle("submitted", {
+        broadcastedAt: new Date().toISOString(),
+        broadcastedTier: best.label,
+        txHash,
+        error: waitErr.message,
+      });
+      return { broadcasted: false, submitted: true, txHash, error: waitErr.message };
+    }
 
-    const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
-    fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
-    fs.unlinkSync(PRESIGNED_FILE);
+    if (receipt.status === "reverted") {
+      console.error(
+        `[${new Date().toISOString()}] ❌ Presigned tx REVERTED: ${txHash} ` +
+          `(nonce đã cháy — không retry).`
+      );
+      await markBundle("failed", {
+        broadcastedAt: new Date().toISOString(),
+        broadcastedTier: best.label,
+        txHash,
+        error: "Transaction reverted on-chain",
+      });
+      return { broadcasted: false, reverted: true, txHash };
+    }
 
     console.log(
-      `[${new Date().toISOString()}] 📁 Đã lưu ${usedPath}`
+      `[${new Date().toISOString()}] ✅ Presigned tx confirmed: ${txHash}`
     );
+    await markBundle("broadcast", {
+      broadcastedAt: new Date().toISOString(),
+      broadcastedTier: best.label,
+      txHash,
+    });
 
     return {
       broadcasted: true,
@@ -521,32 +632,13 @@ async function broadcastPresigned(liquidity, loanToken, collateralToken, market)
       amountFormatted: best.amountFormatted,
     };
   } catch (err) {
-    // If nonce already consumed (e.g., user made another tx), mark as used
     if (err.message?.includes("nonce") || err.message?.includes("already known")) {
       console.warn(
         `[${new Date().toISOString()}] ⚠️  Presigned tx nonce đã được dùng, ` +
           `đánh dấu bundle là expired.`
       );
-      bundle.status = "expired";
-      bundle.error = err.message;
-      const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
-      try {
-        fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
-        fs.unlinkSync(PRESIGNED_FILE);
-      } catch (fileErr) {
-        console.warn(
-          `[${new Date().toISOString()}] ⚠️  Không thể xóa presigned file: ${fileErr.message}`
-        );
-        try {
-          fs.writeFileSync(PRESIGNED_FILE, JSON.stringify({ ...bundle, status: "expired" }, null, 2));
-        } catch (writeErr) {
-          console.error(
-            `[${new Date().toISOString()}] ❌ Không thể cập nhật presigned file: ${writeErr.message}`
-          );
-        }
-      }
+      await markBundle("expired", { error: err.message });
 
-      // Gửi thông báo ntfy
       try {
         const webappLink = `${WEBAPP_URL}?market=${MARKET_ID}&lender=${LENDER_ADDRESS}`;
         const loanSymbol = loanToken?.symbol ?? "tokens";
@@ -583,9 +675,23 @@ async function broadcastPresigned(liquidity, loanToken, collateralToken, market)
       return { broadcasted: false, error: err.message };
     }
 
+    // Submit thất bại khác — trả bundle về pending để retry
     console.error(
       `[${new Date().toISOString()}] ❌ Lỗi broadcast presigned tx: ${err.message}`
     );
+    await withFileLock(PRESIGNED_LOCK_PATH, () => {
+      try {
+        if (fs.existsSync(PRESIGNED_FILE)) {
+          const current = JSON.parse(fs.readFileSync(PRESIGNED_FILE, "utf-8"));
+          if (current.status === "broadcasting") {
+            current.status = "pending";
+            delete current.broadcastingTier;
+            delete current.broadcastingAt;
+            fs.writeFileSync(PRESIGNED_FILE, JSON.stringify(current, null, 2));
+          }
+        }
+      } catch { /* ignore */ }
+    });
     return { broadcasted: false, error: err.message };
   }
 }
@@ -598,21 +704,24 @@ async function broadcastPresigned(liquidity, loanToken, collateralToken, market)
  * Check if the pre-signed bundle's nonce is still valid.
  * If the lender's on-chain nonce has increased beyond the bundle nonce,
  * the bundle is stale and should be cleared.
+ * Also recovers stuck status="broadcasting" after crash:
+ *   - nonce advanced → expire (tx landed / nonce burned)
+ *   - age > BROADCASTING_STUCK_MS (or missing broadcastingAt) → reset pending
  */
 async function expireStaleBundle(client, market, loanToken, collateralToken) {
+  // RPC ngoài lock; chỉ giữ lock khi mutate file
   if (!fs.existsSync(PRESIGNED_FILE)) return;
 
   let bundle;
   try {
-    const raw = fs.readFileSync(PRESIGNED_FILE, "utf-8");
-    bundle = JSON.parse(raw);
+    bundle = JSON.parse(fs.readFileSync(PRESIGNED_FILE, "utf-8"));
   } catch {
     return;
   }
 
-  if (bundle.status !== "pending") return;
+  const status = bundle.status;
+  if (status !== "pending" && status !== "broadcasting") return;
 
-  // Guard: bundle must have a valid nonce
   if (bundle.nonce == null) {
     console.warn(
       `[${new Date().toISOString()}] ⚠️  Bundle thiếu nonce, bỏ qua.`
@@ -620,83 +729,142 @@ async function expireStaleBundle(client, market, loanToken, collateralToken) {
     return;
   }
 
-  // Fetch current nonce for lender from chain
   const currentNonce = await client.getTransactionCount({
     address: LENDER_ADDRESS,
     blockTag: "pending",
   });
 
-  if (currentNonce > bundle.nonce) {
-    console.log(
-      `[${new Date().toISOString()}] 🧹 Nonce lender đã tăng ` +
-        `(${bundle.nonce} → ${currentNonce}), ` +
-        `pre-signed bundle đã hết hạn. Đang dọn dẹp...`
-    );
-    bundle.status = "expired";
-    bundle.error = `Nonce tăng: bundle=${bundle.nonce}, chain=${currentNonce}`;
-    bundle.expiredAt = new Date().toISOString();
+  // --- Recovery: stuck broadcasting ---
+  if (status === "broadcasting") {
+    if (currentNonce > bundle.nonce) {
+      console.log(
+        `[${new Date().toISOString()}] 🧹 Bundle broadcasting nhưng nonce đã tăng ` +
+          `(${bundle.nonce} → ${currentNonce}) — coi như đã dùng, expire.`
+      );
+      // fall through to expire path below
+    } else {
+      const claimedAt = bundle.broadcastingAt
+        ? Date.parse(bundle.broadcastingAt)
+        : NaN;
+      const ageMs = Number.isFinite(claimedAt) ? Date.now() - claimedAt : Infinity;
+      // Không có broadcastingAt (legacy/crash cũ) hoặc quá lâu → reset pending để retry
+      if (ageMs >= BROADCASTING_STUCK_MS) {
+        const reset = await withFileLock(PRESIGNED_LOCK_PATH, () => {
+          if (!fs.existsSync(PRESIGNED_FILE)) return false;
+          let fresh;
+          try {
+            fresh = JSON.parse(fs.readFileSync(PRESIGNED_FILE, "utf-8"));
+          } catch {
+            return false;
+          }
+          if (fresh.status !== "broadcasting") return false;
+          // Re-check age under lock (có thể vừa claim lại)
+          const at = fresh.broadcastingAt ? Date.parse(fresh.broadcastingAt) : NaN;
+          const age = Number.isFinite(at) ? Date.now() - at : Infinity;
+          if (age < BROADCASTING_STUCK_MS) return false;
+          fresh.status = "pending";
+          delete fresh.broadcastingTier;
+          delete fresh.broadcastingAt;
+          fs.writeFileSync(PRESIGNED_FILE, JSON.stringify(fresh, null, 2));
+          return true;
+        });
+        if (reset) {
+          console.log(
+            `[${new Date().toISOString()}] ♻️  Bundle broadcasting kẹt ` +
+              `(age≈${Math.round(ageMs / 1000)}s) → reset pending để retry.`
+          );
+        }
+      }
+      return;
+    }
+  } else if (currentNonce <= bundle.nonce) {
+    return;
+  }
+
+  console.log(
+    `[${new Date().toISOString()}] 🧹 Nonce lender đã tăng ` +
+      `(${bundle.nonce} → ${currentNonce}), ` +
+      `pre-signed bundle đã hết hạn. Đang dọn dẹp...`
+  );
+
+  const expired = await withFileLock(PRESIGNED_LOCK_PATH, () => {
+    // Re-read under lock — có thể đã bị đổi
+    if (!fs.existsSync(PRESIGNED_FILE)) return null;
+    let fresh;
+    try {
+      fresh = JSON.parse(fs.readFileSync(PRESIGNED_FILE, "utf-8"));
+    } catch {
+      return null;
+    }
+    if (
+      (fresh.status !== "pending" && fresh.status !== "broadcasting") ||
+      fresh.nonce == null
+    ) {
+      return null;
+    }
+    if (currentNonce <= fresh.nonce) return null;
+
+    fresh.status = "expired";
+    fresh.error = `Nonce tăng: bundle=${fresh.nonce}, chain=${currentNonce}`;
+    fresh.expiredAt = new Date().toISOString();
+    delete fresh.broadcastingTier;
+    delete fresh.broadcastingAt;
     const usedPath = PRESIGNED_FILE.replace(".json", ".used.json");
     try {
-      fs.writeFileSync(usedPath, JSON.stringify(bundle, null, 2));
+      fs.writeFileSync(usedPath, JSON.stringify(fresh, null, 2));
       fs.unlinkSync(PRESIGNED_FILE);
     } catch (fileErr) {
-      // If unlink fails, update the original file's status so it won't re-trigger
       console.warn(
         `[${new Date().toISOString()}] ⚠️  Không thể xóa presigned file: ${fileErr.message}`
       );
       try {
-        fs.writeFileSync(PRESIGNED_FILE, JSON.stringify({ ...bundle, status: "expired" }, null, 2));
+        fs.writeFileSync(PRESIGNED_FILE, JSON.stringify({ ...fresh, status: "expired" }, null, 2));
       } catch (writeErr) {
         console.error(
-          `[${new Date().toISOString()}] ❌ Không thể cập nhật presigned file: ${writeErr.message}`
+          `[${new Date().toISOString()}] ❌ Không thể cập nhật: ${writeErr.message}`
         );
       }
     }
     console.log(
       `[${new Date().toISOString()}] 📁 Đã lưu bundle expired → ${usedPath}`
     );
+    return fresh;
+  });
 
-    // Gửi thông báo qua ntfy
-    if (market && loanToken && collateralToken) {
-      try {
-        const loanSymbol = loanToken.symbol ?? "tokens";
-        const collateralSymbol = collateralToken.symbol ?? "tokens";
-        const webappLink = `${WEBAPP_URL}?market=${MARKET_ID}&lender=${LENDER_ADDRESS}`;
+  if (!expired || !market || !loanToken || !collateralToken) return;
 
-        const title = `Morpho Blue: Pre-signed bundle da het han! ${loanSymbol}`;
-        const body = [
-          `**Pre-signed bundle đã bị xóa do nonce tăng.**`,
-          ``,
-          `**Market:** ${collateralSymbol}/${loanSymbol}`,
-          `**Nonce bundle:** ${bundle.nonce}`,
-          `**Nonce on-chain:** ${currentNonce}`,
-          `**Lý do:** Ví lender đã gửi một giao dịch khác với nonce cao hơn, ` +
-            `khiến pre-signed bundle không còn hợp lệ.`,
-          ``,
-          `[Mở Webapp để tạo bundle mới](${webappLink})`,
-        ].join("\n");
-
-        await fetch(`${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`, {
-          method: "POST",
-          headers: {
-            "Title": title,
-            "Tags": "warning",
-            "Priority": "4",
-            "Markdown": "yes",
-            "Click": webappLink,
-          },
-          body,
-        });
-
-        console.log(
-          `[${new Date().toISOString()}] 🔔 Đã gửi thông báo bundle hết hạn`
-        );
-      } catch (err) {
-        console.error(
-          `[${new Date().toISOString()}] ❌ Lỗi gửi ntfy bundle hết hạn: ${err.message}`
-        );
-      }
-    }
+  try {
+    const loanSymbol = loanToken.symbol ?? "tokens";
+    const collateralSymbol = collateralToken.symbol ?? "tokens";
+    const webappLink = `${WEBAPP_URL}?market=${MARKET_ID}&lender=${LENDER_ADDRESS}`;
+    await fetch(`${NTFY_SERVER}/${RESOLVED_NTFY_TOPIC}`, {
+      method: "POST",
+      headers: {
+        "Title": `Morpho Blue: Pre-signed bundle da het han! ${loanSymbol}`,
+        "Tags": "warning",
+        "Priority": "4",
+        "Markdown": "yes",
+        "Click": webappLink,
+      },
+      body: [
+        `**Pre-signed bundle đã bị xóa do nonce tăng.**`,
+        ``,
+        `**Market:** ${collateralSymbol}/${loanSymbol}`,
+        `**Nonce bundle:** ${expired.nonce}`,
+        `**Nonce on-chain:** ${currentNonce}`,
+        `**Lý do:** Ví lender đã gửi một giao dịch khác với nonce cao hơn, ` +
+          `khiến pre-signed bundle không còn hợp lệ.`,
+        ``,
+        `[Mở Webapp để tạo bundle mới](${webappLink})`,
+      ].join("\n"),
+    });
+    console.log(
+      `[${new Date().toISOString()}] 🔔 Đã gửi thông báo bundle hết hạn`
+    );
+  } catch (err) {
+    console.error(
+      `[${new Date().toISOString()}] ❌ Lỗi gửi ntfy bundle hết hạn: ${err.message}`
+    );
   }
 }
 
@@ -872,7 +1040,7 @@ async function checkAndNotify() {
     );
 
     // Task 3: Presigned broadcast (chạy song song với ntfy+VoIP để đạt tốc độ tối đa)
-    if (shouldBroadcastPresigned(liquidity, drainThreshold)) {
+    if (shouldBroadcastPresigned(liquidity, drainThreshold, MIN_LIQUIDITY_THRESHOLD)) {
       tasks.push(
         broadcastPresigned(liquidity, loanToken, collateralToken, market)
           .then((presignResult) => {
@@ -892,7 +1060,7 @@ async function checkAndNotify() {
     }
 
     await Promise.all(tasks);
-  } else if (shouldBroadcastPresigned(liquidity, drainThreshold)) {
+  } else if (shouldBroadcastPresigned(liquidity, drainThreshold, MIN_LIQUIDITY_THRESHOLD)) {
     // Không cần notify, nhưng vẫn thử broadcast (chạy độc lập)
     try {
       const presignResult = await broadcastPresigned(liquidity, loanToken, collateralToken, market);

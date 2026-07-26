@@ -1181,12 +1181,35 @@
       try {
         document.getElementById("btn-fetch-nonce").disabled = true;
         document.getElementById("btn-fetch-nonce").textContent = "⏳ Đang lấy...";
+        const prevNonce = presignedNonce;
         presignedNonce = await publicClient.getTransactionCount({
           address: currentAccount,
           blockTag: "pending",
         });
         document.getElementById("presign-nonce").textContent = presignedNonce;
         document.getElementById("btn-fetch-nonce").textContent = "✅ Đã lấy Nonce";
+        // Nonce mới → chữ ký cũ (cùng nonce cũ) không còn hợp lệ
+        if (prevNonce !== null && prevNonce !== presignedNonce) {
+          let invalidated = false;
+          for (const tier of presignedTiers) {
+            if (tier.status === "signed") {
+              tier.status = "pending";
+              tier.txHash = null;
+              tier.amountWei = null;
+              invalidated = true;
+            }
+          }
+          if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
+            presignedWithdrawAll.status = "pending";
+            presignedWithdrawAll.txHash = null;
+            invalidated = true;
+          }
+          if (invalidated) {
+            document.getElementById("btn-save-server").disabled = true;
+            showPresignError("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
+            renderTierList();
+          }
+        }
         updateSignButton();
       } catch (err) {
         showPresignError("Lỗi lấy nonce: " + err.message);
@@ -1986,10 +2009,10 @@
     // INIT
     // ============================================================
     async function init() {
-      // Read query params (optional — override server config for dev/testing)
-      const params = new URLSearchParams(window.location.search);
-      marketId = params.get("market") || SERVER_MARKET_ID;
-      lenderAddress = params.get("lender") || SERVER_LENDER_ADDRESS;
+      // Luôn dùng config từ server (MORPHO_CONFIG). Bỏ qua ?market=/?lender=
+      // để tránh ký withdraw sai market so với monitor/.env.
+      marketId = SERVER_MARKET_ID;
+      lenderAddress = SERVER_LENDER_ADDRESS;
 
       if (!marketId || !lenderAddress) {
         document.getElementById("loading").style.display = "none";

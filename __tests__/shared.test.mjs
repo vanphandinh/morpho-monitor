@@ -11,7 +11,10 @@ import {
   shouldBroadcastPresigned,
   createSessionToken,
   verifySessionToken,
+  safeEqualString,
+  requireLenderOrInternal,
 } from "../shared.mjs";
+
 
 // ============================================================
 // env() — nullish coalescing
@@ -519,6 +522,47 @@ describe("shouldBroadcastPresigned()", () => {
     const result = shouldBroadcastPresigned(5_000_000n, null);
     expect(result).toBe(false);
   });
+
+  it("aligns with notify: không broadcast dưới minLiquidityThreshold", () => {
+    // drainThreshold raw = 50, min = 100 → zone [100, 100]
+    expect(shouldBroadcastPresigned(50n, 50n, 100n)).toBe(false);
+    expect(shouldBroadcastPresigned(100n, 50n, 100n)).toBe(true);
+    expect(shouldBroadcastPresigned(150n, 50n, 100n)).toBe(false);
+  });
+
+  it("aligns with notify: clamp drainThreshold lên min khi drain < min", () => {
+    // supply×mult = 80, min = 100 → effectiveDrain = 100
+    expect(shouldBroadcastPresigned(90n, 80n, 100n)).toBe(false);
+    expect(shouldBroadcastPresigned(100n, 80n, 100n)).toBe(true);
+  });
+});
+
+// ============================================================
+// safeEqualString() — timingSafeEqual wrapper
+// ============================================================
+describe("safeEqualString()", () => {
+  it("trả về true khi hai chuỗi giống nhau", () => {
+    expect(safeEqualString("abc", "abc")).toBe(true);
+    expect(safeEqualString("", "")).toBe(true);
+  });
+
+  it("trả về false khi khác nội dung hoặc độ dài", () => {
+    expect(safeEqualString("abc", "abd")).toBe(false);
+    expect(safeEqualString("abc", "ab")).toBe(false);
+    expect(safeEqualString("ab", "abc")).toBe(false);
+  });
+
+  it("trả về false với non-string", () => {
+    expect(safeEqualString(null, "a")).toBe(false);
+    expect(safeEqualString("a", null)).toBe(false);
+  });
+
+  it("HMAC verify vẫn hoạt động qua timingSafeEqual", () => {
+    const token = createSessionToken("0xtiming", 60_000);
+    expect(verifySessionToken(token).address).toBe("0xtiming");
+    const [payload, hmac] = token.split(".");
+    expect(verifySessionToken(`${payload}.${hmac.slice(0, -1)}x`)).toBeNull();
+  });
 });
 
 // ============================================================
@@ -579,5 +623,26 @@ describe("createSessionToken() & verifySessionToken()", () => {
     const result = verifySessionToken(token);
     expect(result).not.toBeNull();
     expect(result.address).toBe("0xlender");
+  });
+});
+
+// ============================================================
+// requireLenderOrInternal() — proxy HTTP API gate
+// ============================================================
+describe("requireLenderOrInternal()", () => {
+  const LENDER = "0x1111111111111111111111111111111111111111";
+
+  it("dev mode (WEBAPP_PASSWORD trống): chấp nhận không cần header (internal bypass)", () => {
+    // Khi password rỗng, checkInternalSecret() luôn true — hành vi documented
+    const req = { headers: {} };
+    const r = requireLenderOrInternal(req, LENDER);
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe("internal");
+  });
+
+  it("từ chối khi thiếu lenderAddress", () => {
+    const req = { headers: {} };
+    expect(requireLenderOrInternal(req, "").ok).toBe(false);
+    expect(requireLenderOrInternal(req, null).ok).toBe(false);
   });
 });
