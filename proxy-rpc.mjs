@@ -160,7 +160,8 @@ async function handleRpc(method, params) {
       try {
         const address = params[0];
         const blockTag = params[1] || "latest";
-        return await publicClient.getCode({ address, blockTag });
+        // viem may return undefined for EOAs — JSON-RPC requires "0x"
+        return (await publicClient.getCode({ address, blockTag })) || "0x";
       } catch (err) {
         console.warn(`[proxy] eth_getCode forwarding failed: ${err.message}`);
         return "0x";
@@ -168,12 +169,23 @@ async function handleRpc(method, params) {
 
     case "eth_call": {
       try {
-        const callParams = params[0] || {};
-        const blockTag = params[1] || "latest";
-        return await publicClient.call({ ...callParams, blockTag });
+        // Forward raw JSON-RPC so `from` (Ambire spoof origin) + state overrides (params[2])
+        // are preserved. viem publicClient.call() drops `from` (expects `account`) and
+        // never receives params[2] — causing SV_SPOOF_ORIGIN.
+        // Round-robin transport already retries across all RPC URLs on any failure
+        // (including execution revert), so Ambire deployless sims that fail on one
+        // provider (e.g. Ankr) can still succeed on another.
+        return await publicClient.request({ method: "eth_call", params });
       } catch (err) {
-        console.warn(`[proxy] eth_call forwarding failed: ${err.message}`);
-        return "0x";
+        const msg = err?.shortMessage || err?.message || String(err);
+        const hasStateOverride = params?.[2] != null;
+        const to = (params?.[0] || {}).to || "?";
+        console.warn(
+          `[proxy] eth_call forwarding failed${hasStateOverride ? " (stateOverride)" : ""} → ${to}: ${msg}`
+        );
+        // Không trả "0x" giả — Ambire hiểu nhầm là success và parse sai portfolio.
+        // HTTP handler sẽ emit jsonRpcError khi nhận Error.
+        return new Error(msg);
       }
     }
 
