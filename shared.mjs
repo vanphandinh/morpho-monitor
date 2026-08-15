@@ -1,5 +1,14 @@
 import { formatUnits, recoverMessageAddress } from "viem";
 import crypto from "node:crypto";
+import dns from "node:dns";
+import net from "node:net";
+
+// Docker/VPS thường không có route IPv6. ntfy.sh có AAAA; Node 22 Happy Eyeballs
+// đua IPv6 rồi ném `fetch failed` / ETIMEDOUT (~250ms) thay vì fallback IPv4.
+dns.setDefaultResultOrder("ipv4first");
+if (typeof net.setDefaultAutoSelectFamily === "function") {
+  net.setDefaultAutoSelectFamily(false);
+}
 
 // ============================================================
 // CONFIG — tất cả đọc từ biến môi trường (file .env)
