@@ -9,6 +9,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+config/markets.json
 
 # ============================================================
 # Build artifacts

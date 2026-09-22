@@ -458,7 +458,7 @@
     // CONFIG (injected by server via window.MORPHO_CONFIG)
     // ============================================================
     const CFG = window.MORPHO_CONFIG || {};
-    const SERVER_MARKET_ID = CFG.marketId || null;
+    const SERVER_MARKETS = Array.isArray(CFG.markets) ? CFG.markets : [];
     const SERVER_LENDER_ADDRESS = CFG.lenderAddress || null;
     const SERVER_PROXY_RPC_URL = CFG.proxyRpcUrl || "http://127.0.0.1:8545";
 
@@ -1706,7 +1706,7 @@
         return;
       }
       try {
-        const resp = await fetch("/api/presign", {
+        const resp = await fetch(`/api/presign?market=${encodeURIComponent(marketId)}`, {
           headers: { ...getAuthHeaders() },
         });
         if (resp.status === 401) {
@@ -1768,7 +1768,7 @@
       if (!confirm(`Xóa tier #${index + 1} khỏi bundle trên server?`)) return;
 
       try {
-        const resp = await fetch(`/api/presign?tier=${index}`, {
+        const resp = await fetch(`/api/presign?market=${encodeURIComponent(marketId)}&tier=${index}`, {
           method: "DELETE",
           headers: { ...getAuthHeaders() },
         });
@@ -2009,9 +2009,11 @@
     // INIT
     // ============================================================
     async function init() {
-      // Luôn dùng config từ server (MORPHO_CONFIG). Bỏ qua ?market=/?lender=
-      // để tránh ký withdraw sai market so với monitor/.env.
-      marketId = SERVER_MARKET_ID;
+      // Only accept an explicit market from the server allow-list. Links from
+      // notifications can therefore select a market without trusting arbitrary
+      // URL input.
+      const requestedMarket = new URLSearchParams(location.search).get("market")?.toLowerCase();
+      marketId = SERVER_MARKETS.find((market) => market.id === requestedMarket)?.id || SERVER_MARKETS[0]?.id || null;
       lenderAddress = SERVER_LENDER_ADDRESS;
 
       if (!marketId || !lenderAddress) {

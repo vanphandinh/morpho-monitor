@@ -26,8 +26,10 @@ export const envNum = (key, fallback) => {
 };
 
 // ---- Morpho Blue ----
-export const MARKET_ID = env("MARKET_ID",
-  "0x24852d8d7464402ddcd717415e009d42bf7427d6a8893487f83c75ee0f4a0ea6");
+// Multi-market configuration is intentionally file-backed.  There is no
+// A deployment must explicitly opt into every market it
+// wants to monitor.
+export const MARKETS_FILE = env("MARKETS_FILE", "./config/markets.json");
 export const LENDER_ADDRESS = env("LENDER_ADDRESS",
   "0x0000000000000000000000000000000000000000");
 export const MORPHO_BLUE_ADDRESS = env("MORPHO_BLUE_ADDRESS",
@@ -55,10 +57,6 @@ export const MONITOR_INTERVAL_MS = envNum("MONITOR_INTERVAL_MS", 30000);
 export const NOTIFICATION_COOLDOWN_MS =
   envNum("NOTIFICATION_COOLDOWN_MINUTES", 30) * 60 * 1000;
 export const MAX_NOTIFICATIONS_PER_DAY = envNum("MAX_NOTIFICATIONS_PER_DAY", 10);
-
-// Minimum liquidity threshold (converted from USDC to wei: USDC has 6 decimals)
-export const MIN_LIQUIDITY_THRESHOLD =
-  BigInt(envNum("MIN_LIQUIDITY_THRESHOLD_USDC", 100)) * 1_000_000n;
 
 // Hệ số ngưỡng giảm thanh khoản đột ngột
 // drainThreshold = supplyAssets × SUDDEN_DRAIN_MULTIPLIER
@@ -96,6 +94,7 @@ export const SESSION_EXPIRY_MS = envNum("SESSION_EXPIRY_HOURS", 24) * 60 * 60 * 
 export const CHALLENGE_EXPIRY_MS = envNum("CHALLENGE_EXPIRY_MINUTES", 5) * 60 * 1000;
 
 // ---- Presigned Bundle ----
+// Registry v2: { version: 2, bundles: { [marketId]: bundle } }
 export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
 export const PROXY_PORT = envNum("PROXY_PORT", 8545);
 // Bind address for proxy — mặc định localhost. Set PROXY_HOST=0.0.0.0 cho MetaMask mobile / VPS.

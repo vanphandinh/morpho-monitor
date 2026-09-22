@@ -11,6 +11,7 @@ services:
       - "8545:8545"              # proxy RPC (public) — capture gated by lender sender check
     volumes:
       - ./.env:/app/.env:ro
+      - ./config:/app/config:ro
       - presigned_data:/app/data
       # ---- SSL/TLS (Let's Encrypt) ----
       # Mount toàn bộ /etc/letsencrypt vào /certs/ (read-only).

@@ -11,7 +11,7 @@ import {
   USE_SSL,
   SSL_CERT_PATH,
   SSL_KEY_PATH,
-  MARKET_ID,
+  MARKETS_FILE,
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
   MAX_BODY_BYTES,
@@ -25,7 +25,9 @@ import {
   resolveBundleServerUrl,
   clearMatchedCaptured,
   assertCaptureTx,
+  computeMarketId,
 } from "./presign-verify.mjs";
+import { loadMarkets } from "./market-config.mjs";
 
 // Install global error handlers so unhandled RPC rejections don't crash the process
 addGlobalErrorHandlers("proxy-rpc");
@@ -33,6 +35,15 @@ addGlobalErrorHandlers("proxy-rpc");
 const PORT = PROXY_PORT || 8545;
 const BIND_HOST = PROXY_HOST || "127.0.0.1";
 const MAX_CAPTURED_TXS = 50;
+const configuredMarkets = loadMarkets(MARKETS_FILE);
+const configuredMarketIds = new Set(configuredMarkets.map((market) => market.id));
+
+function assertConfiguredMarket(marketId) {
+  if (typeof marketId !== "string" || !configuredMarketIds.has(marketId.toLowerCase())) {
+    throw new Error("marketId is not configured in MARKETS_FILE");
+  }
+  return marketId.toLowerCase();
+}
 
 // ============================================================
 // STATE
@@ -81,11 +92,15 @@ async function handleRpc(method, params) {
       const check = await assertCaptureTx(signedTx, {
         morphoBlueAddress: MORPHO_BLUE_ADDRESS,
         lenderAddress: LENDER_ADDRESS,
-        marketId: MARKET_ID,
       });
       if (!check.ok) {
         console.warn(`[proxy] ❌ Từ chối capture: ${check.error}`);
         return new Error(check.error);
+      }
+      const capturedMarketId = computeMarketId(check.decoded.marketParams).toLowerCase();
+      if (!configuredMarketIds.has(capturedMarketId)) {
+        console.warn(`[proxy] ❌ Từ chối capture: market ${capturedMarketId} không được cấu hình`);
+        return new Error("marketId is not configured in MARKETS_FILE");
       }
       const txHash = keccak256(signedTx); // real tx hash — dùng để match tier sau này
       if (capturedTxs.length >= MAX_CAPTURED_TXS) {
@@ -445,11 +460,11 @@ const server = createServer(async (req, res) => {
         }));
 
         const bundle = {
-          version: 1,
+          version: 2,
           createdAt: new Date().toISOString(),
           chainId: 1,
           morphoBlueAddress: meta.morphoBlueAddress || MORPHO_BLUE_ADDRESS,
-          marketId: meta.marketId || MARKET_ID,
+          marketId: assertConfiguredMarket(meta.marketId),
           lenderAddress: meta.lenderAddress || LENDER_ADDRESS,
           nonce: meta.nonce,
           gas: meta.gas || "200000",
@@ -464,7 +479,7 @@ const server = createServer(async (req, res) => {
         const verified = await verifyPresignedBundle(bundle, {
           morphoBlueAddress: MORPHO_BLUE_ADDRESS,
           lenderAddress: LENDER_ADDRESS,
-          marketId: MARKET_ID,
+          marketId: assertConfiguredMarket(meta.marketId),
         });
         if (!verified.ok) {
           res.writeHead(400, { "Content-Type": "application/json" });

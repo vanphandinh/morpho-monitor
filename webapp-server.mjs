@@ -9,7 +9,7 @@ import {
   PRESIGNED_FILE,
   PROXY_RPC_URL,
   WEBAPP_PASSWORD,
-  MARKET_ID,
+  MARKETS_FILE,
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
   SESSION_EXPIRY_MS,
@@ -23,10 +23,11 @@ import {
   verifyToken,
   checkInternalSecret,
   readBodyLimited,
-  withFileLock,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { verifyPresignedBundle } from "./presign-verify.mjs";
+import { loadMarkets } from "./market-config.mjs";
+import { readRegistry, updateRegistry, registrySummary } from "./presigned-store.mjs";
 
 // Global error handlers — prevent crashes from unhandled rejections
 addGlobalErrorHandlers("webapp-server");
@@ -35,7 +36,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = WEBAPP_PORT;
 const WEBAPP_FILE = path.join(__dirname, "webapp.html");
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
-const PRESIGNED_LOCK_PATH = PRESIGNED_PATH + ".lock";
+const configuredMarkets = loadMarkets(path.join(__dirname, MARKETS_FILE));
+const configuredMarketIds = new Set(configuredMarkets.map((market) => market.id));
 
 // Read the HTML file once at startup
 let htmlContent = null;
@@ -51,7 +53,7 @@ try {
 htmlContent = htmlContent.replace(
   "</head>",
   `<script>window.MORPHO_CONFIG=${JSON.stringify({
-    marketId: MARKET_ID,
+    markets: configuredMarkets,
     lenderAddress: LENDER_ADDRESS,
     proxyRpcUrl: PROXY_RPC_URL,
   }).replace(/</g, "\\u003c")}</script></head>`
@@ -62,14 +64,11 @@ htmlContent = htmlContent.replace(
 // ============================================================
 const challenges = new Map(); // challenge → { address, createdAt, expiresAt }
 
-// In-process write serialization + cross-process file lock for presigned.json
-let writeLock = Promise.resolve();
-
-function withPresignedWrite(fn) {
-  const run = () => withFileLock(PRESIGNED_LOCK_PATH, fn);
-  const p = writeLock.then(run, run);
-  writeLock = p.catch(() => {});
-  return p;
+function requireConfiguredMarket(marketId) {
+  if (typeof marketId !== "string" || !configuredMarketIds.has(marketId.toLowerCase())) {
+    throw new Error("marketId is not configured in MARKETS_FILE");
+  }
+  return marketId.toLowerCase();
 }
 
 // Rate limit for /api/challenge: max 10 requests per minute per IP
@@ -211,41 +210,17 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- API: GET /api/presign ----
-  if (req.method === "GET" && req.url === "/api/presign") {
+  if (req.method === "GET" && req.url.startsWith("/api/presign")) {
     if (!verifyToken(req, LENDER_ADDRESS)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
       return;
     }
     try {
-      if (fs.existsSync(PRESIGNED_PATH)) {
-        const raw = fs.readFileSync(PRESIGNED_PATH, "utf-8");
-        const bundle = JSON.parse(raw);
-        const summary = {
-          ok: true,
-          exists: true,
-          status: bundle.status || "unknown",
-          nonce: bundle.nonce,
-          createdAt: bundle.createdAt,
-          tiers: (bundle.withdrawals || []).map(w => {
-            const t = {
-              label: w.label,
-              amountFormatted: w.amountFormatted,
-              amountWei: w.amountWei,
-            };
-            if (w.type === "all-shares") {
-              t.type = w.type;
-              t.sharesWei = w.sharesWei;
-            }
-            return t;
-          }),
-        };
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(summary));
-      } else {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, exists: false }));
-      }
+      const marketId = requireConfiguredMarket(new URL(req.url, "http://localhost").searchParams.get("market"));
+      const summary = registrySummary(readRegistry(PRESIGNED_PATH).bundles[marketId]);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, ...summary }));
     } catch (err) {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, exists: false, error: err.message }));
@@ -313,10 +288,10 @@ const server = createServer(async (req, res) => {
     const tierIdx = urlObj.searchParams.get("tier");
 
     try {
-      await withPresignedWrite(() => {
-        if (tierIdx !== null && fs.existsSync(PRESIGNED_PATH)) {
-          const raw = fs.readFileSync(PRESIGNED_PATH, "utf-8");
-          const bundle = JSON.parse(raw);
+      const marketId = requireConfiguredMarket(urlObj.searchParams.get("market"));
+      await updateRegistry(PRESIGNED_PATH, (registry) => {
+        const bundle = registry.bundles[marketId];
+        if (tierIdx !== null && bundle) {
           const idx = parseInt(tierIdx, 10);
           if (isNaN(idx) || idx < 0 || idx >= (bundle.withdrawals?.length || 0)) {
             res.writeHead(400, { "Content-Type": "application/json" });
@@ -324,18 +299,14 @@ const server = createServer(async (req, res) => {
             return;
           }
           const removed = bundle.withdrawals.splice(idx, 1)[0];
-          fs.writeFileSync(PRESIGNED_PATH, JSON.stringify(bundle, null, 2));
-          try { fs.chmodSync(PRESIGNED_PATH, 0o600); } catch {}
           console.log(
             `[${new Date().toISOString()}] 🗑️  Removed tier "${removed.label}" from presigned bundle (${bundle.withdrawals.length} remaining)`
           );
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, removed: removed.label, remaining: bundle.withdrawals.length }));
         } else {
-          let deleted = 0;
-          for (const p of [PRESIGNED_PATH, PRESIGNED_PATH.replace(".json", ".used.json"), PRESIGNED_PATH.replace(".json", ".tmp.json")]) {
-            if (fs.existsSync(p)) { fs.unlinkSync(p); deleted++; }
-          }
+          const deleted = bundle ? 1 : 0;
+          delete registry.bundles[marketId];
           console.log(
             `[${new Date().toISOString()}] 🗑️  Presigned bundle deleted (${deleted} files)`
           );
@@ -376,7 +347,7 @@ const server = createServer(async (req, res) => {
     }
 
     try {
-      await withPresignedWrite(async () => {
+      await updateRegistry(PRESIGNED_PATH, async (registry) => {
         const newBundle = JSON.parse(body);
         if (!newBundle.withdrawals || newBundle.withdrawals.length === 0) {
           res.writeHead(400, { "Content-Type": "application/json" });
@@ -385,10 +356,12 @@ const server = createServer(async (req, res) => {
         }
 
         // Fail-closed: verify Morpho withdraw calldata trước khi persist
+        const marketId = requireConfiguredMarket(newBundle.marketId);
+        if (newBundle.version !== 2) throw new Error("Presigned bundle must use version 2");
         const verified = await verifyPresignedBundle(newBundle, {
           morphoBlueAddress: MORPHO_BLUE_ADDRESS,
           lenderAddress: LENDER_ADDRESS,
-          marketId: MARKET_ID,
+          marketId,
         });
         if (!verified.ok) {
           res.writeHead(400, { "Content-Type": "application/json" });
@@ -399,9 +372,9 @@ const server = createServer(async (req, res) => {
         let merged = newBundle;
         let action = "saved";
 
-        if (fs.existsSync(PRESIGNED_PATH)) {
+        {
           try {
-            const old = JSON.parse(fs.readFileSync(PRESIGNED_PATH, "utf-8"));
+            const old = registry.bundles[marketId];
             if (old.withdrawals && old.withdrawals.length > 0) {
               if (old.nonce === newBundle.nonce) {
                 const getMergeKey = (w) => {
@@ -435,14 +408,14 @@ const server = createServer(async (req, res) => {
                 action = "replaced (new nonce)";
               }
             }
-          } catch { /* corrupt — overwrite */ }
+          } catch { /* malformed prior bundle — overwrite */ }
         }
 
         // Re-verify sau merge — tier cũ giữ lại cũng phải hợp lệ
         const mergedVerified = await verifyPresignedBundle(merged, {
           morphoBlueAddress: MORPHO_BLUE_ADDRESS,
           lenderAddress: LENDER_ADDRESS,
-          marketId: MARKET_ID,
+          marketId,
         });
         if (!mergedVerified.ok) {
           res.writeHead(400, { "Content-Type": "application/json" });
@@ -453,10 +426,7 @@ const server = createServer(async (req, res) => {
           return;
         }
 
-        const tmpPath = PRESIGNED_PATH.replace(".json", ".tmp.json");
-        fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2));
-        fs.renameSync(tmpPath, PRESIGNED_PATH);
-        try { fs.chmodSync(PRESIGNED_PATH, 0o600); } catch {}
+        registry.bundles[marketId] = merged;
 
         console.log(
           `[${new Date().toISOString()}] 📝 Presigned bundle ${action}: ` +
