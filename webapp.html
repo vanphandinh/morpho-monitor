@@ -463,19 +463,20 @@
     const SERVER_PROXY_RPC_URL = CFG.proxyRpcUrl || "http://127.0.0.1:8545";
 
     const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
-    const RPC_URLS = [
-      "https://lb.drpc.live/ethereum/AlqTJ3Pbb0gGqQof0HI4hLunOH9fcQYR8aFWVjewFaCJ",
-      "https://lb.drpc.live/ethereum/AunJZVj7QEqckownxj_qxRnQ2DzbcQYR8aFXVjewFaCJ",
-      "https://ethereum-rpc.publicnode.com",
-      "https://eth-mainnet.g.alchemy.com/v2/usw2oMtZYpOnwPTrHcEGL",
-      "https://eth-mainnet.g.alchemy.com/v2/WeGRNBp6KnWDuMSuyE7r9",
-      "https://rpc.ankr.com/eth/0bda9fd26145d611152a6eec8b728bf7747688a87037d5da4a0bb1feb42977f8",
-      "https://rpc.ankr.com/eth/75c3d8f64c68d868b9e194da044b3f61849506bef26508a419985bfc5c46c338",
-      "https://mainnet.infura.io/v3/a8e97104e75046a58490a844b734c274",
-      "https://mainnet.infura.io/v3/70c484519b7646d7820601e5071474e8",
-      "https://ethereum-mainnet.core.chainstack.com/ea59b26bd098e71a4ad2cf8292ae4f3a",
-      "https://ethereum-mainnet.core.chainstack.com/9a4bbcc8b9369e3c7247274b75736e64",
-    ];
+
+    // M2: KHÔNG hardcode URL kèm API key trong file được phục vụ công khai.
+    // Danh sách thật do server inject qua window.MORPHO_CONFIG.rpcUrls
+    // (derive từ RPC_URLS trong shared.mjs — xem webapp-config.mjs).
+    // Fallback dưới đây là các endpoint công khai KHÔNG kèm key.
+    const RPC_URLS = (Array.isArray(CFG.rpcUrls) && CFG.rpcUrls.length > 0)
+      ? CFG.rpcUrls
+      : [
+        "https://ethereum-rpc.publicnode.com",
+        "https://eth.llamarpc.com",
+        "https://rpc.ankr.com/eth",
+        "https://eth.drpc.org",
+      ];
+    const PROXY_INFO_METHOD = "morpho_proxyInfo";
 
     // Minimal ABI for Morpho Blue
     const MORPHO_ABI = [
@@ -1079,16 +1080,64 @@
       return "unknown";
     }
 
-    function getCompatibilityMessage() {
-      const wallet = getWalletProviderName();
-      switch (wallet) {
-        case "rabby": return { ok: true, msg: "✅ Rabby được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "metamask": return { ok: true, msg: "✅ MetaMask được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "frame": return { ok: true, msg: "✅ Frame được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "coinbase": return { ok: true, msg: "✅ Coinbase Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "trust": return { ok: true, msg: "✅ Trust Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        default: return { ok: true, msg: "✅ Ví đã kết nối. Sẵn sàng ký giao dịch qua proxy RPC." };
+    const WALLET_LABELS = { rabby: "Rabby", metamask: "MetaMask", frame: "Frame", coinbase: "Coinbase Wallet", trust: "Trust Wallet", unknown: "Ví đã kết nối" };
+
+    // ---- Proxy RPC preflight (B2 / H5) ----
+    // Thương hiệu ví KHÔNG đủ để biết giao dịch có bị broadcast thật hay không.
+    // Chỉ khi RPC hiện tại của ví trả về `morpho_proxyInfo` của proxy thì mới chắc
+    // chắn tx được capture. Nếu không → chặn ký.
+    let proxyNetworkCheck = { checked: false, ok: false, error: null };
+
+    function isProxyInfoResponse(info) {
+      return Boolean(info && typeof info === "object" && info.server === "morpho-proxy" && Number(info.chainId) === 1);
+    }
+
+    async function checkProxyNetwork() {
+      const e = window.ethereum;
+      if (!e) {
+        proxyNetworkCheck = { checked: true, ok: false, error: "Không tìm thấy ví (window.ethereum)." };
+        return proxyNetworkCheck;
       }
+      try {
+        const info = await e.request({ method: PROXY_INFO_METHOD });
+        proxyNetworkCheck = isProxyInfoResponse(info)
+          ? { checked: true, ok: true, error: null }
+          : { checked: true, ok: false, error: "RPC hiện tại trả về dữ liệu không phải morpho-proxy." };
+      } catch (err) {
+        proxyNetworkCheck = { checked: true, ok: false, error: err?.message || String(err) };
+      }
+      return proxyNetworkCheck;
+    }
+
+    /**
+     * Chạy NGAY trước mọi walletClient.sendTransaction. Trả false ⇒ TUYỆT ĐỐI
+     * không ký, vì tx sẽ được gửi thật lên mainnet nếu RPC không phải proxy.
+     */
+    async function assertProxyNetwork() {
+      const check = await checkProxyNetwork();
+      renderWalletCompatibility();
+      if (check.ok) return true;
+      const wallet = getWalletProviderName();
+      showPresignError(
+        "⛔ CHẶN KÝ: ví chưa trỏ vào proxy RPC nên giao dịch sẽ được broadcast THẬT lên mainnet.<br><br>" +
+        (wallet === "rabby"
+          ? "<b>Rabby</b> không cho thêm chainId=1 trùng: vào Settings → Networks → Ethereum → đổi RPC thành:<br>"
+          : "<b>Cách sửa:</b> thêm/chuyển mạng sang <b>Ethereum Proxy Sign</b> với RPC:<br>") +
+        `<code>${getProxyUrl()}</code><br>` +
+        `<small>Hoặc bấm nút “Thêm Mạng Proxy”. (Lỗi kiểm tra: ${check.error ?? "unknown"})</small>`
+      );
+      return false;
+    }
+
+    function getCompatibilityMessage() {
+      const name = WALLET_LABELS[getWalletProviderName()] ?? WALLET_LABELS.unknown;
+      if (!proxyNetworkCheck.checked) {
+        return { ok: null, msg: `ℹ️ ${name}. Chưa kiểm tra RPC — hệ thống sẽ kiểm tra trước khi ký.` };
+      }
+      if (!proxyNetworkCheck.ok) {
+        return { ok: false, msg: `⚠️ ${name} nhưng RPC hiện tại KHÔNG phải proxy (<code>${getProxyUrl()}</code>). Sẽ chặn ký để tránh broadcast thật lên mainnet.` };
+      }
+      return { ok: true, msg: `✅ ${name} + proxy RPC đã xác nhận. Sẵn sàng ký giao dịch qua proxy.` };
     }
 
     function renderWalletCompatibility() {
@@ -1096,7 +1145,7 @@
       const compat = getCompatibilityMessage();
       banner.style.display = "block";
       banner.innerHTML = compat.msg;
-      banner.className = "banner info";
+      banner.className = compat.ok === false ? "banner error" : (compat.ok === true ? "banner success" : "banner info");
     }
 
     function updatePresignWalletUI() {
@@ -1396,6 +1445,12 @@
         showPresignError("Vui lòng thêm ít nhất 1 mốc tiền hợp lệ.");
         return;
       }
+      // Preflight RPC (H5): nếu ví không trỏ vào proxy, tx sẽ được broadcast
+      // thật lên mainnet → chặn ký trước khi gọi sendTransaction.
+      if (!(await assertProxyNetwork())) {
+        document.getElementById("btn-sign-all").disabled = false;
+        return;
+      }
 
       isSigningInProgress = true;
       document.getElementById("btn-sign-all").disabled = true;
@@ -1505,6 +1560,8 @@
         showPresignError("Bạn không có supply shares để rút.");
         return;
       }
+      // Preflight RPC (H5) — cùng lý do như signAllTiers.
+      if (!(await assertProxyNetwork())) return;
 
       isSigningInProgress = true;
       const btn = document.getElementById("btn-sign-withdraw-all");
@@ -1756,6 +1813,18 @@
           document.getElementById("presign-existing-info").innerHTML +=
             `<div class="banner warn" style="margin-top:8px">⚠️ Bundle đang pending. Ký thêm tier mới sẽ merge vào bundle hiện tại (cùng nonce). Khác nonce sẽ thay thế toàn bộ.</div>`;
         }
+        if (data.status === "expired") {
+          // M9: nonce dùng chung cho MỌI market — market khác tiêu thụ nonce thì
+          // bundle này hết hiệu lực âm thầm. Phải ký lại với nonce mới.
+          document.getElementById("presign-existing-info").innerHTML +=
+            `<div class="banner warn" style="margin-top:8px">♻️ Bundle đã <b>expired</b>: nonce bị market khác tiêu thụ (nonce dùng chung cho mọi market). ` +
+            `Hãy bấm <b>Lấy Nonce</b> rồi <b>ký lại</b> các tier — bundle cũ không thể broadcast nữa.</div>`;
+        }
+        if (data.status === "submitted" || data.status === "failed") {
+          document.getElementById("presign-existing-info").innerHTML +=
+            `<div class="banner info" style="margin-top:8px">📜 Record terminal (<b>${data.status}</b>) — chỉ là lịch sử, có thể xóa để registry gọn. ` +
+            `Muốn rút tiếp: lấy nonce mới và ký lại.</div>`;
+        }
         document.getElementById("presign-existing-info").innerHTML +=
           `<button class="btn-danger" onclick="deleteBundle()" style="margin-top:8px">🗑️ Xóa Bundle Trên Server</button>`;
       } catch {
@@ -1794,7 +1863,7 @@
       if (!confirm("Bạn có chắc muốn xóa toàn bộ bundle đã ký trên server?\n\nHành động này không thể hoàn tác.")) return;
 
       try {
-        const resp = await fetch("/api/presign", {
+        const resp = await fetch(`/api/presign?market=${encodeURIComponent(marketId)}`, {
           method: "DELETE",
           headers: { ...getAuthHeaders() },
         });
@@ -1806,7 +1875,7 @@
         }
         const result = await resp.json();
         if (result.ok) {
-          showPresignSuccess(`✅ Đã xóa bundle (${result.deleted} files).`);
+          showPresignSuccess(`✅ Đã xóa ${result.deleted} bundles.`);
           document.getElementById("presign-existing").style.display = "none";
         } else {
           showPresignError("Lỗi xóa bundle: " + (result.error || "Unknown"));

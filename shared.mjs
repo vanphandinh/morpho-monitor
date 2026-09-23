@@ -26,9 +26,9 @@ export const envNum = (key, fallback) => {
 };
 
 // ---- Morpho Blue ----
-// Multi-market configuration is intentionally file-backed.  There is no
-// A deployment must explicitly opt into every market it
-// wants to monitor.
+// Multi-market configuration is intentionally file-backed and there is no
+// environment-variable fallback: a deployment must explicitly opt into every
+// market it wants to monitor (see market-config.mjs → preflightMarketsFile).
 export const MARKETS_FILE = env("MARKETS_FILE", "./config/markets.json");
 export const LENDER_ADDRESS = env("LENDER_ADDRESS",
   "0x0000000000000000000000000000000000000000");
@@ -57,14 +57,6 @@ export const MONITOR_INTERVAL_MS = envNum("MONITOR_INTERVAL_MS", 30000);
 export const NOTIFICATION_COOLDOWN_MS =
   envNum("NOTIFICATION_COOLDOWN_MINUTES", 30) * 60 * 1000;
 export const MAX_NOTIFICATIONS_PER_DAY = envNum("MAX_NOTIFICATIONS_PER_DAY", 10);
-
-// Hệ số ngưỡng giảm thanh khoản đột ngột
-// drainThreshold = supplyAssets × SUDDEN_DRAIN_MULTIPLIER
-// Mặc định 2: cảnh báo khi liquidity ≤ 2× vị thế lender
-// Hỗ trợ số thập phân, vd: 1.5, 2.25
-const _drainMultiplier = envNum("SUDDEN_DRAIN_MULTIPLIER", 2);
-export const SUDDEN_DRAIN_MULTIPLIER =
-  _drainMultiplier >= 1 ? _drainMultiplier : 2;
 
 // ---- ntfy ----
 export const NTFY_SERVER = env("NTFY_SERVER", "https://ntfy.sh");
@@ -327,12 +319,34 @@ export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
   });
 }
 
+/** Error code: the lock was still held after the full retry budget. */
+export const LOCK_STALE = "LOCK_STALE";
+
+/** Best-effort holder metadata written inside the lock file. */
+function readLockHolder(fs, lockPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Cross-process file lock for presigned.json (webapp ↔ monitor).
- * Uses exclusive create (`wx`) + retry. Always releases the lock.
+ *
+ * Uses exclusive create (`wx`) + retry and writes `{ pid, host, createdAt }`
+ * into the lock so a leftover lock (SIGKILL/OOM/`docker restart` in the middle
+ * of a mutation, which skips the `finally` unlink) is diagnosable.
+ *
+ * Never steals a lock it did not create (fail closed): after the retry budget
+ * it throws an error with code LOCK_STALE carrying the holder info, the lock
+ * age and the manual recovery command. The happy path always releases the
+ * lock, and the lock is released even when `fn` throws.
  */
 export async function withFileLock(lockPath, fn, { retries = 50, delayMs = 20 } = {}) {
   const fs = await import("node:fs");
+  const os = await import("node:os");
   for (let i = 0; i < retries; i++) {
     let fd;
     try {
@@ -343,13 +357,30 @@ export async function withFileLock(lockPath, fn, { retries = 50, delayMs = 20 } 
       continue;
     }
     try {
+      // Holder metadata is best-effort: a failed write must not break the lock.
+      try {
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), createdAt: new Date().toISOString() }));
+      } catch { /* ignore */ }
       return await fn();
     } finally {
       try { fs.closeSync(fd); } catch { /* ignore */ }
       try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
     }
   }
-  throw new Error(`Could not acquire lock: ${lockPath}`);
+  const holder = readLockHolder(fs, lockPath);
+  const parsedAge = holder?.createdAt ? Date.now() - Date.parse(holder.createdAt) : NaN;
+  const ageMs = Number.isFinite(parsedAge) ? parsedAge : null;
+  const err = new Error(
+    `Could not acquire lock after ${retries} attempts (~${retries * delayMs}ms): ${lockPath}\n` +
+    `  Holder: ${holder ? `pid=${holder.pid ?? "?"} host=${holder.host ?? "?"} since=${holder.createdAt ?? "?"}` : "unknown (lock file empty/unreadable)"}\n` +
+    `  Lock age: ${ageMs === null ? "unknown" : `${Math.round(ageMs / 1000)}s`}\n` +
+    `  Nếu chắc chắn không còn process nào giữ lock (SIGKILL/OOM/docker restart giữa mutation): rm '${lockPath}' rồi restart service.`
+  );
+  err.code = LOCK_STALE;
+  err.lockPath = lockPath;
+  err.holder = holder;
+  err.ageMs = ageMs;
+  throw err;
 }
 
 // ============================================================
