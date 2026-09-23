@@ -1,12 +1,15 @@
-import { createPublicClient, webSocket } from "viem";
-import { blueAbi } from "@morpho-org/blue-sdk-viem";
 import crypto from "node:crypto";
-import { LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, SUDDEN_DRAIN_MULTIPLIER, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, MARKETS_FILE, shouldNotify, computeDrainThreshold, shouldBroadcastPresigned, formatTokenAmount, wadToPercent } from "./shared.mjs";
+import { LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, MARKETS_FILE, VOIP_SECRET_KEY, shouldNotify, computeDrainThreshold, shouldBroadcastPresigned, formatTokenAmount, wadToPercent } from "./shared.mjs";
 import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
 import { createMarketReader } from "./market-reader.mjs";
 import { updateRegistry } from "./presigned-store.mjs";
 import { verifyPresignedBundle } from "./presign-verify.mjs";
+import { createCheckScheduler, createWssWatcher } from "./monitor-triggers.mjs";
+import { createWssConnect } from "./wss-connect.mjs";
+import { broadcastEligible as runPresignedBroadcast } from "./presigned-broadcast.mjs";
+import { dispatchNotifications } from "./notification-dispatch.mjs";
+import { sendVoipNotification } from "./voip.mjs";
 
 addGlobalErrorHandlers("monitor");
 const markets = loadMarkets(MARKETS_FILE);
@@ -14,14 +17,12 @@ const marketIds = markets.map((market) => market.id);
 const publicClient = createRobustPublicClient(RPC_URLS);
 const topic = NTFY_TOPIC || `morpho-monitor-${crypto.randomBytes(4).toString("hex")}`;
 const states = new Map();
-let reader, checking = false, notificationsToday = 0, dayStart = Date.now(), debounceTimer;
-const unwatchers = [];
+let reader, notificationsToday = 0, dayStart = Date.now(), scheduler, wssWatcher;
 
 function stateFor(id) { if (!states.has(id)) states.set(id, { lastSeenLiquidity: null, hasNotifiedThisCycle: false, lastNotificationTime: 0 }); return states.get(id); }
 function resetDaily() { if (Date.now() - dayStart >= 86_400_000) { notificationsToday = 0; dayStart = Date.now(); } }
-function notifyCheck(ids) { clearTimeout(debounceTimer); debounceTimer = setTimeout(() => checkMarkets(ids).catch((err) => console.error(`[monitor] WSS check failed: ${err.message}`)), WSS_DEBOUNCE_MS); }
 
-async function sendNotification(snapshot, scenario) {
+async function sendNtfyNotification(snapshot, scenario) {
   const { market, position, loanToken, collateralToken, id } = snapshot;
   const link = `${WEBAPP_URL}?market=${id}&lender=${LENDER_ADDRESS}`;
   const drained = scenario === "sudden_drain";
@@ -29,38 +30,24 @@ async function sendNotification(snapshot, scenario) {
   if (!response.ok) throw new Error(`ntfy responded ${response.status}`);
 }
 
-/** Claim under the registry lock: exactly one same-nonce bundle can be submitted. */
-async function broadcastEligible(snapshots) {
-  const nonce = await publicClient.getTransactionCount({ address: LENDER_ADDRESS, blockTag: "pending" });
-  const claimed = await updateRegistry(PRESIGNED_FILE, async (registry) => {
-    for (const bundle of Object.values(registry.bundles)) if ((bundle.status === "pending" || bundle.status === "broadcasting") && Number(bundle.nonce) !== Number(nonce)) { bundle.status = "expired"; bundle.expiredAt = new Date().toISOString(); bundle.error = `Lender nonce advanced to ${nonce}`; }
-    for (const snapshot of snapshots.values()) {
-      const bundle = registry.bundles[snapshot.id];
-      const drain = computeDrainThreshold(snapshot.position.supplyAssets, snapshot.suddenDrainMultiplier ?? SUDDEN_DRAIN_MULTIPLIER);
-      if (!bundle || bundle.status !== "pending" || Number(bundle.nonce) !== Number(nonce) || !shouldBroadcastPresigned(snapshot.market.liquidity, drain, snapshot.minLiquidityWei)) continue;
-      const verified = await verifyPresignedBundle(bundle, { morphoBlueAddress: MORPHO_BLUE_ADDRESS, lenderAddress: LENDER_ADDRESS, marketId: snapshot.id });
-      if (!verified.ok) { bundle.status = "invalid"; bundle.error = verified.error; continue; }
-      const withdrawal = bundle.withdrawals.filter((w) => BigInt(w.amountWei || "0") <= snapshot.market.liquidity).sort((a, b) => BigInt(b.amountWei || "0") > BigInt(a.amountWei || "0") ? 1 : -1)[0];
-      if (!withdrawal) continue;
-      bundle.status = "broadcasting"; bundle.broadcastingAt = new Date().toISOString(); bundle.broadcastingTier = withdrawal.label;
-      return { id: snapshot.id, signedTx: withdrawal.signedTx, label: withdrawal.label };
-    }
-    return null;
+async function sendNotification(snapshot, scenario) {
+  return dispatchNotifications({
+    sendNtfy: () => sendNtfyNotification(snapshot, scenario),
+    sendVoip: () => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
+    voipEnabled: Boolean(VOIP_SECRET_KEY),
   });
-  if (!claimed) return;
-  try {
-    const hash = await publicClient.sendRawTransaction({ serializedTransaction: claimed.signedTx });
-    await updateRegistry(PRESIGNED_FILE, (registry) => { const bundle = registry.bundles[claimed.id]; if (bundle?.status === "broadcasting") { bundle.status = "submitted"; bundle.txHash = hash; bundle.submittedAt = new Date().toISOString(); } });
-    console.log(`[presign] submitted ${claimed.label} for ${claimed.id}: ${hash}`);
-  } catch (err) {
-    await updateRegistry(PRESIGNED_FILE, (registry) => { const bundle = registry.bundles[claimed.id]; if (bundle?.status === "broadcasting") { bundle.status = "pending"; delete bundle.broadcastingAt; delete bundle.broadcastingTier; bundle.error = err.message; } });
-    console.error(`[presign] broadcast failed: ${err.message}`);
-  }
+}
+
+async function broadcastEligible(snapshots) {
+  return runPresignedBroadcast({
+    client: publicClient, lenderAddress: LENDER_ADDRESS, filePath: PRESIGNED_FILE, snapshots,
+    updateRegistry,
+    verifyBundle: (bundle, id) => verifyPresignedBundle(bundle, { morphoBlueAddress: MORPHO_BLUE_ADDRESS, lenderAddress: LENDER_ADDRESS, marketId: id }),
+    isEligible: (snapshot) => shouldBroadcastPresigned(snapshot.market.liquidity, computeDrainThreshold(snapshot.position.supplyAssets, snapshot.suddenDrainMultiplier), snapshot.minLiquidityWei),
+  });
 }
 
 async function checkMarkets(ids = marketIds) {
-  if (checking) return;
-  checking = true;
   try {
     resetDaily();
     const { snapshots, failures } = await reader.readSnapshots(ids);
@@ -68,24 +55,42 @@ async function checkMarkets(ids = marketIds) {
     for (const snapshot of snapshots.values()) {
       const state = stateFor(snapshot.id), liquidity = snapshot.market.liquidity, supplyAssets = snapshot.position.supplyAssets;
       if (state.lastSeenLiquidity === null) { state.lastSeenLiquidity = liquidity; console.log(`[monitor] initialized ${snapshot.id}: ${formatTokenAmount(liquidity, snapshot.loanToken.decimals, snapshot.loanToken.symbol)}`); continue; }
-      const multiplier = snapshot.suddenDrainMultiplier ?? SUDDEN_DRAIN_MULTIPLIER;
+      const multiplier = snapshot.suddenDrainMultiplier;
       const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday, notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: NOTIFICATION_COOLDOWN_MS, maxNotificationsPerDay: MAX_NOTIFICATIONS_PER_DAY });
-      if (decision.shouldNotify) { try { await sendNotification(snapshot, decision.scenario); state.hasNotifiedThisCycle = true; state.lastNotificationTime = Date.now(); notificationsToday++; } catch (err) { console.error(`[monitor] ntfy failed for ${snapshot.id}: ${err.message}`); continue; } }
+      if (decision.shouldNotify) {
+        const delivery = await sendNotification(snapshot, decision.scenario);
+        if (delivery.ntfyDelivered) { state.hasNotifiedThisCycle = true; state.lastNotificationTime = Date.now(); notificationsToday++; }
+        else console.error(`[monitor] ntfy failed for ${snapshot.id}: ${delivery.ntfyError?.message || "unknown error"}`);
+      }
       if (state.hasNotifiedThisCycle && (liquidity < snapshot.minLiquidityWei || liquidity > computeDrainThreshold(supplyAssets, multiplier))) state.hasNotifiedThisCycle = false;
       state.lastSeenLiquidity = liquidity;
     }
     await broadcastEligible(snapshots);
-  } finally { checking = false; }
+  } catch (err) {
+    // RPC outage / any cycle failure: log per cycle, keep the loop alive (M5).
+    console.error(`[monitor] check cycle failed (loop continues): ${err?.message || err}`);
+  } finally { /* scheduler owns serialization */ }
 }
 
-function startWss() { for (const url of WSS_URLS) { const client = createPublicClient({ transport: webSocket(url) }); for (const eventName of ["Supply", "Withdraw", "Borrow", "Repay", "Liquidate"]) unwatchers.push(client.watchContractEvent({ address: MORPHO_BLUE_ADDRESS, abi: blueAbi, eventName, args: { id: marketIds }, onLogs: (logs) => notifyCheck([...new Set(logs.map((log) => log.args?.id).filter(Boolean))]), onError: (err) => console.warn(`[WSS] ${url}: ${err.message}`) })); } }
+function startWss() {
+  wssWatcher = createWssWatcher({
+    urls: WSS_URLS,
+    eventNames: ["Supply", "Withdraw", "Borrow", "Repay", "Liquidate"],
+    marketIds,
+    onMarkets: (ids) => scheduler.request(ids),
+    // close() dùng đúng API viem (getRpcClient/getSocket) — xem wss-connect.mjs.
+    connect: createWssConnect({ address: MORPHO_BLUE_ADDRESS }),
+  });
+  void wssWatcher.start();
+}
 
 async function main() {
   reader = await createMarketReader({ client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets });
   console.log(`[monitor] ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), topic=${topic}`);
-  startWss(); await checkMarkets();
-  const interval = setInterval(() => checkMarkets(), MONITOR_INTERVAL_MS);
-  const stop = () => { clearInterval(interval); clearTimeout(debounceTimer); for (const unwatch of unwatchers) unwatch(); process.exit(0); };
+  scheduler = createCheckScheduler((ids) => checkMarkets(ids ?? marketIds), { debounceMs: WSS_DEBOUNCE_MS });
+  startWss(); scheduler.request();
+  const interval = setInterval(() => scheduler.request(), MONITOR_INTERVAL_MS);
+  const stop = () => { clearInterval(interval); scheduler.close(); wssWatcher?.close(); process.exit(0); };
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
 }
 main().catch((err) => { console.error("Fatal monitor error:", err); process.exit(1); });
