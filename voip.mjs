@@ -333,7 +333,7 @@ async function callWithRetry({
 /**
  * Gửi thông báo qua cuộc gọi VoIP đến SIP target.
  *
- * Hàm này được gọi từ monitor.mjs trong checkAndNotify().
+ * Hàm này được gọi từ monitor.mjs trong checkMarkets() (qua notification-dispatch.mjs).
  * Khi VOIP_SECRET_KEY rỗng, hàm trả về { sent: false } ngay lập tức
  * (không gọi API) — đây là cơ chế tắt tính năng VoIP.
  *

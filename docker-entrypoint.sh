@@ -37,9 +37,11 @@ trap 'echo "[entrypoint] Shutting down all services..."; kill $MONITOR_PID $WEBA
 # ──────────────────────────────────────────────
 echo "[entrypoint] Supervisor active — will restart any crashed service"
 while true; do
-  # wait -n returns when ANY child exits
-  wait -n $MONITOR_PID $WEBAPP_PID $PROXY_PID 2>/dev/null
-  EXIT_CODE=$?
+  # wait -n returns when ANY child exits.
+  # `|| EXIT_CODE=$?` vừa lấy được mã thoát vừa chặn `set -e` abort vòng lặp
+  # (trước đây shell thoát trước khi kịp gán EXIT_CODE ⇒ supervisor chết).
+  EXIT_CODE=0
+  wait -n $MONITOR_PID $WEBAPP_PID $PROXY_PID 2>/dev/null || EXIT_CODE=$?
 
   # Small delay to avoid tight crash loops
   sleep 2

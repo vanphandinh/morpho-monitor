@@ -50,8 +50,14 @@ proxy and webapp reject any market not present in this allow-list.
 - `market-config.mjs`: validates and loads the market allow-list.
 - `market-reader.mjs`: caches immutable metadata and executes same-block
   multicalls.
-- `monitor.mjs`: executes targeted/all-market checks, maintains per-market
-  state, sends alerts, and atomically broadcasts one eligible signed tx.
+- `monitor.mjs`: wires targeted/all-market checks, notification delivery and
+  the broadcaster without retaining debounce or lifecycle state.
+- `monitor-triggers.mjs`: lossless scheduler plus single-active-endpoint WSS
+  watcher; polling and WSS share the same queue.
+- `presigned-broadcast.mjs`: nonce-wide claim, receipt reconciliation and
+  terminal lifecycle for signed transactions.
+- `notification-dispatch.mjs`: independent ntfy and VoIP delivery; only ntfy
+  success advances alert quota.
 - `presigned-store.mjs`: validates, locks, and atomically writes registry v2.
 - `proxy-rpc.mjs` and `webapp-server.mjs`: enforce the market allow-list and
   persist/retrieve bundles by market.
@@ -82,7 +88,29 @@ proxy and webapp reject any market not present in this allow-list.
 
 ## Acceptance evidence recorded during implementation
 
-- `npm test` passed: 11 files, 287 tests.
+> **ĐÍNH CHÍNH 2026-09-23 (audit):** record dưới đây ghi nhận `npm test` xanh
+> trong khi **3 lỗi P0** vẫn đang sống và không có test nào phủ: capture
+> `eth_sendRawTransaction` ném `ReferenceError` (không test nào import
+> `proxy-rpc.mjs`), một bundle terminal khoá cứng broadcaster, và
+> `PROXY_RPC_URL` không bao giờ tới browser. Suite xanh vì các module đó không
+> được chạy. Bằng chứng dưới đây giữ nguyên để đối chiếu lịch sử nhưng **không**
+> còn là tiêu chí merge — xem
+> `docs/plans/2026-09-23-multi-market-audit-findings.md`.
+>
+> Record thay thế (2026-09-23, sau khi sửa P0/P1/P2): `npm test` = **21 files /
+> 339 tests**, `npm run lint` (oxlint `--deny no-undef`) = 0 errors,
+> `node --check` = 42/42 file, `docker compose config --quiet` OK, và mỗi lỗi
+> P0/P1 có suite hồi quy riêng (`proxy-capture`, `wss-connect`, `file-lock`,
+> `verify-presigned-cli`, `webapp-config`).
+
+- `npm test` passed: 16 files, 280 tests (2026-09-23, after merge-readiness
+  fixes; see `docs/plans/2026-09-23-gitnexus-plan-merge-readiness-audit-fixes.md`).
+  *(superseded — xem đính chính phía trên)*
+- `node --check` passed for all changed/new `.mjs` files (2026-09-23).
+- Cross-process exclusivity is now proven by real child processes
+  (`__tests__/presigned-cross-process.test.mjs`, `__tests__/two-process-race.test.mjs`).
+- Deployment-only smoke checks remain pending: they require production-owned
+  markets config, RPC/WSS endpoints and valid signed bundles.
 - A live smoke read using `config/markets.example.json` successfully returned
   the configured market's liquidity and lender position at a fixed block.
 - Syntax checks passed for monitor, webapp server, proxy, configuration,

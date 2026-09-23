@@ -21,10 +21,15 @@ npm run proxy        # RPC proxy on port 8545
 
 # CLI tools (require .env)
 npm start            # Fetch and display market + position info
-node --env-file=.env verify-presigned.mjs [path/to/presigned.json]
+npm run verify -- [path] [--market 0x…]   # verify registry v2 hoặc bare bundle (exit 1 khi mismatch)
+node --env-file=.env verify-presigned.mjs [path/to/presigned.json] [--market 0x…]
+
+# Static gates
+npm run lint         # oxlint --deny no-undef (bắt lớp lỗi C1: identifier đã bị xoá)
+npm run check        # lint + node --check toàn bộ .mjs + vitest run
 
 # Tests
-npm test             # vitest run (all 160 tests)
+npm test             # vitest run (all 339 tests across 21 files)
 npx vitest run       # same
 npx vitest           # watch mode
 npx vitest run __tests__/shared.test.mjs  # single file
@@ -33,30 +38,45 @@ npx vitest run __tests__/shared.test.mjs  # single file
 ## Architecture: three long-running processes
 
 ```
-.env ──→ shared.mjs (config, formatting, anti-spam shouldNotify(), HMAC auth)
+.env ──→ shared.mjs (config, formatting, anti-spam shouldNotify(), HMAC auth, withFileLock)
               │
-    ┌─────────┼─────────┬──────────┬──────────┐
-    │         │         │          │          │
-monitor.mjs  webapp-   proxy-    voip.mjs   WSS watcher
-(polling +   server.mjs rpc.mjs  (REST VoIP  (webSocket
- WSS hybrid) (port 3000)(port 8545) API client)  trigger)
-             (serves ↓)
-           webapp.html
-          (browser SPA)
-    │            │         │
-    └────── rpc-client.mjs ─┘
-         (circuit breaker + round-robin RPC transport)
+   ┌──────────┼────────────────┬───────────────┬───────────────┐
+   │          │                │               │               │
+monitor.mjs  webapp-server.mjs proxy-rpc.mjs   voip.mjs    wss-connect.mjs
+(polling +   (port 3000)      (port 8545)     (VoIP REST  (viem webSocket +
+ WSS hybrid)   │                │             API client) closeTransport)
+   │           │                │
+   │      webapp-handler.mjs    proxy-dispatcher.mjs
+   │      webapp-config.mjs     (JSON-RPC + /bundle + /captured)
+   │           │ (serves ↓)
+   │        webapp.html (browser SPA)
+   │
+   ├─ monitor-triggers.mjs    (lossless scheduler + single-endpoint WSS watcher)
+   ├─ market-reader.mjs       (same-block multicall snapshots)
+   ├─ presigned-broadcast.mjs (nonce-wide claim + receipt-grounded lifecycle)
+   ├─ presigned-store.mjs     (registry v2 + withFileLock + lifecycle guard)
+   └─ presign-verify.mjs      (Morpho withdraw calldata verification)
+
+tất cả HTTP: rpc-client.mjs (circuit breaker + round-robin RPC transport)
 ```
 
 - **`shared.mjs`** — Single source of truth for all config (read from `.env` via `env()`/`envNum()`). Exports formatting helpers, HMAC session token create/verify, anti-spam `shouldNotify()` pure function, and auth middleware (`verifyToken`, `checkInternalSecret`).
 - **`rpc-client.mjs`** — Circuit breaker per RPC URL (CLOSED→OPEN→HALF-OPEN→CLOSED), round-robin transport across 11 URLs, `createRobustPublicClient()`/`createRobustWalletClient()` factories. Module-level `circuits` Map persists across all clients. Exports `addGlobalErrorHandlers()` for daemon resilience.
-- **`monitor.mjs`** — Polls Morpho Blue market on `setInterval`. ALSO runs a WebSocket watcher (`startWsWatcher()`) that creates 5 separate `watchContractEvent` subscriptions (one per event: Supply, Withdraw, Borrow, Repay, Liquidate) via `eth_subscribe` as real-time triggers. Each subscription uses `eventName` as a SINGLE STRING with `args: { id: MARKET_ID }` for correct RPC-level topic filtering (`topics[1] = MARKET_ID`). Events fire a debounced `checkAndNotify()` immediately instead of waiting for the next poll cycle. Uses `shouldNotify()` for anti-spam (threshold, 0→positive transition, cycle dedup, cooldown, daily limit). Sends ntfy.sh push notifications AND VoIP calls. Broadcasts pre-signed bundles when liquidity ≥ tier amount. Expires stale bundles by checking on-chain nonce.
+- **`monitor.mjs`** — Polls Morpho Blue markets on `setInterval` through `createCheckScheduler` (polling and WSS events share one lossless queue; a failing cycle is logged per cycle and never kills the loop). ALSO starts `startWss()`, which uses `createWssConnect()`: 5 separate `watchContractEvent` subscriptions (one per event: Supply, Withdraw, Borrow, Repay, Liquidate) with `eventName` as a SINGLE STRING and `args: { id: marketIds }` for RPC-level topic filtering (`topics[1]`). Events call `scheduler.request(ids)`; the debounce coalesces a block's events into one `checkMarkets()` run. Uses `shouldNotify()` for anti-spam (per-market threshold, 0→positive transition, cycle dedup, cooldown, daily limit). Sends ntfy.sh push notifications AND VoIP calls. Broadcasts pre-signed bundles when liquidity ≥ tier amount; bundle expiry and terminal transitions live in `presigned-broadcast.mjs` (receipt-grounded — a pending-nonce advance never expires a `broadcasting` claim).
+- **`monitor-triggers.mjs`** — Lossless scheduler shared by polling and WSS. It unions market IDs, lets all-market requests dominate, always executes a trailing run for work arriving during a check, and catches a throwing check per cycle (logged, loop survives). Its WSS watcher keeps one endpoint active with per-attempt resource ownership: a partial subscription failure closes every earlier subscription AND the connection before advancing; error callbacks AND `onLogs` callbacks are fenced by connection generation (logs from a replaced/closed endpoint never wake the scheduler); a runtime failure rotates to the NEXT url; when every url has failed the whole set is retried with bounded backoff (30s, timer cancelled on close). Polling remains the fallback during WSS outages.
+- **`presigned-broadcast.mjs`** — Registry lifecycle for the nonce-wide claim. Durable claim (status `broadcasting`, tier, exact `rawTx` bytes + `txHash`) is persisted BEFORE any RPC I/O. Recovery reconciles by the persisted hash: rebroadcast only the exact persisted bytes after `keccak256(rawTx) === txHash`, and only after `RECOVERY_THRESHOLD_MS` (180s) with no mined receipt. A legacy `broadcasting` record without raw identity (or with a hash mismatch) stays claimed and reports manual reconciliation — never auto-unlocked. Only a mined receipt carrying block identity (`blockHash` + `blockNumber` + `transactionHash`) permits terminal `submitted`/`failed`, and that receipt then writes `terminalAt` and expires same-nonce siblings. `submitted`/`failed` records are **inert history**: they never reserve, conflict, reconcile or warn — but their nonce stays consumed forever, so phase 1 expires every `pending` bundle at or below the highest terminal nonce. Multiple live claims are reconciled oldest `broadcastingAt` first; two live claims sharing one nonce fail closed. A pending-nonce advance expires `pending` bundles only — never the claim.
+- **`presigned-store.mjs`** — Registry v2 read/write with atomic rename + 0600 perms, and `updateRegistry(filePath, mutate, { origin })`. `origin: "user"` (webapp API) rejects any mutation that deletes or alters an active claim (broadcasting/submitted bundle, its nonce, tx identity, or tier list) by comparing an active-claim signature before/after the mutation inside the same file lock; the rejection carries code `ACTIVE_CLAIM_CONFLICT` for HTTP 409 mapping. Monitor-origin mutations are unrestricted.
+- **`webapp-handler.mjs`** — Importable pure HTTP request handler (`createRequestHandler({ presignedPath, markets, content, ... })`). All responses are deferred until the registry mutation commits, so no 200 is sent before the lifecycle guard passes. Error codes map to HTTP statuses: `MARKET_INPUT_INVALID` → 400, `MARKET_NOT_CONFIGURED` → 404, `ACTIVE_CLAIM_CONFLICT` → 409, anything else → 500. POST /api/presign strips client-supplied lifecycle fields (`status`, `txHash`, `rawTx`, `broadcastingAt`, `broadcastingTier`, `minedAt`, `submittedAt`) and persists verified `pending` data only; merging into a broadcasting/submitted/failed bundle is refused.
+- **`webapp-server.mjs`** — Thin bootstrap: loads markets, injects `window.MORPHO_CONFIG` via `webapp-config.mjs` (fail-fast when `LENDER_ADDRESS`/`PROXY_RPC_URL` are missing), wires SSL, creates the handler's challenge-cleanup timer, and serves `createRequestHandler` from `webapp-handler.mjs`. Keep business logic in the handler module so tests exercise the real HTTP process without triggering startup side effects.
+- **`webapp-config.mjs`** — `buildWebappConfig()` / `injectWebappConfig()`: derives the browser config from `shared.mjs` (`LENDER_ADDRESS`, derived `PROXY_RPC_URL`, `RPC_URLS`) and escapes `<` so env values cannot break out of the injected `<script>`.
+- **`notification-dispatch.mjs`** — Independently invokes ntfy and VoIP and reports `ntfyDelivered`; monitor quota changes only from that result.
 - **`voip.mjs`** — Optional second notification channel alongside ntfy. REST API client for automated VoIP announcement calls via SIP. Two-step bearer auth (`POST /api/v1/auth/token` → 24h token, cached at module level with 1-min expiry buffer). Call flow: initiate (`POST /api/v1/call`) → poll (`GET /api/v1/call/{id}`) until terminal status. Retries up to `VOIP_MAX_RETRIES` times on `failed`/`no_answer`/`busy`. Disabled when `VOIP_SECRET_KEY` is empty. Vietnamese TTS message, max 500 chars.
-- **`webapp-server.mjs`** — HTTP server serving `webapp.html` (SPA). REST API: `GET/POST/DELETE /api/presign`, `POST /api/bundle` (relay to proxy), `GET /api/challenge` + `POST /api/auth` (wallet sign-in → HMAC session token). Write-locked presigned.json access.
-- **`proxy-rpc.mjs`** — Fake Ethereum JSON-RPC endpoint. Captures `eth_sendRawTransaction` signed tx hex. Mocks most methods (chainId, gas, blockNumber). Forwards only `eth_getTransactionCount` to real RPC. Handles Rabby-specific methods (`debug_traceCall`, `eth_createAccessList`) with empty responses. CORS mirrors the request `Origin` header for credentialed requests. `POST /bundle` matches captured txs with tier metadata via the webapp. `GET /captured` and `DELETE /captured` endpoints for debugging the tx buffer. Mutex-guarded `capturedTxs` buffer.
+
+- **`proxy-rpc.mjs`** — Bootstrap only (SSL, block-number fallback, `capturedTxs`, `listen`). All JSON-RPC methods and HTTP routes live in `proxy-dispatcher.mjs`.
+- **`proxy-dispatcher.mjs`** — Importable fake Ethereum JSON-RPC endpoint (`createRpcDispatcher` / `createProxyRequestHandler`). Captures `eth_sendRawTransaction` signed tx hex. Mocks most methods (chainId, gas, blockNumber) and forwards `eth_getTransactionCount`/`eth_call`/receipts to the real RPC. Handles Rabby-specific methods (`debug_traceCall`, `eth_createAccessList`) with empty responses. `morpho_proxyInfo` → `{ server: "morpho-proxy", chainId: 1 }` is the webapp's proxy-RPC preflight probe (`web3_clientVersion` stays `"MorphoProxy/v1"`). CORS mirrors the request `Origin` header for credentialed requests. `POST /bundle` matches captured txs with tier metadata via the webapp. `GET /captured` and `DELETE /captured` endpoints for debugging the tx buffer. Mutex-guarded bundle assembly; the capture buffer is capped at `MAX_CAPTURED_TXS` (50, oldest dropped).
 - **`index.mjs`** — Standalone CLI: fetches and pretty-prints market state + lender position.
 - **`verify-presigned.mjs`** — Standalone CLI: parses signed transactions from a bundle JSON, decodes calldata, verifies it's a valid Morpho `withdraw()` call with matching amounts and nonce. Duplicates the Morpho `withdraw()` ABI definition (also present in `webapp.html`).
-- **`webapp.html`** — Browser-side SPA served by `webapp-server.mjs`. Uses `viem` `createPublicClient` with a simplified `fallbackTransport()` (round-robin without circuit breaker — browser sessions are short-lived). RPC URLs are hardcoded (duplicated from `shared.mjs`). Detects wallet type (Rabby, MetaMask, Frame, Coinbase Wallet, Trust Wallet) via EIP-1193 provider flags. Uses a `_listenersAttached` boolean guard to prevent duplicate event listener registration. Communicates with the webapp server via REST (`/api/challenge`, `/api/auth`, `/api/bundle`, `/api/presign`) and with MetaMask via the proxy RPC.
+- **`webapp.html`** — Browser-side SPA served by `webapp-server.mjs`. Uses `viem` `createPublicClient` with a simplified `fallbackTransport()` (round-robin without circuit breaker — browser sessions are short-lived) over `CFG.rpcUrls`, i.e. the server-injected `RPC_URLS` list. A public, **key-less** endpoint list is the only fallback; no provider API key is ever embedded in this file (it is served publicly — see Sharp edges). Detects wallet type (Rabby, MetaMask, Frame, Coinbase Wallet, Trust Wallet) via EIP-1193 provider flags. `getCompatibilityMessage()` reports the *verified* proxy-RPC state, not just the wallet brand: `assertProxyNetwork()` calls `morpho_proxyInfo` on the wallet's current RPC and blocks signing when the response is not `{ server: "morpho-proxy", chainId: 1 }`. Uses a `_listenersAttached` boolean guard to prevent duplicate event listener registration. Communicates with the webapp server via REST (`/api/challenge`, `/api/auth`, `/api/bundle`, `/api/presign`) and with MetaMask via the proxy RPC.
 
 ## Key design patterns
 
@@ -94,51 +114,60 @@ Pure function tested independently. Five checks in order: threshold, 0→positiv
 - Message: plain-text Vietnamese with diacritics, max 500 characters, optimized for TTS (text-to-speech).
 - Tested via duplicated pure functions and mocked fetch, following ntfy.test.mjs convention.
 
-### Write serialization (webapp-server.mjs)
-- POST /api/presign uses a promise chain + cross-process `withFileLock` (`.lock` file) to serialize concurrent reads/writes to presigned.json (webapp POST/DELETE and monitor broadcast/expire). Atomic write via tmp file + rename.
+### Write serialization and lifecycle guard (presigned-store.mjs)
+- All registry mutations go through `updateRegistry` → cross-process `withFileLock` (`.lock` file) → read → mutate → atomic write (tmp file + rename). Webapp POST/DELETE use `origin: "user"`; the monitor broadcaster uses the default monitor origin.
+- User-origin mutations are compared against an active-claim signature (id, status, nonce, txHash, tier digest of every broadcasting/submitted bundle) taken before and after the mutation inside the same lock. Any difference rejects the mutation with `ACTIVE_CLAIM_CONFLICT` and the registry is left unchanged — the web UI can never delete or edit an in-flight withdrawal.
+
+### Presigned lifecycle invariants (presigned-broadcast.mjs)
+1. Claim is durable before RPC I/O: `broadcasting` + tier + exact `rawTx` + `keccak256(rawTx)` are persisted in one locked mutation before any network send.
+2. Timeout, ambiguous RPC error, or pending-nonce advance never clears a claim; only a mined receipt for the exact hash does.
+3. Recovery rebroadcasts the exact persisted bytes only, and only after the recovery window (180s); identity mismatches fail closed with a diagnostic.
+4. A mined receipt (block identity required) transitions to `submitted`/`failed` and expires same-nonce siblings — the nonce is consumed.
+5. At most one reservation per nonce across the registry; two found → fail closed, no broadcast.
 
 
-### Challenge rate limiting (webapp-server.mjs)
-`GET /api/challenge` is rate-limited to 10 requests per minute per IP via the `challengeRateLimit` Map. IPs exceeding the limit receive HTTP 429. Expired rate-limit entries are cleaned up every 2 minutes along with expired challenges.
+### Challenge rate limiting (webapp-handler.mjs)
+`GET /api/challenge` is rate-limited to 10 requests per minute per IP via a per-handler `challengeRateLimit` Map inside the `createRequestHandler` closure (test handlers never share state). IPs exceeding the limit receive HTTP 429. Expired rate-limit entries are cleaned up every 2 minutes along with expired challenges; the interval belongs to the bootstrap (`handler.startCleanupTimer()`, cancelled on shutdown), so importing the handler in tests leaves no timer behind. Routing matches the exact pathname (`/api/presignXYZ` is not `/api/presign`) and any unknown `/api/*` path returns JSON 404 instead of the SPA HTML.
 
-### Dependency injection for testing (expire-bundle.test.mjs)
-`expireStaleBundle` in `monitor.mjs` accepts `fs` and `client` as explicit parameters (injected) rather than importing them directly. The test file passes mocks for `existsSync`, `readFileSync`, `writeFileSync`, `unlinkSync`, and `getTransactionCount`. This separates business logic from I/O, making the function testable without real filesystem or chain calls.
+### Dependency injection for testing
+`broadcastEligible`, `createRequestHandler`, `createCheckScheduler`, `createWssWatcher`, `createWssConnect`, `createRpcDispatcher`/`createProxyRequestHandler`, `buildWebappConfig` and `injectWebappConfig` all accept their I/O (RPC client, registry path, timers, fetch, connect, viem factories) as injectable parameters, so the production modules are tested directly with fakes instead of duplicated logic. Test doubles for viem WSS must use the real transport shape: `{ value: { getRpcClient: () => Promise.resolve({ close }) } }` — a fake `{ close }` on the transport hides the fact that viem has no `transport.close`.
 
 ### WebSocket hybrid trigger (monitor.mjs)
 
 WebSocket `eth_subscribe` được dùng làm **trigger** (không phải data source) để giảm độ trễ phát hiện từ 0-30s xuống 0-3s. Kiến trúc additive — không sửa đổi logic hiện có, chỉ thêm trigger bổ sung.
 
 ```
-5 × watchContractEvent(eventName="Supply", args={id: MARKET_ID})
-  → topics = [[Supply_sig], MARKET_ID]    ← lọc CHÍNH XÁC ở RPC level
-5 × watchContractEvent(eventName="Withdraw", args={id: MARKET_ID})
+5 × watchContractEvent(eventName="Supply", args={id: marketIds})
+  → topics = [[Supply_sig], [marketId…]]    ← lọc CHÍNH XÁC ở RPC level
+5 × watchContractEvent(eventName="Withdraw", args={id: marketIds})
 ... (Borrow, Repay, Liquidate)
 
-→ Chỉ nhận events cho đúng market, không nhận event thừa từ market khác
-→ Mỗi event → debouncedCheck() [gộp trong WSS_DEBOUNCE_MS window, mặc định 3s]
-  → checkAndNotify() [GIỮ NGUYÊN 100%, fetch dữ liệu qua HTTP]
-    → fetchMarket()     ← HTTP RPC (dữ liệu chính xác, không delta tracking)
-    → shouldNotify()    ← anti-spam không đổi
-    → broadcastPresigned()
+→ Chỉ nhận events cho đúng các market đã cấu hình
+→ Mỗi event → scheduler.request(ids) [gộp trong WSS_DEBOUNCE_MS window, mặc định 3s]
+  → checkMarkets(ids) [fetch dữ liệu qua HTTP]
+    → reader.readSnapshots()  ← multicall ở cùng block (dữ liệu chính xác)
+    → shouldNotify()          ← anti-spam theo market
+    → broadcastEligible()
 
 setInterval(30s) → vẫn chạy song song làm fallback
 ```
 
-- **5 subscription riêng biệt** — mỗi event (Supply, Withdraw, Borrow, Repay, Liquidate) một `watchContractEvent` với `eventName` là SINGLE STRING. `viem` encode `args: { id: MARKET_ID }` chính xác thành `topics[1] = MARKET_ID`, lọc ở RPC level. 5 subscription dùng chung 1 WebSocket connection → không tốn thêm tài nguyên.
+- **5 subscription riêng biệt** — mỗi event (Supply, Withdraw, Borrow, Repay, Liquidate) một `watchContractEvent` với `eventName` là SINGLE STRING. `viem` encode `args: { id: marketIds }` chính xác thành `topics[1]`, lọc ở RPC level. 5 subscription dùng chung 1 WebSocket connection → không tốn thêm tài nguyên.
 - **Tại sao không dùng `watchEvent` với `events[]`?** — `watchEvent` trong viem 2.53 bị lỗi encode topics khi dùng `events` (plural) + `args`: `flatMap` nhét tất cả event signatures + args values vào `topics[0]`, khiến `args.id` bị coi là event signature thay vì filter `topics[1]`. Hậu quả: subscription khớp MỌI market thay vì chỉ market được chỉ định.
 - **WebSocket chỉ làm trigger** — không tham gia vào data pipeline. Mọi quyết định vẫn dựa trên HTTP `fetchMarket()`.
-- **Debounce 3s** — gộp nhiều events trong cùng block thành 1 lần check, tránh spam RPC calls. 5 events cùng block → `clearTimeout` reset timer → chỉ 1 `checkAndNotify()`.
-- **Sequential failover** — thử từng WSS URL theo thứ tự. `createPublicClient` + `webSocket()` là synchronous, cần gọi `client.getChainId()` để test kết nối thực sự. Connection failure → chuyển URL tiếp theo.
-- **3 lớp guard trong `onError`**: (1) `wsState === null` — chặn duplicate failover từ nhiều subscription cùng lúc; (2) `wsState.url !== url` — chặn error từ connection cũ kill connection mới sau khi đã failover; (3) Phân loại lỗi: "socket closed"/"timeout" → `console.warn` + `return` (viem tự reconnect), "method not found"/"-32601" → failover sang URL tiếp theo.
-- **Reconnect poll** — Khi socket đóng, `_reconnectTimer = setInterval(10s)` gọi `client.getChainId()` đến khi thành công → log "✅ Đã reconnect" + `debouncedCheck()`. Nếu `onLogs` nhận event trước khi timer chạy → clear timer + log reconnect ngay. Timer được cleanup trong failover và shutdown.
-- **Dedup `onError` log** — 5 subscription dùng chung 1 WebSocket → cùng lỗi. `_lastWsError` lưu message + timestamp, bỏ qua nếu trùng message trong 1s.
+- **Debounce 3s** — scheduler gộp nhiều events trong cùng block thành 1 lần check (`WSS_DEBOUNCE_MS`), tránh spam RPC calls; work đến trong lúc đang chạy luôn có trailing run riêng.
+- **Sequential failover** — thử từng WSS URL theo thứ tự trong `createWssWatcher`. `createPublicClient` + `webSocket()` là synchronous, nên `createWssConnect` gọi `client.getChainId()` để test kết nối thực sự; probe fail → đóng transport rồi chuyển URL tiếp theo.
+- **Generation fence** — mọi callback (`onError` **và** `onLogs`) bị chặn theo `generation`: error/log từ endpoint đã bị thay thế hoặc đã `close()` không thể failover lần hai, không thể kích scheduler. Runtime error → rotate sang URL **kế tiếp**; hết URL → retry cả set với backoff 30s (timer bị cancel khi `close()`).
+- **Partial subscription cleanup** — nếu subscription thứ N throw, tất cả unwatch trước đó + connection đều được đóng trước khi sang URL khác.
 - **Config**: `WSS_URLS` (comma-separated WSS endpoints), `WSS_DEBOUNCE_MS` (debounce window, mặc định 3000ms).
-- **Shutdown**: `stopWsWatcher()` gọi tất cả 5 `unwatch()` + `clearTimeout(debounceTimer)` + `clearInterval(_reconnectTimer)`.
+- **Shutdown**: `wssWatcher.close()` → clear retry timer + unwatch 5 subscription + đóng transport thật (`closeTransport`).
 
 ### Browser fallback transport (webapp.html)
 A simplified round-robin transport without circuit breaker. Each request starts at a random URL index. On failure, it tries the next URL. On success, it advances the index for the next request. No circuit breaker because browser sessions are short-lived and the user can simply refresh.
 
-### Wallet compatibility detection (webapp.html)
+### Wallet compatibility + proxy RPC preflight (webapp.html)
+`getCompatibilityMessage()` used to report `ok: true` for every known wallet brand, which said nothing about whether the transaction would actually be captured. Now `assertProxyNetwork()` runs immediately before **both** `walletClient.sendTransaction` call sites (`signAllTiers`, `signWithdrawAll`): it asks the wallet's current RPC for `morpho_proxyInfo` and only accepts `{ server: "morpho-proxy", chainId: 1 }`. Anything else (real node, wrong chain, RPC error) blocks signing with instructions to move the wallet to the proxy RPC — otherwise `sendTransaction` would broadcast a real mainnet withdrawal and break the "sign only, never send" premise.
+
 Detects the user's wallet by checking EIP-1193 provider flags: `e.isRabby`, `e.isMetaMask`, `e.isFrame`, `e.isCoinbaseWallet`, `e.isTrust`. Each detected type gets a tailored UI message. Rabby-specific: `wallet_addEthereumChain` shows a warning about duplicate chainId=1.
 
 ## Conventions
@@ -148,16 +177,22 @@ Detects the user's wallet by checking EIP-1193 provider flags: `e.isRabby`, `e.i
   - `rpc-client.test.mjs` — imports from `../rpc-client.mjs` (uses `vi.mock` for viem)
   - `monitor.test.mjs` — imports `shouldNotify` from `../shared.mjs`
   - `webapp.test.mjs` — duplicates 8 pure functions from `webapp.html` (browser ESM cannot be imported by vitest)
-  - `presign-broadcast.test.mjs` — duplicates `selectBestPresignedTx` and `validatePresignedBundle` from `monitor.mjs`
-  - `expire-bundle.test.mjs` — duplicates `expireStaleBundle` from `monitor.mjs` (uses dependency injection: accepts `fs` and `client` as parameters)
   - `ntfy.test.mjs` — duplicates `buildNtfyPayload` from `monitor.mjs`; includes 6 live integration tests that POST to `ntfy.sh`
-  - `wss-watcher.test.mjs` — duplicates `debouncedCheck` debounce logic and sequential failover pattern from `monitor.mjs` (15 tests); uses fake timers for debounce verification
+  - `webapp-config.test.mjs` — duplicates `isProxyInfoResponse` from `webapp.html` (same reason)
+  - This duplication is tracked debt: no bundler is added for `webapp.html`.
+  - The lifecycle-critical suites all import production modules (audit 2026-09-23 removed the last copied logic):
+    - `presigned-lifecycle.test.mjs` — receipt grounding, raw-tx identity recovery, legacy fail-closed, user-origin guard (temp registries + real `updateRegistry`)
+    - `presign-broadcast.test.mjs` — imports production `selectBestWithdrawal`
+    - `expire-bundle.test.mjs` — production expiration semantics via `broadcastEligible`
+    - `wss-watcher.test.mjs` — production scheduler + WSS watcher (partial cleanup, rotation, bounded retry, generation fence)
+    - `presigned-api.test.mjs` — real `createRequestHandler` on a live `http.Server` (400/404/409, market-scoped DELETE, lifecycle-field stripping)
+    - `presigned-cross-process.test.mjs` + `two-process-race.test.mjs` — two REAL Node processes racing the same nonce over the production store/broadcaster; at most one raw broadcast (verified via a shared send log)
 - **Vietnamese comments and log messages** throughout. UI is in Vietnamese.
 - **`--env-file=.env`** flag required for all `node` commands. The `.env` file is gitignored; `.env.example` is the template.
 - **Port conventions:** webapp=3000, proxy=8545. Proxy URL is auto-derived from `WEBAPP_URL` host + `PROXY_PORT`.
 - **Docker:** `docker-compose.yml` runs all three services under a supervisor shell script that auto-restarts crashed processes.
 - **HTTPS/SSL:** Servers support HTTPS khi `SSL_CERT_PATH` và `SSL_KEY_PATH` được set trong `.env`. Để trống cả hai → chạy HTTP như cũ. Xem hướng dẫn thiết lập Let's Encrypt bên dưới.
-- **`webapp.html` hardcodes RPC URLs** identically to `shared.mjs`. Both files must be updated together when URLs change.
+- **Browser RPC endpoints come from the server**: `webapp.html` reads `CFG.rpcUrls` (injected from `RPC_URLS` in `shared.mjs` via `webapp-config.mjs`) and only falls back to a small key-less public list. Never embed provider API keys in `webapp.html` — the file is served publicly (VPS + Let's Encrypt) and any key in it is exposed.
 - **`env()` uses `??` (nullish coalescing)** — returns empty string `""` (not fallback) when the env var is set to `""`. Important for `NTFY_TOPIC` and `WEBAPP_PASSWORD`: setting them to `""` enables dev mode / no auth, while leaving them unset uses the fallback value.
 
 ## HTTPS với Let's Encrypt trên VPS
@@ -226,16 +261,21 @@ Kiểm tra timer: `systemctl status certbot.timer`.
 ## Sharp edges
 
 - `WEBAPP_PASSWORD` doubles as both HTTP Basic Auth secret AND HMAC key for session tokens. Changing it invalidates all existing sessions.
-- `proxy-rpc.mjs` has a top-level `await` for the initial block fetch. The module won't finish loading until that resolves or times out.
+- `proxy-rpc.mjs` has a top-level `await` for the initial block fetch. The module won't finish loading until that resolves or times out, which is why it is not importable in tests: all testable logic lives in `proxy-dispatcher.mjs`.
+- `wss-connect.mjs` closes transports through viem's real API (`getRpcClient()` → `Promise<SocketRpcClient>.close()`, with a `getSocket()` fallback). `client.transport.close` does not exist in viem 2.53 — calling it is a silent no-op that leaks the socket plus its keepAlive/reconnect timers.
 - `capturedTxs` in proxy-rpc.mjs is in-memory only. Proxy restart loses all captured transactions.
 - `tokenCache` in voip.mjs is in-memory only. It resets on process restart. On 401, the cache is cleared and re-authentication is attempted automatically.
-- `challenges` Map and `challengeRateLimit` Map in webapp-server.mjs are in-memory. They reset on restart.
+- `challenges` Map and `challengeRateLimit` Map live in the `createRequestHandler` closure (webapp-handler.mjs) — in-memory, reset on restart, never shared between handlers.
+- **Stale lock recovery (H4):** `withFileLock` writes `{ pid, host, createdAt }` into `data/presigned.json.lock`. A `SIGKILL`/OOM/`docker restart` in the middle of a mutation skips the `finally` unlink, so the lock survives and every writer fails with code `LOCK_STALE` (holder, lock age and the recovery command in the message; the webapp maps it to HTTP 503). The lock is **never** stolen automatically. Manual recovery: read the lock file to confirm no live process holds it, then `rm data/presigned.json.lock` and restart the service.
+- **Shared nonce (M9):** every market's bundle uses the same lender nonce. A receipt that consumes nonce N expires all same-nonce siblings, and a terminal record keeps nonce N consumed forever — so a bundle can silently become `expired` because a *different* market withdrew first. The UI must keep instructing users to fetch a new nonce and re-sign; do not treat this as an error state.
+- **Terminal records are user-deletable (M1):** `origin: "user"` may delete/replace `submitted`/`failed` bundles (history has no automatic retention policy). Only a `broadcasting` claim is untouchable — the lifecycle guard still fails closed with `ACTIVE_CLAIM_CONFLICT` (HTTP 409).
+- **Markets config is mandatory (M4):** a missing `config/markets.json` now fails fast with copy/mount instructions from `preflightMarketsFile()` (called by every entry point through `loadMarkets`). Legacy keys `MARKET_ID`, `MIN_LIQUIDITY_THRESHOLD_USDC`, `SUDDEN_DRAIN_MULTIPLIER` are ignored.
 - The `DELETE /api/presign` handler and `broadcastPresigned`/`expireStaleBundle` in monitor.mjs coordinate via `withFileLock` on `presigned.json.lock` (same lock as webapp POST).
 - Proxy binds `PROXY_HOST` (default `127.0.0.1`). Docker publishes `8545:8545` for MetaMask mobile. Capture gated by lender sender + Morpho withdraw decode; `/bundle` and `/captured` require lender Bearer or Basic auth.
 - `presign-verify.mjs` verifies Morpho `withdraw` calldata on save (proxy + webapp) and before broadcast (monitor).
 - Test files import `describe, it, expect` from vitest globally (configured via `vitest.config.mjs` `globals: true`), plus explicit imports. The explicit imports are redundant but harmless.
-- `webapp.html` hardcodes the 11 RPC URLs (duplicated from `shared.mjs`). Changing RPC URLs requires editing both files.
-- `webapp.html` uses a simplified `fallbackTransport()` without circuit breaker. If all 11 URLs are slow, the browser may hang for up to 165s (11 × 15s timeout).
+- Run `npm run lint` before considering a change done: `oxlint --deny no-undef` is the gate that catches the C1-class bug (an identifier removed in one place but still called in another), which `node --check` cannot see. `npm run check` runs lint + `node --check` for every `.mjs` + the full suite.
+- `webapp.html` uses a simplified `fallbackTransport()` without circuit breaker. If every configured URL is slow, the browser may hang for `15s × số URL` (default fallback list: 4 URLs → 60s).
 - `verify-presigned.mjs` duplicates the Morpho `withdraw()` ABI definition. The same ABI is also in `webapp.html`. Updates to the ABI must be applied in both places.
 - `webapp-server.mjs` sets security headers: `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. Requests for sensitive file extensions (`.json`, `.env`, `.log`, `.tar`) return 403 Forbidden.
 - `proxy-rpc.mjs` CORS mirrors the request `Origin` header. Any origin can make credentialed requests — acceptable since the proxy only listens on localhost, but worth noting if exposed.
@@ -244,3 +284,48 @@ Kiểm tra timer: `systemctl status certbot.timer`.
 - `monitor.mjs` WSS watcher uses 5 separate `watchContractEvent` calls (one per event) instead of `watchEvent` with `events[]`. Reason: `watchEvent` in viem 2.53 has a bug where `flatMap` over multiple events + `args` flattens topic encodings incorrectly — `args.id` values end up mixed with event signatures in `topics[0]` instead of being placed in `topics[1]` as a proper indexed filter. Using `watchContractEvent` with a SINGLE STRING `eventName` per call avoids this bug and correctly filters at the RPC level.
 - `createPublicClient` with `webSocket()` transport is synchronous and doesn't throw on connection failure. To detect failures and enable sequential failover, `_tryConnectWss()` calls `client.getChainId()` after creating the client. Without this test call, the first URL would silently fail and subsequent URLs would never be tried.
 - WSS endpoints must support `eth_subscribe` with `logs` subscription type. If an endpoint doesn't support it, `onError` fires with "method not found" and the watcher fails over to the next URL.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **morpho-monitor** (588 symbols, 1383 relationships, 37 execution flows).
+
+> Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
+
+## Always Do
+
+- **MUST run impact before editing.** Use `impact({target: "symbolName", direction: "upstream"})` or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .`; report callers, processes, and risk. Never substitute grep for graph analysis.
+- **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
+- MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
+- **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
+- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+
+## Never Do
+
+- NEVER edit a function, class, or method before MCP/CLI impact analysis.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit before MCP/CLI graph change analysis.
+
+## Resources
+
+| Resource | Use for |
+| --- | --- |
+| `gitnexus://repo/morpho-monitor/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/morpho-monitor/clusters` | All functional areas |
+| `gitnexus://repo/morpho-monitor/processes` | All execution flows |
+| `gitnexus://repo/morpho-monitor/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+| --- | --- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
