@@ -120,6 +120,7 @@
     .banner.success { background: rgba(63, 185, 80, 0.15); border: 1px solid var(--green); color: var(--green); }
     .banner.warn { background: rgba(210, 153, 29, 0.15); border: 1px solid var(--yellow); color: var(--yellow); }
     .banner.info { background: rgba(88, 166, 255, 0.15); border: 1px solid var(--blue); color: var(--blue); }
+    .tx-verify-note { margin-top: 8px; font-size: 0.85rem; opacity: 0.9; }
 
     a { color: var(--blue); word-break: break-all; }
 
@@ -477,6 +478,12 @@
     // broadcasting lâu hơn ngưỡng này là dấu hiệu bị thay thế/kẹt — phải hiện UI.
     const CLAIM_RECOVERY_MS = Number(CFG.claimRecoveryMs) > 0 ? Number(CFG.claimRecoveryMs) : 180000;
 
+    // R4: ngân sách xác minh tx của tab "Rút Tiền" (không presign) — xem
+    // txVisibleOnChain(). 4 lần × 3s: đủ để tx vừa gửi lan truyền tới RPC công
+    // khai, mà user vẫn không phải chờ lâu.
+    const TX_VERIFY_ATTEMPTS = 4;
+    const TX_VERIFY_DELAY_MS = 3000;
+
     const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
 
     // M2: KHÔNG hardcode URL kèm API key trong file được phục vụ công khai.
@@ -582,6 +589,9 @@
     let presignedWithdrawAll = null; // { sharesWei: string, txHash: string, status: 'pending'|'signing'|'signed'|'error' }
     let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
     let isSigningInProgress = false;
+    // R4: tăng mỗi lần rút — kết quả xác minh của lần rút CŨ không được ghi đè
+    // banner của lần rút MỚI.
+    let txVerifyToken = 0;
 
     // ============================================================
     // HELPERS
@@ -615,6 +625,35 @@
       if (!r || r.status !== "broadcasting") return false;
       const started = Date.parse(r.broadcastingAt ?? "");
       return Number.isFinite(started) && nowMs - started > CLAIM_RECOVERY_MS;
+    }
+
+    /**
+     * R4: giao dịch mà ví trả về hash có thật sự nằm trên chain?
+     *
+     * Tab "Rút Tiền" gửi tx qua `walletClient.writeContract` → RPC do VÍ cấu hình
+     * quyết định đường đi. Nếu ví đang trỏ vào proxy (port 8545), tx chỉ bị
+     * CAPTURE chứ không broadcast, nhưng UI vẫn báo thành công cho một giao dịch
+     * chưa từng lên chain. Ta không đọc được RPC của ví, nhưng kiểm tra được điều
+     * ngược lại: hash có xuất hiện trên RPC công khai (CFG.rpcUrls) hay không.
+     *
+     * Chỉ dùng để CẢNH BÁO: `false` cũng là kết quả đúng khi tx chưa lan truyền
+     * kịp, nên tuyệt đối không chặn UI và không kết luận tx thất bại (H5 preflight
+     * đã bị gỡ vì lý do tương tự — không có cách chắc chắn để hỏi ví).
+     */
+    async function txVisibleOnChain(client, hash, {
+      attempts = TX_VERIFY_ATTEMPTS,
+      delayMs = TX_VERIFY_DELAY_MS,
+      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    } = {}) {
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        try {
+          if (await client.getTransaction({ hash })) return true;
+        } catch {
+          // Chưa thấy, hoặc RPC lỗi tạm thời → thử lại.
+        }
+        if (attempt < attempts - 1) await sleep(delayMs);
+      }
+      return false;
     }
 
     function showError(msg) {
@@ -2180,8 +2219,29 @@
         showTxResult("success",
           `✅ Giao dịch đã gửi thành công!<br><br>` +
           `<strong>Tx Hash:</strong> <a href="${etherscanLink}" target="_blank">${shortenAddr(hash)}</a><br>` +
-          `<a href="${etherscanLink}" target="_blank">📊 Xem trên Etherscan →</a>`
+          `<a href="${etherscanLink}" target="_blank">📊 Xem trên Etherscan →</a>` +
+          `<div id="tx-verify-note" class="tx-verify-note">⏳ Đang xác minh giao dịch trên RPC công khai…</div>`
         );
+
+        // R4: xác minh không chặn UI — bắt trường hợp ví trỏ RPC về proxy, tx chỉ
+        // được capture nên không bao giờ lên chain dù ví báo thành công.
+        const verifyToken = ++txVerifyToken;
+        txVisibleOnChain(publicClient, hash).then((visible) => {
+          if (verifyToken !== txVerifyToken) return; // đã có lần rút mới hơn
+          const note = document.getElementById("tx-verify-note");
+          if (!note) return; // banner đã bị lần rút khác thay thế
+          if (visible) {
+            note.textContent = "✅ Đã thấy giao dịch trên RPC công khai.";
+            return;
+          }
+          note.innerHTML =
+            `⚠️ Không thấy giao dịch này trên RPC công khai sau ~${Math.round((TX_VERIFY_ATTEMPTS * TX_VERIFY_DELAY_MS) / 1000)}s. ` +
+            `Nếu ví của bạn đang trỏ RPC về proxy (<code>${esc(getProxyUrl())}</code>), giao dịch chỉ được ` +
+            `<strong>ghi lại (capture)</strong> để ký sẵn — chưa lên chain. ` +
+            `Hãy thêm mạng thật trong ví rồi đối chiếu link Etherscan ở trên.`;
+        }).catch(() => {
+          // Xác minh là best-effort: lỗi ở đây không được làm hỏng UI.
+        });
       } catch (err) {
         if (err.message?.includes("rejected") || err.message?.includes("denied")) {
           showTxResult("error", "❌ Bạn đã từ chối giao dịch.");

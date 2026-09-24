@@ -54,6 +54,34 @@ function isClaimOverdue(r, nowMs = Date.now()) {
 }
 
 /**
+ * Ngân sách xác minh tx của tab "Rút Tiền" (audit R4).
+ * Mirrors webapp.html `TX_VERIFY_ATTEMPTS` / `TX_VERIFY_DELAY_MS`.
+ */
+const TX_VERIFY_ATTEMPTS = 4;
+const TX_VERIFY_DELAY_MS = 3000;
+
+/**
+ * Hash mà ví trả về có thật sự nằm trên RPC công khai?
+ * Mirrors webapp.html `txVisibleOnChain`. `sleep` được inject để test không phải
+ * chờ thật.
+ */
+async function txVisibleOnChain(client, hash, {
+  attempts = TX_VERIFY_ATTEMPTS,
+  delayMs = TX_VERIFY_DELAY_MS,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      if (await client.getTransaction({ hash })) return true;
+    } catch {
+      // Chưa thấy, hoặc RPC lỗi tạm thời → thử lại.
+    }
+    if (attempt < attempts - 1) await sleep(delayMs);
+  }
+  return false;
+}
+
+/**
  * Compute supply assets from shares.
  * Mirrors webapp.html line 454-456.
  *
@@ -397,5 +425,73 @@ describe("claim age hiển thị cho claim đang broadcasting (R1)", () => {
     expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(CLAIM_RECOVERY_MS) }, now)).toBe(false);
     expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(CLAIM_RECOVERY_MS + 1) }, now)).toBe(true);
     expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: null }, now)).toBe(false);
+  });
+});
+
+describe("webapp.html — xác minh tx của tab Rút Tiền (R4)", () => {
+  // Ví trỏ RPC về proxy ⇒ tx bị capture, không bao giờ lên chain, nhưng ví vẫn
+  // trả hash nên UI cũ báo "thành công". Hàm này chỉ CẢNH BÁO (best-effort):
+  // false cũng là kết quả đúng khi tx chưa lan truyền kịp.
+  const spies = () => {
+    const sleeps = [];
+    return { sleeps, sleep: async (ms) => { sleeps.push(ms); } };
+  };
+
+  it("thấy tx ở lần thử đầu ⇒ true và không sleep", async () => {
+    const { sleeps, sleep } = spies();
+    let calls = 0;
+    const client = { getTransaction: async () => { calls++; return { hash: "0xabc" }; } };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(true);
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("throw rồi mới có tx ⇒ true (RPC lỗi tạm thời không kết luận là mất tx)", async () => {
+    const { sleeps, sleep } = spies();
+    let calls = 0;
+    const client = {
+      getTransaction: async () => {
+        calls++;
+        if (calls === 1) throw new Error("timeout");
+        return { hash: "0xabc" };
+      },
+    };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(true);
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([TX_VERIFY_DELAY_MS]);
+  });
+
+  it("tx không bao giờ xuất hiện ⇒ false sau đúng `attempts` lần gọi", async () => {
+    const { sleeps, sleep } = spies();
+    let calls = 0;
+    const client = { getTransaction: async () => { calls++; return null; } };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(false);
+    expect(calls).toBe(TX_VERIFY_ATTEMPTS);
+    expect(sleeps).toEqual([TX_VERIFY_DELAY_MS, TX_VERIFY_DELAY_MS, TX_VERIFY_DELAY_MS]);
+  });
+
+  it("mọi lần thử đều throw ⇒ false, không ném ra ngoài", async () => {
+    const { sleep } = spies();
+    let calls = 0;
+    const client = { getTransaction: async () => { calls++; throw new Error("RPC chết"); } };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(false);
+    expect(calls).toBe(TX_VERIFY_ATTEMPTS);
+  });
+
+  it("tôn trọng attempts/delayMs khi được inject", async () => {
+    const { sleeps, sleep } = spies();
+    const client = { getTransaction: async () => null };
+    await expect(txVisibleOnChain(client, "0xabc", { attempts: 2, delayMs: 10, sleep })).resolves.toBe(false);
+    expect(sleeps).toEqual([10]);
+  });
+
+  it("doWithdraw gọi xác minh và render note cảnh báo capture", () => {
+    const html = fs.readFileSync(new URL("../webapp.html", import.meta.url), "utf8");
+    expect(html).toContain("txVisibleOnChain(publicClient, hash)");
+    expect(html).toContain('id="tx-verify-note"');
+    // Kết quả xác minh của lần rút cũ không được ghi đè banner của lần rút mới.
+    expect(html).toContain("verifyToken !== txVerifyToken");
+    // Cảnh báo phải nêu rõ nguyên nhân (ví trỏ RPC về proxy ⇒ chỉ được capture).
+    expect(html).toContain("ghi lại (capture)");
   });
 });

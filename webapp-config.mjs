@@ -77,9 +77,6 @@ export function injectWebappConfig(html, config, { marker = "</head>" } = {}) {
  * Fail closed khi WEBAPP_PASSWORD trống (audit 2026-09-24 P1): không password
  * thì MỌI request đều được coi là đã xác thực — kể cả DELETE /api/presign
  * (xóa bundle đã ký) — trong khi docker-compose publish webapp ra ngoài.
- * Dev local có thể chủ đích tắt bằng WEBAPP_ALLOW_INSECURE=1.
- */
-/**
  * Chính sách auth của proxy (audit R3).
  *
  * webapp fail-fast khi thiếu WEBAPP_PASSWORD, nhưng proxy chỉ warn — mà trong dev
@@ -116,6 +113,12 @@ export function assertProxyAuthConfig({
   );
 }
 
+/**
+ * Fail closed khi WEBAPP_PASSWORD trống (audit 2026-09-24 P1): không password
+ * thì MỌI request đều được coi là đã xác thực — kể cả DELETE /api/presign
+ * (xóa bundle đã ký) — trong khi docker-compose publish webapp ra ngoài.
+ * Dev local có thể chủ đích tắt bằng WEBAPP_ALLOW_INSECURE=1.
+ */
 export function assertWebappAuthConfig({
   password = WEBAPP_PASSWORD,
   allowInsecure = /^(1|true|yes)$/i.test(process.env.WEBAPP_ALLOW_INSECURE || ""),
