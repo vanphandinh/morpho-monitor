@@ -170,6 +170,8 @@ A simplified round-robin transport without circuit breaker. Each request starts 
 
 Safety now rests entirely on **server-side checks**: capture only accepts txs from `LENDER_ADDRESS` against configured markets with a valid bundle/nonce; the JSON-RPC proxy still exposes `morpho_proxyInfo` as a manual/debug probe. Known trade-off: an EOA wallet (MetaMask/Rabby) pointed at the wrong RPC will no longer be blocked before signing — the tx would hit mainnet un-captured and invisible to the monitor.
 
+**Verified in practice (2026-09-24, user test):** a presign transaction signed through Ambire was captured successfully (`from` matched `LENDER_ADDRESS`), i.e. Ambire signs via its raw/EOA path rather than its relayer for this flow and **is compatible** with the presign architecture despite rejecting custom JSON-RPC methods.
+
 Wallet detection is by EIP-1193 provider flags (`e.isRabby`, `e.isMetaMask`, `e.isFrame`, `e.isCoinbaseWallet`, `e.isTrust`, `e.isAmbire`) purely for display. The "Thêm Mạng Proxy" button keeps its UX branches: success message as mainline, a manual-RPC instruction when the wallet rejects `wallet_addEthereumChain` ("corresponding handler"), and the Rabby duplicate-chainId warning.
 
 ## Conventions
