@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { keccak256, stringToHex } from "viem";
+import { keccak256, stringToHex, TransactionReceiptNotFoundError } from "viem";
 import { broadcastEligible, selectBestWithdrawal, RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
 import { updateRegistry, bundleKey, ACTIVE_CLAIM_CONFLICT } from "../presigned-store.mjs";
 import fs from "node:fs";
@@ -23,6 +23,14 @@ function seedRegistry(filePath, registry) {
 }
 
 const minedReceipt = (status = "success") => ({ status, blockHash: "0x" + "a".repeat(64), blockNumber: 1n, transactionHash: "0x" + "b".repeat(64) });
+
+/**
+ * Hình dạng THẬT của viem khi RPC trả `null` cho eth_getTransactionReceipt:
+ * viem ném TransactionReceiptNotFoundError (KHÔNG trả null).
+ * Audit vòng 2 (D1): double cũ chỉ trả `null`, nên nhánh nhả superseded không bao
+ * giờ chạy ở production dù test xanh.
+ */
+const receiptNotFound = () => { throw new TransactionReceiptNotFoundError({ hash: "0x" + "c".repeat(64) }); };
 
 describe("presigned broadcaster lifecycle", () => {
   it("retains future nonce and permits only one same-nonce claim", async () => {
@@ -382,7 +390,7 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     withdrawals: [{ label: "next", amountWei: "50", signedTx: "0x02" }],
   });
 
-  it("(a) receipt null + latest > nonce ⇒ superseded, và rung kế tiếp được claim ở chu kỳ sau", async () => {
+  it("(a) receipt NOT FOUND theo hình dạng viem (ném TransactionReceiptNotFoundError) + latest > nonce ⇒ superseded, và rung kế tiếp được claim ở chu kỳ sau", async () => {
     const filePath = tempRegistryPath();
     const tx = stringToHex("dead-claim");
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx), ["b@8"]: nextRung() } });
@@ -391,7 +399,7 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     const send = vi.fn(async () => "0xaccepted");
     const client = {
       getTransactionCount: async ({ blockTag }) => { blockTags.push(blockTag); return 8; },
-      getTransactionReceipt: async () => null, // null = không tìm thấy (KHÔNG phải lỗi RPC)
+      getTransactionReceipt: async () => receiptNotFound(), // viem thật: ném, không trả null
       sendRawTransaction: send,
       waitForTransactionReceipt: async () => minedReceipt(),
     };
@@ -426,6 +434,23 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     expect(stored.bundles["b@8"].status).toBe("submitted");
   });
 
+  it("(a2) transport tự viết trả `null` (không ném) ⇒ vẫn là CÙNG bằng chứng, cùng kết quả", async () => {
+    const filePath = tempRegistryPath();
+    const tx = stringToHex("dead-claim-null-shape");
+    seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx) } });
+    const send = vi.fn();
+    const client = {
+      getTransactionCount: async () => 8,
+      getTransactionReceipt: async () => null, // transport tự viết: null = không có receipt
+      sendRawTransaction: send,
+    };
+    const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    expect(claim.superseded).toBe(true);
+    expect(send).not.toHaveBeenCalled(); // nonce đã tiêu thụ ⇒ không rebroadcast vô ích
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles["a@7"].status).toBe("superseded");
+  });
+
   it("(b) lỗi RPC khi đọc receipt ⇒ KHÔNG thu thập bằng chứng, giữ broadcasting (fail closed)", async () => {
     const filePath = tempRegistryPath();
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(stringToHex("rpc-error")) } });
@@ -444,7 +469,7 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     expect(stored.bundles["a@7"].status).toBe("broadcasting");
   });
 
-  it("(c) receipt null nhưng nonce CHƯA bị tiêu thụ (latest == nonce) ⇒ giữ claim, vẫn rebroadcast", async () => {
+  it("(c) receipt NOT FOUND theo hình dạng viem nhưng nonce CHƯA bị tiêu thụ (latest == nonce) ⇒ giữ claim, vẫn rebroadcast", async () => {
     const filePath = tempRegistryPath();
     const tx = stringToHex("still-mine");
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx) } });
@@ -452,7 +477,7 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     const send = vi.fn(async () => "0xrebroadcast");
     const client = {
       getTransactionCount: async ({ blockTag }) => { blockTags.push(blockTag); return 7; },
-      getTransactionReceipt: async () => null,
+      getTransactionReceipt: async () => receiptNotFound(),
       sendRawTransaction: send,
     };
     const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });

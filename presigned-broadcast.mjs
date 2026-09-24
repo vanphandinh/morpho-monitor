@@ -267,10 +267,23 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     let receipt;
     if (claim.existing) {
       // Receipt-first: reconcile by the persisted hash before any rebroadcast.
-      // `null` = không tìm thấy (bằng chứng); THROW = lookup lỗi (không bằng chứng).
-      let lookupFailed = false;
-      try { receipt = await client.getTransactionReceipt({ hash: txHash }); } catch { receipt = undefined; lookupFailed = true; }
-      const receiptMissing = !lookupFailed && receipt == null;
+      //
+      // "Không có receipt" LÀ bằng chứng, nhưng nó đến theo HAI hình dạng tuỳ client:
+      //  - viem thật: getTransactionReceipt NÉM TransactionReceiptNotFoundError khi
+      //    JSON-RPC trả null (viem/_esm/actions/public/getTransactionReceipt.js);
+      //  - transport tự viết: trả thẳng `null`.
+      // Audit vòng 2 (D1): code cũ chỉ nhận `null` và coi MỌI throw là "lookup lỗi"
+      // ⇒ với viem thật `receiptMissing` luôn false ⇒ nhánh nhả superseded không bao
+      // giờ chạy và claim chết vẫn kẹt bậc thang. Lỗi mạng/RPC KHÁC vẫn không phải
+      // bằng chứng (fail closed).
+      let receiptMissing = false;
+      try {
+        receipt = await client.getTransactionReceipt({ hash: txHash });
+        receiptMissing = receipt == null;
+      } catch (err) {
+        receiptMissing = err?.name === "TransactionReceiptNotFoundError";
+        receipt = undefined;
+      }
       if (!isMinedReceipt(receipt)) {
         receipt = undefined;
         const claimedAt = Date.parse(claim.bundle.broadcastingAt || "");
