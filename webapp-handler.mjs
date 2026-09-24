@@ -54,7 +54,14 @@ function sendJson(res, status, payload) {
  * POST /api/presign stores verified PENDING data only; the broadcaster owns
  * the broadcasting/submitted/failed lifecycle.
  */
-const CLIENT_FORBIDDEN_FIELDS = ["status", "txHash", "rawTx", "broadcastingAt", "broadcastingTier", "minedAt", "submittedAt", "error"];
+const CLIENT_FORBIDDEN_FIELDS = ["status", "txHash", "rawTx", "broadcastingAt", "broadcastingTier", "minedAt", "submittedAt", "terminalAt", "reason", "error"];
+
+/**
+ * Statuses that are inert history: they hold no claim and a re-sign at the same
+ * nonce may replace/merge them. `superseded` (audit R1) means the nonce was
+ * consumed by another transaction, so the record can never mine.
+ */
+const HISTORY_STATUSES = ["broadcasting", "submitted", "failed", "superseded"];
 
 function sanitizePendingBundle(input) {
   const bundle = { ...input };
@@ -439,7 +446,7 @@ export function createRequestHandler({
             if (target) targetKey = target.key;
             try {
               const old = target?.bundle;
-              if (old && old.withdrawals && old.withdrawals.length > 0 && !["broadcasting", "submitted", "failed"].includes(old.status)) {
+              if (old && old.withdrawals && old.withdrawals.length > 0 && !HISTORY_STATUSES.includes(old.status)) {
                 if (Number(old.nonce) === Number(incoming.nonce)) {
                   const getMergeKey = (w) => {
                     if (w.type === "all-shares") return `__all_shares__`;

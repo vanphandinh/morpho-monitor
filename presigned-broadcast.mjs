@@ -37,8 +37,16 @@ export function selectBestWithdrawal(withdrawals, snapshot) {
     .sort((a, b) => BigInt(b.amountWei) > BigInt(a.amountWei) ? 1 : -1)[0] ?? null;
 }
 
-/** Terminal states are receipt-grounded history: they hold no claim. */
-const TERMINAL_STATUSES = new Set(["submitted", "failed"]);
+/**
+ * Terminal states are receipt-grounded history: they hold no claim.
+ *
+ * `superseded` (audit R1) is terminal too: the nonce was consumed by a DIFFERENT
+ * transaction, so these bytes can never mine and their nonce stays consumed
+ * forever. Like the others it is inert history the user may delete.
+ */
+const TERMINAL_STATUSES = new Set(["submitted", "failed", "superseded"]);
+export const SUPERSEDED_STATUS = "superseded";
+export const SUPERSEDED_REASON = "nonce consumed by another transaction — this presigned tx can never mine";
 
 /**
  * True when the bundle holds the nonce-wide active claim. ONLY an unmined
@@ -67,6 +75,44 @@ function isMinedReceipt(receipt) {
 }
 
 /**
+ * Expire same-nonce siblings of a consumed nonce. The argument is the CLAIM's
+ * nonce, never the current pending nonce (audit F4): once the slot is gone every
+ * other bundle signed for it is dead. Terminal records are already history, and a
+ * missing/invalid nonce expires nobody (fail closed).
+ */
+function expireSameNonceSiblings(registry, claimId, claimNonce) {
+  if (!Number.isFinite(claimNonce)) return;
+  for (const [id, other] of Object.entries(registry.bundles)) {
+    if (id === claimId) continue;
+    if (Number(other.nonce) !== claimNonce) continue;
+    if (TERMINAL_STATUSES.has(other.status)) continue;
+    other.status = "expired";
+  }
+}
+
+/**
+ * Evidence that a durable claim can NEVER mine: the account's MINED nonce
+ * (blockTag "latest" — a mempool tx is not counted) has moved past the claim's
+ * nonce while no receipt exists for the claim's own hash.
+ *
+ * Mining cannot skip a nonce (a tx is only valid when tx.nonce === account.nonce),
+ * so every nonce below that count is mined — and with our receipt missing, the
+ * slot belongs to another transaction. `pending` is deliberately NOT used: it
+ * counts the claim's own broadcast, which is exactly what made F4 ambiguous.
+ *
+ * Any doubt (non-finite nonce, lookup error) returns false — fail closed.
+ */
+async function nonceConsumedByAnotherTx(client, lenderAddress, claimNonce) {
+  if (!Number.isFinite(claimNonce)) return false;
+  try {
+    const mined = await client.getTransactionCount({ address: lenderAddress, blockTag: "latest" });
+    return Number(mined) > claimNonce;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Reconcile a pre-existing "broadcasting" reservation, receipt-first.
  * Returns a claim descriptor; never mutates the registry here.
  */
@@ -82,6 +128,35 @@ function reconcileBroadcasting(id, bundle) {
     return { id, existing: true, stuck: true, bundle, diagnostic: `broadcasting bundle ${id} (nonce ${bundle.nonce}) rawTx does not match persisted txHash; manual reconciliation required` };
   }
   return { id, existing: true, bundle, rawTx, stuck: false };
+}
+
+/**
+ * Release a durable claim whose nonce was taken by another transaction (audit R1).
+ *
+ * The exact bytes are never sent again — the slot is gone. The record becomes
+ * inert history (`superseded`) carrying the evidence as `reason`, keeps its
+ * withdrawals as an audit trail, drops the raw bytes and expires same-nonce
+ * siblings exactly like a mined receipt would. It is not an active claim, so the
+ * ladder may claim the next rung on the next cycle and the webapp may delete it.
+ */
+async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRegistry, now, logger, lenderAddress }) {
+  const evidence = `receipt for ${txHash.slice(0, 10)}… not found while the mined nonce advanced past ${claimNonce} for ${String(lenderAddress).slice(0, 10)}…`;
+  await updateRegistry(filePath, (registry) => {
+    const bundle = registry.bundles[claim.id];
+    if (!bundle || bundle.status !== "broadcasting" || bundle.txHash !== txHash) return;
+    // v3: stamp marketId from the composite key if missing (migrated bundles carry it).
+    if (bundle.marketId == null) {
+      const { marketId } = parseBundleKey(claim.id);
+      if (marketId) bundle.marketId = marketId;
+    }
+    bundle.status = SUPERSEDED_STATUS;
+    bundle.reason = SUPERSEDED_REASON;
+    bundle.terminalAt = new Date(now()).toISOString();
+    delete bundle.rawTx; // never rebroadcast these bytes again
+    expireSameNonceSiblings(registry, claim.id, claimNonce);
+  });
+  logger?.warn?.(`[presign] claim ${claim.id} released as ${SUPERSEDED_STATUS} (nonce ${claimNonce}): ${evidence} — the next rung may now be claimed; verify on-chain before deleting`);
+  return { ...claim, superseded: true, diagnostic: evidence };
 }
 
 export async function broadcastEligible({ client, lenderAddress, filePath, snapshots, updateRegistry, verifyBundle, isEligible, now = () => Date.now(), logger = console }) {
@@ -182,15 +257,28 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
 
   const rawTx = claim.rawTx;
   const txHash = claim.bundle.txHash;
+  // Sibling expiry dùng NONCE CỦA CLAIM, không phải `nonce` (pending nonce đọc ở
+  // đầu chu kỳ): khi claim đang nằm trong mempool, getTransactionCount(pending)
+  // đã tính chính nó ⇒ pending = claim.nonce + 1 (audit F4).
+  const claimNonce = Number(claim.bundle?.nonce);
   try {
     let receipt;
     if (claim.existing) {
       // Receipt-first: reconcile by the persisted hash before any rebroadcast.
-      try { receipt = await client.getTransactionReceipt({ hash: txHash }); } catch { /* not mined yet */ }
+      // `null` = không tìm thấy (bằng chứng); THROW = lookup lỗi (không bằng chứng).
+      let lookupFailed = false;
+      try { receipt = await client.getTransactionReceipt({ hash: txHash }); } catch { receipt = undefined; lookupFailed = true; }
+      const receiptMissing = !lookupFailed && receipt == null;
       if (!isMinedReceipt(receipt)) {
         receipt = undefined;
         const claimedAt = Date.parse(claim.bundle.broadcastingAt || "");
         if (Number.isFinite(claimedAt) && now() - claimedAt < RECOVERY_THRESHOLD_MS) return claim;
+        // Audit R1: nếu nonce đã bị tx khác tiêu thụ thì rebroadcast exact-bytes
+        // chỉ có thể thất bại ("nonce too low") trong khi claim durable chặn cả
+        // bậc thang — nhả theo bằng chứng TRƯỚC khi thử gửi lại.
+        if (receiptMissing && await nonceConsumedByAnotherTx(client, lenderAddress, claimNonce)) {
+          return await releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRegistry, now, logger, lenderAddress });
+        }
         // Recovery window elapsed: rebroadcast the EXACT same bytes (verified in phase 1).
         await client.sendRawTransaction({ serializedTransaction: rawTx });
         try { receipt = await client.getTransactionReceipt({ hash: txHash }); } catch { receipt = undefined; }
@@ -204,11 +292,6 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     if (!isMinedReceipt(receipt)) return claim;
 
     // ---- Phase 2: receipt-grounded terminal transition + sibling expiry ----
-    // Audit F4 (2026-09-24): sibling expiry phải dùng NONCE CỦA CLAIM, không phải
-    // `nonce` (pending nonce đọc ở đầu chu kỳ). Khi claim đang nằm trong mempool,
-    // `getTransactionCount(pending)` đã tính chính nó ⇒ pending = claim.nonce + 1,
-    // nên dùng `nonce` sẽ expire rung kế tiếp vừa được ký (rung hoàn toàn hợp lệ).
-    const claimNonce = Number(claim.bundle?.nonce);
     await updateRegistry(filePath, (registry) => {
       const bundle = registry.bundles[claim.id];
       if (!bundle || bundle.status !== "broadcasting" || bundle.txHash !== txHash) return;
@@ -226,12 +309,7 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       delete bundle.rawTx; // raw bytes are no longer needed once terminal
       logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.marketId ?? claim.bundle?.marketId ?? claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${Number.isFinite(claimNonce) ? claimNonce : nonce}`);
       // A mined receipt consumes THE CLAIM'S nonce: expire same-nonce siblings.
-      // A missing/invalid claim nonce expires nobody (fail closed).
-      if (Number.isFinite(claimNonce)) {
-        for (const [id, other] of Object.entries(registry.bundles)) {
-          if (id !== claim.id && Number(other.nonce) === claimNonce && other.status !== "submitted" && other.status !== "failed") other.status = "expired";
-        }
-      }
+      expireSameNonceSiblings(registry, claim.id, claimNonce);
     });
   } catch (err) {
     // RPC ambiguity deliberately retains the durable broadcasting claim.

@@ -159,6 +159,11 @@ export function registrySummary(bundle) {
     createdAt: bundle.createdAt,
     // Terminal retention/display timestamp (null while not terminal).
     terminalAt: bundle.terminalAt ?? null,
+    // Age of an unmined claim + the R1 release reason. The webapp renders the
+    // age so a claim that can never mine is visible instead of silently
+    // blocking the ladder.
+    broadcastingAt: bundle.broadcastingAt ?? null,
+    reason: bundle.reason ?? null,
     tiers: (bundle.withdrawals || []).map((w) => ({
       label: w.label,
       amountFormatted: w.amountFormatted,
