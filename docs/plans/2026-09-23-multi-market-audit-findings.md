@@ -112,6 +112,7 @@ Trước đây `JSON.stringify({ proxyRpcUrl: undefined })` bỏ hẳn key ⇒ `
 | H3 | Không có gate tĩnh bắt `no-undef` | ✅ Đã sửa | `oxlint` + `.oxlintrc.json` + `npm run lint`; probe chứng minh gate bắt đúng lỗi C1 (dưới) |
 | H4 | `presigned.json.lock` kẹt vĩnh viễn, không chẩn đoán/khôi phục | ✅ Đã sửa (hướng thận trọng) | `withFileLock` ghi `{pid,host,createdAt}` + `LOCK_STALE` (holder, age, lệnh `rm`); map 503 ở webapp; `__tests__/file-lock.test.mjs` (6) |
 | H5 | `Sign All` không preflight ví có trỏ vào proxy RPC ⇒ broadcast thật lên mainnet | ✅ Đã sửa | `morpho_proxyInfo` ở dispatcher + `assertProxyNetwork()` trước **cả hai** `sendTransaction`; test predicate + thứ tự gọi trong `__tests__/webapp-config.test.mjs` |
+| H6 | Ví chặn method tùy chỉnh ở client (Ambire, một số build MetaMask/Rabby): `method [morpho_proxyInfo] doesn't has corresponding handler` ⇒ user tưởng proxy sai dù RPC chưa hề được gọi | ✅ Đã sửa (2026-09-24) | Fallback `web3_clientVersion`: khớp `MorphoProxy/v1` ⇒ xác nhận proxy và cho ký (node thật không bao giờ trả giá trị này), khác ⇒ vẫn chặn; nhận diện `e.isAmbire`; nhánh riêng cho `wallet_addEthereumChain` bị chặn; `__tests__/webapp-config.test.mjs` (5 test mới) |
 
 ### H1 — chi tiết
 
