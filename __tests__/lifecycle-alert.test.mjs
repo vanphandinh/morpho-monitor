@@ -54,6 +54,29 @@ describe("buildLifecycleAlert (thuần)", () => {
     expect(conflict.message).toContain("fail closed");
   });
 
+  it("invalid (D2): nói rõ KHÔNG BAO GIỜ broadcast được + hành động xoá & ký lại", () => {
+    const alert = buildLifecycleAlert("invalid", { ...info, detail: "withdrawals[0]: assets 999 !== amountWei 50" });
+    expect(alert).not.toBe(null);
+    expect(alert.priority).toBe("5"); // cùng mức nghiêm trọng với stuck/conflict
+    expect(alert.message).toContain("KHÔNG BAO GIỜ");
+    expect(alert.message).toContain("amountWei");
+    expect(alert.message).toContain("ký lại");
+  });
+
+  it("config (D2): nói rõ bundle VẪN GIỮ NGUYÊN và cách tự hồi phục", () => {
+    const alert = buildLifecycleAlert("config", { ...info, detail: "bundle.lenderAddress !== config lender" });
+    expect(alert).not.toBe(null);
+    expect(alert.priority).toBe("4"); // cần xử lý nhưng tự hồi phục được
+    expect(alert.message).toContain("TẠM DỪNG");
+    expect(alert.message).toContain("LENDER_ADDRESS");
+    expect(alert.message).toContain("tự broadcast tiếp");
+  });
+
+  it("shouldSendLifecycleAlert nhận cả hai kind mới (không còn bị coi là kind lạ)", () => {
+    expect(shouldSendLifecycleAlert("invalid", "m@7", { lastSentAt: null })).toEqual({ send: true, reason: "ok" });
+    expect(shouldSendLifecycleAlert("config", "m@7", { lastSentAt: null })).toEqual({ send: true, reason: "ok" });
+  });
+
   it("kind lạ ⇒ null (caller không gửi gì)", () => {
     expect(buildLifecycleAlert("khong-ton-tai", info)).toBe(null);
   });

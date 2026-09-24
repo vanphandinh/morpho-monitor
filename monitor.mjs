@@ -61,6 +61,9 @@ async function broadcastEligible(snapshots) {
  * soát tay (`stuck`), hay xung đột nonce (`conflict`). Kết quả thông tin
  * (idle/terminal-only) không báo gì.
  */
+/** Kind của `problems` mà broadcastEligible có thể trả (audit D2). */
+const LIFECYCLE_PROBLEM_KINDS = new Set(["config", "invalid"]);
+
 async function alertOnLifecycle(result) {
   if (!result) return;
   const marketId = result.marketId ?? result.bundle?.marketId ?? null;
@@ -69,6 +72,19 @@ async function alertOnLifecycle(result) {
   if (result.superseded) await lifecycleAlerts.notify("superseded", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
   else if (result.conflict) await lifecycleAlerts.notify("conflict", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
   else if (result.stuck) await lifecycleAlerts.notify("stuck", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
+
+  // D2: vấn đề verify của chu kỳ (không loại trừ claim — một chu kỳ có thể vừa claim
+  // một rung vừa phát hiện rung khác hỏng/lệch cấu hình). Kind lạ bị bỏ qua để kênh
+  // cảnh báo không bao giờ tự bịa thông báo.
+  for (const problem of result.problems ?? []) {
+    if (!LIFECYCLE_PROBLEM_KINDS.has(problem?.kind)) continue;
+    await lifecycleAlerts.notify(problem.kind, {
+      id: problem.id,
+      marketId: problem.marketId,
+      nonce: problem.nonce,
+      detail: problem.error,
+    });
+  }
 }
 
 async function checkMarkets(ids = marketIds) {

@@ -7,6 +7,10 @@
  * (`conflict`). Trước đây các tình huống này chỉ nằm trong log mỗi chu kỳ, nên
  * người vận hành không biết monitor đã ngừng broadcast.
  *
+ * Audit vòng 2 (D2) thêm hai kind nữa, cũng là "bậc thang không tiến":
+ *   - `invalid`: verify bundle thất bại (lỗi thuộc nội dung) ⇒ không bao giờ broadcast.
+ *   - `config`:  verify thất bại vì lệch .env ⇒ TẠM DỪNG, bundle vẫn còn nguyên.
+ *
  * Vì một claim kẹt lặp lại mỗi chu kỳ (mặc định 30s), phải có cooldown theo
  * (kind, id). Mọi logic ở đây là hàm thuần hoặc nhận I/O inject được: monitor.mjs
  * có side effect ở module-level (loadMarkets/setInterval) nên không import được
@@ -24,6 +28,10 @@ const ALERT_KINDS = {
   superseded: { title: "Morpho: presigned tx bị thay thế", tags: "warning,arrows_counterclockwise", priority: "4" },
   stuck: { title: "Morpho: presign cần xử lý TAY", tags: "rotating_light,warning", priority: "5" },
   conflict: { title: "Morpho: xung đột nonce presign", tags: "rotating_light,warning", priority: "5" },
+  // Audit vòng 2 (D2): bundle verify hỏng — không bao giờ broadcast được, phải ký lại.
+  invalid: { title: "Morpho: presigned bundle KHÔNG hợp lệ", tags: "rotating_light,x", priority: "5" },
+  // Lệch .env: bundle vẫn tốt, monitor tạm dừng rung này cho tới khi sửa cấu hình.
+  config: { title: "Morpho: cấu hình lệch bundle đã ký", tags: "warning,wrench", priority: "4" },
 };
 
 /** Rút gọn id/address cho thông báo đọc trên điện thoại. */
@@ -71,6 +79,34 @@ export function buildLifecycleAlert(kind, { id, marketId, nonce, tier, detail } 
         detail ? `Bằng chứng: ${detail}` : null,
         "",
         "Monitor đã nhả claim nên bậc thang tiến tiếp được. Muốn rút tier này: mở webapp → lấy nonce mới → ký lại.",
+      ].filter((line) => line !== null).join("\n"),
+    };
+  }
+  if (kind === "invalid") {
+    return {
+      ...spec,
+      message: [
+        "**Bundle KHÔNG hợp lệ** — verify calldata thất bại nên bundle này sẽ KHÔNG BAO GIỜ được broadcast.",
+        "",
+        header,
+        "",
+        detail ? `Lỗi: ${detail}` : null,
+        "",
+        "Hành động: mở webapp → xoá rung này → lấy nonce mới và ký lại tier bạn muốn rút.",
+      ].filter((line) => line !== null).join("\n"),
+    };
+  }
+  if (kind === "config") {
+    return {
+      ...spec,
+      message: [
+        "**Cấu hình lệch** — bundle đã ký không khớp .env hiện tại, monitor TẠM DỪNG rung này.",
+        "",
+        header,
+        "",
+        detail ? `Chi tiết: ${detail}` : null,
+        "",
+        "Bundle vẫn được giữ nguyên (không bị đánh hỏng). Sửa .env cho khớp lúc ký (LENDER_ADDRESS / MORPHO_BLUE_ADDRESS) rồi khởi động lại — monitor sẽ tự broadcast tiếp.",
       ].filter((line) => line !== null).join("\n"),
     };
   }
