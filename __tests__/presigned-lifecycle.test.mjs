@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { keccak256, stringToHex, TransactionReceiptNotFoundError } from "viem";
-import { broadcastEligible, selectBestWithdrawal, RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
+import { broadcastEligible, selectBestWithdrawal, RECOVERY_THRESHOLD_MS, EVIDENCE_CONFIRMATIONS } from "../presigned-broadcast.mjs";
 import { updateRegistry, bundleKey, ACTIVE_CLAIM_CONFLICT } from "../presigned-store.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -395,10 +395,18 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     const tx = stringToHex("dead-claim");
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx), ["b@8"]: nextRung() } });
 
-    const blockTags = [];
+    const pendingTags = [];
+    const evidenceBlocks = [];
     const send = vi.fn(async () => "0xaccepted");
+    // Một client = MỘT node (production: transport sticky bật cho monitor).
     const client = {
-      getTransactionCount: async ({ blockTag }) => { blockTags.push(blockTag); return 8; },
+      // Phase 1 đọc nonce pending; bằng chứng đọc ở block đã lùi, KHÔNG phải "latest".
+      getTransactionCount: async ({ blockTag, blockNumber }) => {
+        if (blockTag) { pendingTags.push(blockTag); return 8; }
+        evidenceBlocks.push(Number(blockNumber));
+        return 8;
+      },
+      getBlockNumber: async () => 100n,
       getTransactionReceipt: async () => receiptNotFound(), // viem thật: ném, không trả null
       sendRawTransaction: send,
       waitForTransactionReceipt: async () => minedReceipt(),
@@ -409,8 +417,11 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     expect(c1.id).toBe("a@7");
     expect(c1.bundle?.nonce).toBe(7);
     expect(typeof c1.diagnostic).toBe("string");
-    // Bằng chứng phải dùng nonce ĐÃ MINE ("latest"), không phải pending.
-    expect(blockTags).toContain("latest");
+    // Contract cho người vận hành: bằng chứng ghi rõ block đã dùng để đọc nonce.
+    expect(c1.diagnostic).toContain(`block ${100 - EVIDENCE_CONFIRMATIONS}`);
+    // Phase 1 chỉ đọc nonce pending; bằng chứng KHÔNG đọc "latest" mà neo ở head-2.
+    expect(pendingTags).toEqual(["pending"]);
+    expect(evidenceBlocks).toEqual([100 - EVIDENCE_CONFIRMATIONS]);
     // Nonce đã tiêu thụ ⇒ không rebroadcast vô ích.
     expect(send).not.toHaveBeenCalled();
 
@@ -440,6 +451,7 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx) } });
     const send = vi.fn();
     const client = {
+      getBlockNumber: async () => 100n,
       getTransactionCount: async () => 8,
       getTransactionReceipt: async () => null, // transport tự viết: null = không có receipt
       sendRawTransaction: send,
@@ -455,34 +467,43 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     const filePath = tempRegistryPath();
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(stringToHex("rpc-error")) } });
     const blockTags = [];
+    const getBlockNumber = vi.fn(async () => 100n);
     const client = {
-      // latest > nonce — nhưng KHÔNG được dùng vì lần đọc receipt đã lỗi.
+      // nonce > claim nonce — nhưng KHÔNG được dùng vì lần đọc receipt đã lỗi.
       getTransactionCount: async ({ blockTag }) => { blockTags.push(blockTag); return 99; },
+      getBlockNumber,
       getTransactionReceipt: async () => { throw new Error("socket hang up"); },
       sendRawTransaction: vi.fn(async () => { throw new Error("nonce too low"); }),
     };
     vi.spyOn(console, "error").mockImplementation(() => {});
     const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     expect(claim.stuck).toBe(false);
-    expect(blockTags).toEqual(["pending"]); // không có lần đọc "latest" nào
+    expect(blockTags).toEqual(["pending"]); // không có lần đọc nonce nào khác
+    expect(getBlockNumber).not.toHaveBeenCalled(); // không thu thập bằng chứng gì
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(stored.bundles["a@7"].status).toBe("broadcasting");
   });
 
-  it("(c) receipt NOT FOUND theo hình dạng viem nhưng nonce CHƯA bị tiêu thụ (latest == nonce) ⇒ giữ claim, vẫn rebroadcast", async () => {
+  it("(c) receipt NOT FOUND theo hình dạng viem nhưng nonce CHƯA bị tiêu thụ (== nonce) ⇒ giữ claim, vẫn rebroadcast", async () => {
     const filePath = tempRegistryPath();
     const tx = stringToHex("still-mine");
     seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx) } });
-    const blockTags = [];
+    const pendingTags = [];
+    const evidenceBlocks = [];
     const send = vi.fn(async () => "0xrebroadcast");
     const client = {
-      getTransactionCount: async ({ blockTag }) => { blockTags.push(blockTag); return 7; },
+      getTransactionCount: async ({ blockTag, blockNumber }) => {
+        if (blockTag) { pendingTags.push(blockTag); return 7; }
+        evidenceBlocks.push(Number(blockNumber));
+        return 7;
+      },
+      getBlockNumber: async () => 100n,
       getTransactionReceipt: async () => receiptNotFound(),
       sendRawTransaction: send,
     };
     const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     expect(claim.superseded).toBeUndefined();
-    expect(blockTags).toContain("latest"); // đã thử thu thập bằng chứng...
+    expect(evidenceBlocks).toEqual([100 - EVIDENCE_CONFIRMATIONS]); // đã thử thu thập bằng chứng, có neo block...
     expect(send).toHaveBeenCalledWith({ serializedTransaction: tx }); // ...nhưng vẫn đi đường rebroadcast
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(stored.bundles["a@7"].status).toBe("broadcasting");
@@ -511,6 +532,30 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(stored.bundles["c@7"].status).toBe("expired");
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("(f) node tụt hậu: nonce ở block đã lùi CHƯA vượt claim (dù góc nhìn \"latest\" đã vượt) ⇒ KHÔNG nhả", async () => {
+    // Audit vòng 2: đây là ca mà hai góc nhìn lệch node gây nhả SAI. Code cũ đọc
+    // nonce bằng blockTag "latest" ⇒ client trả 8 ⇒ nhả superseded, trong khi thực
+    // tế (ở độ sâu 2 block) nonce vẫn là 7 — tx của claim vẫn có thể mine.
+    const filePath = tempRegistryPath();
+    const tx = stringToHex("lagging-node");
+    seedRegistry(filePath, { version: 3, bundles: { ["a@7"]: liveClaim(tx) } });
+    const send = vi.fn(async () => "0xrebroadcast");
+    const client = {
+      getBlockNumber: async () => 100n,
+      getTransactionCount: async ({ blockTag }) => {
+        if (blockTag === "latest") return 8; // góc nhìn "nhanh" — nguồn của nhả nhầm
+        return 7; // at block 98: nonce CHƯA vượt claim
+      },
+      getTransactionReceipt: async () => receiptNotFound(),
+      sendRawTransaction: send,
+    };
+    const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    expect(claim.superseded).toBeUndefined();
+    expect(send).toHaveBeenCalledWith({ serializedTransaction: tx });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles["a@7"].status).toBe("broadcasting");
   });
 });
 

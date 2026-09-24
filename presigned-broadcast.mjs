@@ -23,6 +23,13 @@ import { isConfigVerifyError } from "./presign-verify.mjs";
 export const RECEIPT_TIMEOUT_MS = 120_000;
 export const RECOVERY_THRESHOLD_MS = 180_000;
 
+/**
+ * Số block phải lùi trước khi đọc nonce làm bằng chứng nhả claim (audit vòng 2).
+ * 2 block ≈ 24s — không đáng kể so với RECOVERY_THRESHOLD_MS, nhưng loại được ca
+ * kết luận bị lật bởi reorg ở đỉnh chuỗi.
+ */
+export const EVIDENCE_CONFIRMATIONS = 2;
+
 export function selectBestWithdrawal(withdrawals, snapshot) {
   const liquidity = snapshot.market.liquidity;
   const estimatedAssets = (w) =>
@@ -92,24 +99,41 @@ function expireSameNonceSiblings(registry, claimId, claimNonce) {
 }
 
 /**
- * Evidence that a durable claim can NEVER mine: the account's MINED nonce
- * (blockTag "latest" — a mempool tx is not counted) has moved past the claim's
- * nonce while no receipt exists for the claim's own hash.
+ * Evidence that a durable claim can NEVER mine: the account's MINED nonce has
+ * moved past the claim's nonce while no receipt exists for the claim's own hash.
  *
  * Mining cannot skip a nonce (a tx is only valid when tx.nonce === account.nonce),
  * so every nonce below that count is mined — and with our receipt missing, the
  * slot belongs to another transaction. `pending` is deliberately NOT used: it
  * counts the claim's own broadcast, which is exactly what made F4 ambiguous.
  *
- * Any doubt (non-finite nonce, lookup error) returns false — fail closed.
+ * Audit vòng 2 (lệch node): nonce được đọc ở block đã lùi `confirmations`
+ * (`getBlockNumber` → `getTransactionCount({ blockNumber })`), và cả ba lần đọc
+ * phải rơi vào CÙNG một node (transport sticky ở monitor). Nếu `getTransactionCount(latest)`
+ * rơi vào node khác với lần đọc receipt, hai góc nhìn có thể lệch nhau: node chậm
+ * chưa có block chứa tx của claim, node nhanh đã thấy nonce nhảy — và kết luận
+ * "nonce bị tx KHÁC tiêu thụ" sẽ SAI khi tx của claim chính là cái làm nonce nhảy
+ * (đo thực tế: cặp slot liền kề trong vòng xoay lệch head nhau 2.5% số mẫu).
+ * Neo ở `head - confirmations` cũng loại ca kết luận bị lật bởi reorg đỉnh chuỗi.
+ *
+ * Any doubt (non-finite nonce/head, lookup error) ⇒ KHÔNG có bằng chứng — fail closed.
+ *
+ * @returns {Promise<{ consumed: boolean, anchorBlock: number|null }>}
  */
-async function nonceConsumedByAnotherTx(client, lenderAddress, claimNonce) {
-  if (!Number.isFinite(claimNonce)) return false;
+async function nonceConsumedByAnotherTx(client, lenderAddress, claimNonce, confirmations = EVIDENCE_CONFIRMATIONS) {
+  if (!Number.isFinite(claimNonce)) return { consumed: false, anchorBlock: null };
   try {
-    const mined = await client.getTransactionCount({ address: lenderAddress, blockTag: "latest" });
-    return Number(mined) > claimNonce;
+    const head = Number(await client.getBlockNumber());
+    if (!Number.isFinite(head)) return { consumed: false, anchorBlock: null };
+    // Neo ở block đã lùi `confirmations` block: một tx tiêu thụ nonce ở độ sâu đó
+    // thì reorg không lật lại được kết luận. Cửa sổ lùi cũng không tốn gì so với
+    // RECOVERY_THRESHOLD_MS (180s).
+    const anchorBlock = head - confirmations;
+    if (anchorBlock < 0) return { consumed: false, anchorBlock: null };
+    const mined = await client.getTransactionCount({ address: lenderAddress, blockNumber: BigInt(anchorBlock) });
+    return { consumed: Number(mined) > claimNonce, anchorBlock };
   } catch {
-    return false;
+    return { consumed: false, anchorBlock: null };
   }
 }
 
@@ -140,8 +164,11 @@ function reconcileBroadcasting(id, bundle) {
  * siblings exactly like a mined receipt would. It is not an active claim, so the
  * ladder may claim the next rung on the next cycle and the webapp may delete it.
  */
-async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRegistry, now, logger, lenderAddress }) {
-  const evidence = `receipt for ${txHash.slice(0, 10)}… not found while the mined nonce advanced past ${claimNonce} for ${String(lenderAddress).slice(0, 10)}…`;
+async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRegistry, now, logger, lenderAddress, anchorBlock }) {
+  // Số block neo nằm trong bằng chứng để người vận hành kiểm tay được đúng block
+  // đã tiêu thụ nonce (audit vòng 2).
+  const anchor = Number.isFinite(anchorBlock) ? ` (mined nonce read at block ${anchorBlock})` : "";
+  const evidence = `receipt for ${txHash.slice(0, 10)}… not found while the mined nonce advanced past ${claimNonce} for ${String(lenderAddress).slice(0, 10)}…${anchor}`;
   await updateRegistry(filePath, (registry) => {
     const bundle = registry.bundles[claim.id];
     if (!bundle || bundle.status !== "broadcasting" || bundle.txHash !== txHash) return;
@@ -326,8 +353,11 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
         // Audit R1: nếu nonce đã bị tx khác tiêu thụ thì rebroadcast exact-bytes
         // chỉ có thể thất bại ("nonce too low") trong khi claim durable chặn cả
         // bậc thang — nhả theo bằng chứng TRƯỚC khi thử gửi lại.
-        if (receiptMissing && await nonceConsumedByAnotherTx(client, lenderAddress, claimNonce)) {
-          return await releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRegistry, now, logger, lenderAddress });
+        if (receiptMissing) {
+          const evidence = await nonceConsumedByAnotherTx(client, lenderAddress, claimNonce);
+          if (evidence.consumed) {
+            return await releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRegistry, now, logger, lenderAddress, anchorBlock: evidence.anchorBlock });
+          }
         }
         // Recovery window elapsed: rebroadcast the EXACT same bytes (verified in phase 1).
         await client.sendRawTransaction({ serializedTransaction: rawTx });
