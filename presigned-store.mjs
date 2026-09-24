@@ -12,8 +12,15 @@ import { withFileLock } from "./shared.mjs";
  */
 export const REGISTRY_VERSION = 3;
 
+/**
+ * Trạng thái terminal: nonce của record đã bị tiêu thụ VĨNH VIỄN (kể cả sau khi
+ * rawTx bị xoá). Đây là nguồn sự thật duy nhất — vừa cho lifecycle broadcast,
+ * vừa cho watermark `consumedNonce` bên dưới.
+ */
+export const TERMINAL_STATUSES = new Set(["submitted", "failed", "superseded"]);
+
 export function emptyRegistry() {
-  return { version: REGISTRY_VERSION, bundles: {} };
+  return { version: REGISTRY_VERSION, bundles: {}, consumedNonce: -1 };
 }
 
 /** Composite registry key: `marketId@nonce` (marketId lowercase). */
@@ -26,6 +33,38 @@ export function parseBundleKey(key) {
   const idx = String(key).lastIndexOf("@");
   if (idx <= 0) return { marketId: String(key), nonce: NaN };
   return { marketId: String(key).slice(0, idx), nonce: Number(String(key).slice(idx + 1)) };
+}
+
+/** Nonce terminal cao nhất còn thấy trong record — có thể MẤT khi user xoá record. */
+function maxTerminalNonce(bundles) {
+  let max = -1;
+  for (const bundle of Object.values(bundles ?? {})) {
+    if (!TERMINAL_STATUSES.has(bundle?.status)) continue;
+    const value = Number(bundle.nonce);
+    if (Number.isFinite(value) && value > max) max = value;
+  }
+  return max;
+}
+
+/**
+ * Sàn "nonce đã tiêu thụ" của registry (audit A.2). Vì nonce là đơn điệu theo
+ * tài khoản, MỌI nonce ≤ sàn chắc chắn đã bị tiêu thụ ⇒ bất kỳ chữ ký nào ở
+ * nonce đó vĩnh viễn không thể mine, dù nó còn nằm trong registry hay không.
+ *
+ * Sàn = MAX của hai nguồn:
+ *  - field `consumedNonce` (đơn điệu — `updateRegistry` không cho nó lùi);
+ *  - record terminal còn trên đĩa, để registry cũ / file bị process bản cũ ghi
+ *    đè vẫn được bảo vệ mà không cần migrate tay.
+ *
+ * Vì sao phải có field: trước đây ký ức này CHỈ tồn tại dưới dạng record, mà
+ * `PROTECTED_STATUSES` cố ý cho user xoá record terminal/expired (dọn lịch sử).
+ * Xoá record là mất mốc ⇒ một rung `pending` ở nonce đã tiêu thụ có thể được
+ * claim lại, gửi lại chữ ký đã chết, rồi fail `nonce too low` và thành claim
+ * kẹt ~180s — đúng lớp triệu chứng R1.
+ */
+export function consumedWatermark(registry) {
+  const field = Number(registry?.consumedNonce);
+  return Math.max(Number.isFinite(field) ? field : -1, maxTerminalNonce(registry?.bundles));
 }
 
 /**
@@ -44,7 +83,12 @@ function migrateRegistry(parsed) {
       if (!bundle || typeof bundle !== "object") continue;
       bundles[key] = bundle.marketId != null ? bundle : { ...bundle, marketId: String(parseBundleKey(key).marketId).toLowerCase() };
     }
-    return { version: REGISTRY_VERSION, bundles };
+    // `consumedNonce` là additive: KHÔNG bump version (một process bản cũ đang
+    // chạy phải đọc được file này trong lúc rolling deploy). Thiếu field ⇒ suy
+    // ra từ record terminal, và lần write kế tiếp sẽ ghi lại mốc đã chuẩn hoá.
+    const registry = { version: REGISTRY_VERSION, bundles };
+    registry.consumedNonce = consumedWatermark({ consumedNonce: parsed.consumedNonce, bundles });
+    return registry;
   }
   throw new Error("Presigned registry must use version 3 (or legacy version 2) with a bundles object");
 }
@@ -73,6 +117,9 @@ export function writeRegistry(filePath, registry) {
  * (`submitted`/`failed`) are history: their nonce is already consumed and
  * their rawTx deleted, so the user must be able to delete or replace them
  * (otherwise the registry grows forever with no retention policy — M1).
+ *
+ * Audit A.2: việc xoá record giờ KHÔNG còn làm mất ký ức "nonce đã tiêu thụ" —
+ * mốc đó nằm ở field `consumedNonce` đơn điệu (xem consumedWatermark).
  */
 const PROTECTED_STATUSES = new Set(["broadcasting"]);
 export const ACTIVE_CLAIM_CONFLICT = "ACTIVE_CLAIM_CONFLICT";
@@ -122,6 +169,9 @@ export async function updateRegistry(filePath, mutate, opts = {}) {
   const origin = opts.origin === "user" ? "user" : "monitor";
   return withFileLock(`${filePath}.lock`, async () => {
     const registry = readRegistry(filePath);
+    // A.2 — sàn bất biến, lấy TRƯỚC khi mutate: mọi nonce ≤ sàn đã tiêu thụ và
+    // không mutation nào (kể cả xoá record của user) được phép hạ nó xuống.
+    const consumedFloor = consumedWatermark(registry);
     if (origin === "user") {
       const before = activeClaimSignature(registry);
       try {
@@ -131,6 +181,10 @@ export async function updateRegistry(filePath, mutate, opts = {}) {
           err.code = ACTIVE_CLAIM_CONFLICT;
           throw err;
         }
+        // Tự TIẾN khi mutation đánh dấu terminal, tự CHẶN LÙI khi xoá record:
+        // một dòng này đủ cho cả hai, vì `consumedFloor` lấy từ trạng thái trước
+        // khi mutate.
+        registry.consumedNonce = Math.max(consumedFloor, consumedWatermark(registry));
         writeRegistry(filePath, registry);
         return result;
       } catch (err) {
@@ -145,6 +199,7 @@ export async function updateRegistry(filePath, mutate, opts = {}) {
       }
     }
     const result = await mutate(registry);
+    registry.consumedNonce = Math.max(consumedFloor, consumedWatermark(registry));
     writeRegistry(filePath, registry);
     return result;
   });

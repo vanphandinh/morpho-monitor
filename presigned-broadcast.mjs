@@ -1,5 +1,5 @@
 import { keccak256 } from "viem";
-import { parseBundleKey, marketBundles } from "./presigned-store.mjs";
+import { parseBundleKey, marketBundles, consumedWatermark, TERMINAL_STATUSES } from "./presigned-store.mjs";
 import { isConfigVerifyError } from "./presign-verify.mjs";
 
 /**
@@ -50,9 +50,10 @@ export function selectBestWithdrawal(withdrawals, snapshot) {
  *
  * `superseded` (audit R1) is terminal too: the nonce was consumed by a DIFFERENT
  * transaction, so these bytes can never mine and their nonce stays consumed
- * forever. Like the others it is inert history the user may delete.
+ * forever. Like the others it is inert history the user may delete —
+ * `TERMINAL_STATUSES` sống ở presigned-store.mjs cùng với watermark
+ * `consumedNonce`, nên xoá record không làm mất ký ức "nonce đã tiêu thụ" (A.2).
  */
-const TERMINAL_STATUSES = new Set(["submitted", "failed", "superseded"]);
 export const SUPERSEDED_STATUS = "superseded";
 export const SUPERSEDED_REASON = "nonce consumed by another transaction — this presigned tx can never mine";
 
@@ -201,12 +202,11 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
 
     // A terminal record consumed its nonce forever (submitted OR failed) —
     // even after its rawTx was deleted. Every pending bundle at or below the
-    // highest terminal nonce is therefore dead, never claimable.
-    let consumedNonce = -1;
-    for (const [, bundle] of entries) {
-      const value = Number(bundle.nonce);
-      if (TERMINAL_STATUSES.has(bundle.status) && Number.isFinite(value)) consumedNonce = Math.max(consumedNonce, value);
-    }
+    // highest terminal nonce is therefore dead, never claimable. Mốc đọc từ
+    // registry (field đơn điệu + record terminal), nên user dọn record history
+    // KHÔNG làm mất nó (audit A.2) — trước đây mốc được tính lại từ record và
+    // có thể biến mất cùng record.
+    const consumedNonce = consumedWatermark(registry);
     for (const [, bundle] of entries) {
       if (bundle.status !== "pending") continue;
       const value = Number(bundle.nonce);
