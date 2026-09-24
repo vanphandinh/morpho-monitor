@@ -201,3 +201,24 @@ describe("monitor.mjs — wiring cảnh báo vòng đời (D2)", () => {
     expect(src).toMatch(/alertOnLifecycle\(await broadcastEligible\(/);
   });
 });
+
+/**
+ * D6 (audit vòng 3): quyết định "cùng node" nằm ở MỘT chỗ — client của monitor.
+ * Nếu wiring này bị gỡ, bằng chứng nhả claim lại rơi về hai node khác nhau và
+ * `EVIDENCE_CONFIRMATIONS` chỉ còn che được reorg, không che được lệch head.
+ */
+describe("monitor.mjs — chọn endpoint RPC (D6)", () => {
+  const src = fs.readFileSync(new URL("../monitor.mjs", import.meta.url), "utf8");
+
+  it("client của monitor bật stickyMs để chuỗi đọc liên tiếp nhìn cùng một node", () => {
+    expect(src).toMatch(/createRobustPublicClient\(RPC_URLS, \{ stickyMs: 2_000 \}\)/);
+  });
+
+  it("proxy/CLI KHÔNG bật sticky (giữ blast radius nhỏ — quyết định có chủ ý)", () => {
+    // Bật sticky cho proxy là một thay đổi hành vi cho MỌI ví đi qua proxy: nếu
+    // muốn làm, hãy làm như một quyết định có ý thức (test này sẽ đỏ trước).
+    for (const file of ["../proxy-rpc.mjs", "../index.mjs"]) {
+      expect(fs.readFileSync(new URL(file, import.meta.url), "utf8")).not.toContain("stickyMs");
+    }
+  });
+});
