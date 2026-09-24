@@ -86,7 +86,7 @@ export const SESSION_EXPIRY_MS = envNum("SESSION_EXPIRY_HOURS", 24) * 60 * 60 * 
 export const CHALLENGE_EXPIRY_MS = envNum("CHALLENGE_EXPIRY_MINUTES", 5) * 60 * 1000;
 
 // ---- Presigned Bundle ----
-// Registry v2: { version: 2, bundles: { [marketId]: bundle } }
+// Registry v3 (2026-09-24): { version: 3, bundles: { ["marketId@nonce"]: bundle } } — đọc được cả v2.
 export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
 export const PROXY_PORT = envNum("PROXY_PORT", 8545);
 // Bind address for proxy — mặc định localhost. Set PROXY_HOST=0.0.0.0 cho MetaMask mobile / VPS.

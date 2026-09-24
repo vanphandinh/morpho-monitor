@@ -184,4 +184,31 @@ describe("production WSS watcher", () => {
     expect(() => staleCallback()).not.toThrow();
     expect(watcher.activeUrl).toBeNull();
   });
+
+  it("rotation relative to the FAILED url: giữa fail → skip sang url kế, không thử lại url chết (audit 2026-09-24)", async () => {
+    const attempts = [];
+    const errorCallbacks = [];
+    const created = [];
+    const watcher = createWssWatcher({
+      ...baseArgs, urls: ["u1", "u2", "u3"],
+      connect: async (url) => {
+        attempts.push(url);
+        if (url === "u1") throw new Error("connect refused");
+        const watch = vi.fn((_n, _a, _onLogs, onError) => { errorCallbacks.push(onError); return vi.fn(); });
+        const entry = viemShapedConnection(url, watch);
+        created.push(entry);
+        return entry.connection;
+      },
+    });
+    await watcher.start();
+    expect(watcher.activeUrl).toBe("u2"); // u1 connect fail → u2
+    expect(attempts).toEqual(["u1", "u2"]);
+    errorCallbacks[0](); // runtime failure trên u2
+    await vi.waitFor(() => expect(watcher.activeUrl).toBe("u3"));
+    // Trước fix: urls.slice(1) = [u2, u3] ⇒ thử lại u2 (đã chết) trước.
+    expect(attempts).toEqual(["u1", "u2", "u3"]);
+    watcher.close();
+    await vi.waitFor(() => expect(created[0].closeSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(created[1].closeSpy).toHaveBeenCalledTimes(1));
+  });
 });

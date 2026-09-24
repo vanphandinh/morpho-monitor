@@ -22,7 +22,7 @@ import {
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
 import { createRequestHandler } from "./webapp-handler.mjs";
-import { buildWebappConfig, injectWebappConfig } from "./webapp-config.mjs";
+import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig } from "./webapp-config.mjs";
 
 // Global error handlers — prevent crashes from unhandled rejections
 addGlobalErrorHandlers("webapp-server");
@@ -54,6 +54,18 @@ try {
   process.exit(1);
 }
 htmlContent = injectWebappConfig(htmlContent, webappConfig);
+
+// Fail closed khi thiếu WEBAPP_PASSWORD (audit 2026-09-24 P1): không password
+// thì MỌI request (kể cả DELETE bundle đã ký) đều được coi là đã xác thực.
+// Dev local chủ đích tắt bằng WEBAPP_ALLOW_INSECURE=1 (kèm cảnh báo đỏ).
+let authMode;
+try {
+  authMode = assertWebappAuthConfig();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+if (authMode.warning) console.warn(authMode.warning);
 
 // ---- SSL/TLS setup ----
 let sslOptions = null;

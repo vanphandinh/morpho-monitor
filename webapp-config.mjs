@@ -7,7 +7,7 @@
  * nhận `proxyRpcUrl: undefined` rồi rơi về `http://127.0.0.1:8545` — trên VPS
  * qua HTTPS địa chỉ đó trỏ về máy của user, không phải server.
  */
-import { LENDER_ADDRESS, PROXY_RPC_URL, RPC_URLS } from "./shared.mjs";
+import { LENDER_ADDRESS, PROXY_RPC_URL, RPC_URLS, WEBAPP_PASSWORD } from "./shared.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -68,4 +68,30 @@ export function injectWebappConfig(html, config, { marker = "</head>" } = {}) {
   }
   const payload = JSON.stringify(config).replace(/</g, "\\u003c");
   return html.replace(marker, `<script>window.MORPHO_CONFIG=${payload}</script>${marker}`);
+}
+
+/**
+ * Fail closed khi WEBAPP_PASSWORD trống (audit 2026-09-24 P1): không password
+ * thì MỌI request đều được coi là đã xác thực — kể cả DELETE /api/presign
+ * (xóa bundle đã ký) — trong khi docker-compose publish webapp ra ngoài.
+ * Dev local có thể chủ đích tắt bằng WEBAPP_ALLOW_INSECURE=1.
+ */
+export function assertWebappAuthConfig({
+  password = WEBAPP_PASSWORD,
+  allowInsecure = /^(1|true|yes)$/i.test(process.env.WEBAPP_ALLOW_INSECURE || ""),
+} = {}) {
+  if (password) return { secure: true, warning: null };
+  if (allowInsecure) {
+    return {
+      secure: false,
+      warning:
+        "⚠️  WEBAPP_PASSWORD trống — API webapp MỞ hoàn toàn (dev mode): mọi request đều được coi là đã xác thực." +
+        "\n   Chỉ dùng cho local; trên VPS/public phải đặt WEBAPP_PASSWORD trong .env.",
+    };
+  }
+  throw new Error(
+    "❌ WEBAPP_PASSWORD trống — webapp sẽ MỞ hoàn toàn (mọi request đều được coi là đã xác thực, kể cả DELETE bundle đã ký).\n" +
+    "   → Sản xuất: đặt WEBAPP_PASSWORD=<mật khẩu mạnh> trong .env rồi khởi động lại webapp.\n" +
+    "   → Dev local: set WEBAPP_ALLOW_INSECURE=1 để chạy không cần mật khẩu (KHÔNG dùng trên VPS)."
+  );
 }

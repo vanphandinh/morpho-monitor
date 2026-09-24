@@ -544,7 +544,9 @@ describe("ntfy drain notification", () => {
 const NTFY_SERVER = process.env.NTFY_SERVER || "https://ntfy.sh";
 const TEST_TOPIC = `morpho-test-${crypto.randomBytes(4).toString("hex")}`;
 
-describe("ntfy live integration", () => {
+// Live tests gửi request THẬT đến ntfy.sh — chỉ chạy khi NTFY_LIVE=1.
+// `npm run check`/`npm test` phải hermetic (không network) nên nhóm này skip mặc định.
+describe.skipIf(process.env.NTFY_LIVE !== "1")("ntfy live integration", () => {
   // In ra topic để dev có thể subscribe test trên app ntfy
   console.log(`\n📱 Subscribe ntfy topic để xem kết quả test:`);
   console.log(`   ${NTFY_SERVER}/${TEST_TOPIC}\n`);

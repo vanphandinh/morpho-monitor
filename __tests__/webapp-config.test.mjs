@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildWebappConfig, injectWebappConfig } from "../webapp-config.mjs";
+import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig } from "../webapp-config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
@@ -86,6 +86,26 @@ describe("webapp.html hygiene (M2)", () => {
     expect(html).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
     expect(html).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
     expect(html).toMatch(/https:\/\/rpc\.ankr\.com\/eth"/); // endpoint công khai, không key
+  });
+});
+
+describe("assertWebappAuthConfig (P1, 2026-09-24)", () => {
+  it("thiếu WEBAPP_PASSWORD mà không override → fail-fast, message có đủ 2 hướng dẫn", () => {
+    let err = null;
+    try { assertWebappAuthConfig({ password: "", allowInsecure: false }); } catch (e) { err = e; }
+    expect(err).not.toBeNull();
+    expect(err.message).toContain("WEBAPP_PASSWORD");
+    expect(err.message).toContain("WEBAPP_ALLOW_INSECURE=1");
+  });
+
+  it("WEBAPP_ALLOW_INSECURE=1 → dev mode có chủ đích, kèm cảnh báo", () => {
+    const mode = assertWebappAuthConfig({ password: "", allowInsecure: true });
+    expect(mode.secure).toBe(false);
+    expect(mode.warning).toMatch(/MỞ hoàn toàn/);
+  });
+
+  it("có WEBAPP_PASSWORD → secure, không cảnh báo", () => {
+    expect(assertWebappAuthConfig({ password: "s3cret" })).toEqual({ secure: true, warning: null });
   });
 });
 

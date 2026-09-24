@@ -58,9 +58,9 @@ function writeRegistry(value) {
   return file;
 }
 
-function runCli(args) {
+function runCli(args, { cwd = projectRoot, env = process.env } = {}) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [cliPath, ...args], { cwd: projectRoot, timeout: 30_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [cliPath, ...args], { cwd, env, timeout: 30_000 }, (err, stdout, stderr) => {
       resolve({ code: err?.code ?? 0, stdout, stderr });
     });
   });
@@ -153,5 +153,13 @@ describe("verify-presigned CLI — bare bundle back-compat", () => {
     const { code, stderr } = await runCli([path.join(os.tmpdir(), "nope-" + keccak256("0x00") + ".json")]);
     expect(code).toBe(1);
     expect(stderr).toMatch(/không tồn tại/);
+  });
+
+  it("default path là ./data/presigned.json (nhất quán PRESIGNED_FILE)", async () => {
+    const emptyCwd = fs.mkdtempSync(path.join(os.tmpdir(), "verify-cli-cwd-"));
+    const { code, stderr } = await runCli([], { cwd: emptyCwd, env: { ...process.env, PRESIGNED_FILE: "" } });
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/không tồn tại/);
+    expect(stderr).toContain("data/presigned.json");
   });
 });

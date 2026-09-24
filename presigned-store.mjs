@@ -42,7 +42,7 @@ function migrateRegistry(parsed) {
     const bundles = {};
     for (const [key, bundle] of Object.entries(parsed.bundles)) {
       if (!bundle || typeof bundle !== "object") continue;
-      bundles[key] = bundle.marketId != null ? bundle : { ...bundle, marketId: String(key).toLowerCase() };
+      bundles[key] = bundle.marketId != null ? bundle : { ...bundle, marketId: String(parseBundleKey(key).marketId).toLowerCase() };
     }
     return { version: REGISTRY_VERSION, bundles };
   }
@@ -127,7 +127,7 @@ export async function updateRegistry(filePath, mutate, opts = {}) {
       try {
         const result = await mutate(registry);
         if (!sameClaims(before, activeClaimSignature(registry))) {
-          const err = new Error("Conflict: the presigned transaction is actively claimed (broadcasting/submitted) and cannot be modified from the web interface");
+          const err = new Error("Conflict: the presigned transaction is actively claimed (broadcasting) and cannot be modified from the web interface");
           err.code = ACTIVE_CLAIM_CONFLICT;
           throw err;
         }
@@ -173,8 +173,14 @@ export function marketBundles(registryOrBundles, marketId) {
   const bundles = registryOrBundles?.bundles ?? registryOrBundles ?? {};
   const id = String(marketId).toLowerCase();
   return Object.entries(bundles)
-    .filter(([, bundle]) => String(bundle?.marketId ?? "").toLowerCase() === id)
-    .map(([key, bundle]) => ({ key, bundle }))
+    .map(([key, bundle]) => ({
+      key,
+      bundle,
+      // Identity từ VALUE (fallback parse key) — callers như broadcaster cần
+      // marketId để verify, KHÔNG được dùng registry key (composite) thay thế.
+      marketId: String(bundle?.marketId ?? parseBundleKey(key).marketId).toLowerCase(),
+    }))
+    .filter((entry) => entry.marketId === id)
     .sort((a, b) => Number(a.bundle?.nonce) - Number(b.bundle?.nonce));
 }
 

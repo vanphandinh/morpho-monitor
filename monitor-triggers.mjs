@@ -70,10 +70,16 @@ export function createWssWatcher({ urls, connect, eventNames, marketIds, onMarke
   function handleConnectionError(generationAtConnect) {
     // Generation fence: stale callbacks from a replaced endpoint are ignored.
     if (stopped || !active || active.generation !== generationAtConnect) return;
-    logger.warn(`[WSS] endpoint ${active.connection.url} failed; rotating`);
+    const failedUrl = active.connection.url;
+    logger.warn(`[WSS] endpoint ${failedUrl} failed; rotating`);
     closeActive();
     generation = generationAtConnect + 1; // invalidate the dead generation
-    void start(generation, urls.slice(1)); // rotate: next url first
+    // Rotate relative to the FAILED endpoint: thử url KẾ TIẾP trước và bỏ url
+    // đã chết khỏi lượt này. (audit 2026-09-24: urls.slice(1) luôn drop urls[0]
+    // bất kể url nào fail ⇒ urls[i>0] fail sẽ bị thử lại ngay chính nó.)
+    const idx = urls.indexOf(failedUrl);
+    const remaining = idx === -1 ? urls.slice() : [...urls.slice(idx + 1), ...urls.slice(0, idx)];
+    void start(generation, remaining);
   }
 
   async function attemptUrl(url, generationAtStart) {

@@ -406,7 +406,7 @@ export function createRequestHandler({
               const key = bundleKey(marketId, incoming.nonce);
               const old = registry.bundles[key];
               if (old && old.withdrawals && old.withdrawals.length > 0 && !["broadcasting", "submitted", "failed"].includes(old.status)) {
-                if (old.nonce === incoming.nonce) {
+                if (Number(old.nonce) === Number(incoming.nonce)) {
                   const getMergeKey = (w) => {
                     if (w.type === "all-shares") return `__all_shares__`;
                     return w.amountWei || null;

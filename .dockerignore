@@ -5,4 +5,5 @@ node_modules
 .claude
 __tests__
 vitest.config.mjs
+config/markets.json
 *.md

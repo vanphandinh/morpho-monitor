@@ -10,7 +10,7 @@
  *
  * Usage:
  *   node --env-file=.env verify-presigned.mjs [path] [--market <marketId>]
- *   (path mặc định: $PRESIGNED_FILE hoặc ./presigned.json)
+ *   (path mặc định: $PRESIGNED_FILE hoặc ./data/presigned.json)
  */
 import fs from "node:fs";
 import { formatUnits, parseTransaction, decodeFunctionData } from "viem";
@@ -187,7 +187,7 @@ async function verifyBundle(bundle, { label, marketId, filePath }) {
 
 async function main() {
   const { filePath: argPath, market } = parseArgs(process.argv.slice(2));
-  const filePath = argPath || process.env.PRESIGNED_FILE || "./presigned.json";
+  const filePath = argPath || process.env.PRESIGNED_FILE || "./data/presigned.json";
 
   if (!fs.existsSync(filePath)) {
     console.error(`❌ File không tồn tại: ${filePath}`);

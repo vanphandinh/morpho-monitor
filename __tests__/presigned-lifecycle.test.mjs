@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 import { broadcastEligible, selectBestWithdrawal, RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
-import { updateRegistry, ACTIVE_CLAIM_CONFLICT } from "../presigned-store.mjs";
+import { updateRegistry, bundleKey, ACTIVE_CLAIM_CONFLICT } from "../presigned-store.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -263,7 +263,7 @@ describe("multi-nonce ladder (v3, 2026-09-24)", () => {
       ["b@8"]: { marketId: "b", nonce: 8, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x02" }] },
     } });
     const client = { getTransactionCount: async () => 8, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
-    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["b@8", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["b", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(stored.bundles["b@8"].status).toBe("submitted");
   });
@@ -277,7 +277,7 @@ describe("multi-nonce ladder (v3, 2026-09-24)", () => {
     // Nonce on-chain nhảy thẳng lên 9 (tx ngoài, ví dụ thủ công) — CẢ HAI rung
     // đều đã bị vượt qua ⇒ expired (đây là nghĩa "hết hạn dựa trên onchain nonce").
     const client = { getTransactionCount: async () => 9, sendRawTransaction: vi.fn() };
-    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a@7", snapshot], ["b@8", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a", snapshot], ["b", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(stored.bundles["a@7"].status).toBe("expired");
     expect(stored.bundles["b@8"].status).toBe("expired");
@@ -301,10 +301,44 @@ describe("multi-nonce ladder (v3, 2026-09-24)", () => {
       ["a@8"]: { marketId: "a", nonce: 8, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x02" }] },
     } });
     const client = { getTransactionCount: async () => 7, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
-    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a@7", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(stored.bundles["a@7"].status).toBe("submitted");
     // Sibling cùng nonce (không có ở đây) sẽ expired; rung 8 giữ pending.
     expect(stored.bundles["a@8"].status).toBe("pending");
+  });
+
+  // P0 regression (audit 2026-09-24) — production contract: snapshots key theo
+  // MARKET ID (contract của market-reader), registry key composite `marketId@nonce`
+  // (webapp ghi qua bundleKey). Trước fix: registry.bundles[marketId] = undefined
+  // ⇒ không bao giờ claim được — bundle ký mới qua webapp kẹt pending vĩnh viễn.
+  it("P0 regression: snapshot key = marketId, registry key = marketId@nonce → claim + broadcast", async () => {
+    const filePath = tempRegistryPath();
+    const key = bundleKey("m1", 7);
+    seedRegistry(filePath, { version: 3, bundles: {
+      [key]: { marketId: "m1", nonce: 7, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x01" }] },
+    } });
+    const client = { getTransactionCount: async () => 7, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
+    const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["m1", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    expect(claim.id).toBe(key); // registry key (opaque)
+    expect(claim.marketId).toBe("m1"); // marketId từ VALUE
+    expect(client.sendRawTransaction).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles[key].status).toBe("submitted");
+    expect(stored.bundles[key].marketId).toBe("m1");
+  });
+
+  it("P0 regression: verifyBundle nhận marketId từ VALUE, không bao giờ nhận composite key", async () => {
+    const filePath = tempRegistryPath();
+    const key = bundleKey("m1", 7);
+    seedRegistry(filePath, { version: 3, bundles: {
+      [key]: { marketId: "m1", nonce: 7, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x01" }] },
+    } });
+    const seenIds = [];
+    const verifyBundle = async (_bundle, id) => { seenIds.push(id); return { ok: true }; };
+    const client = { getTransactionCount: async () => 7, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["m1", snapshot]]), updateRegistry, verifyBundle, isEligible: () => true });
+    // "m1@7" sẽ làm verify thật từ chối bundle (P0 part 2) — phải là "m1".
+    expect(seenIds).toEqual(["m1"]);
   });
 });

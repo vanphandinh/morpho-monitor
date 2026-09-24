@@ -1,5 +1,5 @@
 import { keccak256 } from "viem";
-import { parseBundleKey } from "./presigned-store.mjs";
+import { parseBundleKey, marketBundles } from "./presigned-store.mjs";
 
 /**
  * Presigned transaction lifecycle.
@@ -130,10 +130,21 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     // trigger condition. Among same-nonce contenders the first market in
     // markets.json order wins; siblings stay pending until the nonce is
     // consumed (then they expire — their signature is bound to that nonce).
-    for (const [id, snapshot] of snapshots) {
-      const bundle = registry.bundles[id];
-      if (!bundle || bundle.status !== "pending" || Number(bundle.nonce) !== Number(nonce) || !isEligible(snapshot)) continue;
-      const verified = await verifyBundle(bundle, id);
+    // snapshots được key theo MARKET ID (contract của market-reader); registry v3
+    // key bundle dạng `marketId@nonce` (identity nằm trong VALUE). Claim phải tìm
+    // rung theo market qua marketBundles — KHÔNG index registry.bundles bằng
+    // marketId (audit 2026-09-24 P0: lookup đó chỉ trúng key legacy v2, khiến
+    // mọi bundle ký mới qua webapp kẹt pending vĩnh viễn).
+    for (const [marketId, snapshot] of snapshots) {
+      const rung = marketBundles(registry.bundles, marketId)
+        .find(({ bundle }) => bundle?.status === "pending" && Number(bundle.nonce) === Number(nonce));
+      if (!rung || !isEligible(snapshot)) continue;
+      // Registry key và marketId là HAI identity khác nhau: key là opaque,
+      // marketId lấy từ VALUE (P0 part 2: verifyBundle phải nhận marketId —
+      // composite key sẽ làm verify thật từ chối bundle).
+      const { key, bundle } = rung;
+      const bundleMarketId = rung.marketId;
+      const verified = await verifyBundle(bundle, bundleMarketId);
       if (!verified.ok) { bundle.status = "invalid"; bundle.error = verified.error; continue; }
       const withdrawal = selectBestWithdrawal(bundle.withdrawals, snapshot);
       if (!withdrawal) continue;
@@ -143,8 +154,8 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       bundle.broadcastingTier = withdrawal.label;
       bundle.rawTx = withdrawal.signedTx;
       bundle.txHash = keccak256(withdrawal.signedTx);
-      logger?.log?.(`[presign] claiming ${id} (nonce ${bundle.nonce}, tier ${withdrawal.label})`);
-      return { id, bundle, rawTx: withdrawal.signedTx, stuck: false };
+      logger?.log?.(`[presign] claiming ${key} (market ${bundleMarketId}, nonce ${bundle.nonce}, tier ${withdrawal.label})`);
+      return { id: key, marketId: bundleMarketId, bundle, rawTx: withdrawal.signedTx, stuck: false };
     }
 
     // Nothing to claim: say WHY. A legacy stuck claim is reported earlier;
@@ -208,7 +219,7 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       bundle.terminalAt = stamped;
       bundle.minedAt = stamped;
       delete bundle.rawTx; // raw bytes are no longer needed once terminal
-      logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${nonce}`);
+      logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.marketId ?? claim.bundle?.marketId ?? claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${nonce}`);
       // A mined receipt consumes the nonce: expire same-nonce siblings.
       for (const [id, other] of Object.entries(registry.bundles)) {
         if (id !== claim.id && Number(other.nonce) === Number(nonce) && other.status !== "submitted" && other.status !== "failed") other.status = "expired";
