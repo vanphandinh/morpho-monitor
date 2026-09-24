@@ -300,9 +300,10 @@ export function createRpcDispatcher({
         return "MorphoProxy/v1";
 
       // === PROXY IDENTITY (B2) ===
-      // Webapp preflight: chỉ khi ví trỏ vào proxy thì method này mới trả về
-      // server "morpho-proxy". Node thật sẽ trả "method not found" hoặc giá
-      // trị khác ⇒ chặn ký để không broadcast thật lên mainnet.
+      // Debug probe thủ công (từ 2026-09-24 webapp không còn gọi — cổng
+      // preflight H5 đã gỡ): trả về server "morpho-proxy" để xác nhận nhanh
+      // "RPC này có phải proxy của mình không" qua curl. Node thật/public sẽ
+      // trả "method not found" ⇒ phân biệt được proxy với node khác.
       case "morpho_proxyInfo":
         return { server: "morpho-proxy", chainId: 1 };
 
