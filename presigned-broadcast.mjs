@@ -1,5 +1,6 @@
 import { keccak256 } from "viem";
 import { parseBundleKey, marketBundles } from "./presigned-store.mjs";
+import { isConfigVerifyError } from "./presign-verify.mjs";
 
 /**
  * Presigned transaction lifecycle.
@@ -162,6 +163,11 @@ async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRe
 export async function broadcastEligible({ client, lenderAddress, filePath, snapshots, updateRegistry, verifyBundle, isEligible, now = () => Date.now(), logger = console }) {
   const nonce = await client.getTransactionCount({ address: lenderAddress, blockTag: "pending" });
 
+  // Audit vòng 2 (D2): vấn đề verify phát hiện trong chu kỳ này (lệch .env hoặc
+  // bundle hỏng). Trước đây chúng chỉ được ghi vào registry dưới dạng `invalid`
+  // nên monitor im lặng; nay gắn vào kết quả để `alertOnLifecycle` báo được.
+  const problems = [];
+
   // ---- Phase 1: durable claim under the registry lock (no network I/O) ----
   const claim = await updateRegistry(filePath, async (registry) => {
     const entries = Object.entries(registry.bundles);
@@ -222,7 +228,26 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       const { key, bundle } = rung;
       const bundleMarketId = rung.marketId;
       const verified = await verifyBundle(bundle, bundleMarketId);
-      if (!verified.ok) { bundle.status = "invalid"; bundle.error = verified.error; continue; }
+      if (!verified.ok) {
+        const nonceValue = Number(bundle.nonce);
+        if (isConfigVerifyError(verified.code)) {
+          // Lệch .env (LENDER_ADDRESS / MORPHO_BLUE_ADDRESS đổi): bundle VẪN TỐT, chỉ
+          // môi trường khác lúc ký. GIỮ pending — operator sửa .env là monitor tự
+          // broadcast lại ở chu kỳ sau; đánh `invalid` ở đây sẽ giết vĩnh viễn mọi
+          // bundle đã ký mà không cách nào tự khỏi (audit D2).
+          bundle.verifyError = verified.error;
+          problems.push({ id: key, marketId: bundleMarketId, nonce: nonceValue, kind: "config", error: verified.error });
+        } else {
+          // Lỗi thuộc về NỘI DUNG bundle ⇒ verify là hàm thuần, chạy lại cũng sai
+          // như vậy: chốt `invalid` (không còn claimable) và báo cho người vận hành.
+          bundle.status = "invalid";
+          bundle.error = verified.error;
+          problems.push({ id: key, marketId: bundleMarketId, nonce: nonceValue, kind: "invalid", error: verified.error });
+        }
+        continue;
+      }
+      // Config đã khớp lại ⇒ xoá dấu vết lệch trước đó.
+      delete bundle.verifyError;
       const withdrawal = selectBestWithdrawal(bundle.withdrawals, snapshot);
       if (!withdrawal) continue;
       // Persist the exact signed bytes + hash BEFORE releasing the lock.
@@ -249,13 +274,23 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     return null;
   });
 
-  if (!claim || claim.conflict) return claim;
+  // Gắn `problems` vào MỌI kết quả (kể cả khi không claim được gì) — nếu bỏ sót,
+  // một chu kỳ chỉ toàn bundle hỏng sẽ trả `null` và monitor không báo gì.
+  const withProblems = (result) => {
+    if (!problems.length) return result;
+    if (result && typeof result === "object") { result.problems = problems; return result; }
+    return { problems };
+  };
+
+  if (!claim || claim.conflict) return withProblems(claim);
   if (claim.stuck) {
     logger?.warn?.(`[presign] ${claim.diagnostic}`);
-    return claim;
+    return withProblems(claim);
   }
   // Terminal-only / nothing claimable: informational result, no RPC I/O.
-  if (!claim.bundle || !claim.rawTx) return claim;
+  if (!claim.bundle || !claim.rawTx) return withProblems(claim);
+  // Mọi `return claim` từ đây trả CÙNG object ⇒ gắn một lần là đủ.
+  if (problems.length) claim.problems = problems;
 
   const rawTx = claim.rawTx;
   const txHash = claim.bundle.txHash;

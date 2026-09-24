@@ -11,6 +11,10 @@ import {
   resolveBundleServerUrl,
   clearMatchedCaptured,
   assertCaptureTx,
+  isConfigVerifyError,
+  VERIFY_CONFIG_MISSING,
+  VERIFY_CONFIG_MISMATCH,
+  VERIFY_BUNDLE_INVALID,
   MORPHO_WITHDRAW_ABI,
 } from "../presign-verify.mjs";
 
@@ -428,5 +432,98 @@ describe("assertCaptureTx", () => {
       // no amountWei
     });
     expect(result.ok).toBe(true);
+  });
+});
+
+/**
+ * Audit vòng 2 (D2): mã lỗi phân biệt "lệch môi trường (.env)" với "bundle hỏng".
+ * Broadcaster dùng `code` để KHÔNG giết vĩnh viễn bundle khi operator đổi
+ * LENDER_ADDRESS / MORPHO_BLUE_ADDRESS. Đây là hợp đồng test ghim cho phân loại đó.
+ */
+describe("mã lỗi verify — config vs nội dung (D2)", () => {
+  it("isConfigVerifyError: đúng cho CONFIG_*, sai cho BUNDLE_INVALID/rác", () => {
+    expect(isConfigVerifyError(VERIFY_CONFIG_MISSING)).toBe(true);
+    expect(isConfigVerifyError(VERIFY_CONFIG_MISMATCH)).toBe(true);
+    expect(isConfigVerifyError(VERIFY_BUNDLE_INVALID)).toBe(false);
+    expect(isConfigVerifyError(undefined)).toBe(false);
+    expect(isConfigVerifyError("toString")).toBe(false);
+  });
+
+  it("đổi MORPHO_BLUE_ADDRESS trong .env ⇒ CONFIG_MISMATCH (không phải bundle hỏng)", async () => {
+    const signedTx = await signWithdrawTx({ to: OTHER });
+    const result = await verifyWithdrawCalldata(signedTx, {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, amountWei: "50000000000",
+    });
+    expect(result.code).toBe(VERIFY_CONFIG_MISMATCH);
+  });
+
+  it("đổi LENDER_ADDRESS trong .env ⇒ CONFIG_MISMATCH (onBehalf/receiver/sender lệch)", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n });
+    const result = await verifyWithdrawCalldata(signedTx, {
+      morphoBlueAddress: MORPHO, lenderAddress: OTHER, marketId: MARKET_ID, amountWei: "50000000000",
+    });
+    expect(result.code).toBe(VERIFY_CONFIG_MISMATCH);
+  });
+
+  it("thiếu lenderAddress ⇒ CONFIG_MISSING", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n });
+    const result = await verifyWithdrawCalldata(signedTx, { morphoBlueAddress: MORPHO, marketId: MARKET_ID });
+    expect(result.code).toBe(VERIFY_CONFIG_MISSING);
+  });
+
+  it("lỗi thuộc NỘI DUNG ⇒ BUNDLE_INVALID (amountWei / nonce / marketId / thiếu tx)", async () => {
+    const amount = await verifyWithdrawCalldata(await signWithdrawTx({ assets: 100_000_000000n }), {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, amountWei: "999",
+    });
+    expect(amount.code).toBe(VERIFY_BUNDLE_INVALID);
+
+    const nonce = await verifyWithdrawCalldata(await signWithdrawTx({ assets: 50_000_000000n, nonce: 7 }), {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, nonce: 99, amountWei: "50000000000",
+    });
+    expect(nonce.code).toBe(VERIFY_BUNDLE_INVALID);
+
+    const market = await verifyWithdrawCalldata(await signWithdrawTx({ assets: 50_000_000000n }), {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: OTHER, amountWei: "50000000000",
+    });
+    expect(market.code).toBe(VERIFY_BUNDLE_INVALID);
+
+    const missing = await verifyWithdrawCalldata("", { morphoBlueAddress: MORPHO, lenderAddress: LENDER });
+    expect(missing.code).toBe(VERIFY_BUNDLE_INVALID);
+  });
+
+  it("verifyPresignedBundle propagate mã của tier + CONFIG_MISSING khi thiếu cấu hình", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n });
+    const bundle = {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, nonce: 7,
+      withdrawals: [{ amountWei: "999", signedTx }],
+    };
+    expect((await verifyPresignedBundle(bundle)).code).toBe(VERIFY_BUNDLE_INVALID);
+    // Không có morphoBlueAddress ở cả config lẫn bundle.
+    const noConfig = await verifyPresignedBundle(
+      { lenderAddress: LENDER, marketId: MARKET_ID, nonce: 7, withdrawals: [{ amountWei: "50000000000", signedTx }] },
+      { lenderAddress: LENDER, marketId: MARKET_ID }
+    );
+    expect(noConfig.code).toBe(VERIFY_CONFIG_MISSING);
+  });
+
+  it("config lệch bundle ⇒ CONFIG_MISMATCH (broadcaster giữ pending, không đánh invalid)", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n });
+    const bundle = {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, nonce: 7,
+      withdrawals: [{ amountWei: "50000000000", signedTx }],
+    };
+    const result = await verifyPresignedBundle(bundle, { lenderAddress: OTHER, marketId: MARKET_ID, morphoBlueAddress: MORPHO });
+    expect(result.code).toBe(VERIFY_CONFIG_MISMATCH);
+    expect(isConfigVerifyError(result.code)).toBe(true);
+  });
+
+  it("nhánh THÀNH CÔNG không đổi shape (không có `code`)", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n, nonce: 3 });
+    const result = await verifyWithdrawCalldata(signedTx, {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, nonce: 3, amountWei: "50000000000",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.code).toBeUndefined();
+    expect(result.decoded.assets).toBe(50_000_000000n);
   });
 });

@@ -513,3 +513,86 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("D2 — verify fail: lệch .env thì GIỮ pending, nội dung hỏng thì invalid + cảnh báo", () => {
+  // Trước fix: MỌI lỗi verify đều đánh `invalid` ⇒ một lần đổi LENDER_ADDRESS/
+  // MORPHO_BLUE_ADDRESS trong .env giết IM LẮNG + VĨNH VIỄN mọi bundle đã ký
+  // (không thử lại, không hết hạn, không cảnh báo) — cùng lớp lỗi với R1.
+  const rung = () => ({
+    marketId: "m", nonce: 7, status: "pending",
+    withdrawals: [{ label: "t1", amountWei: "50", signedTx: "0x01" }],
+  });
+  const snaps = () => new Map([["m", snapshot]]);
+
+  it("CONFIG_MISMATCH ⇒ giữ pending + verifyError + problems(kind=config)", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 3, bundles: { "m@7": rung() } });
+    const result = await broadcastEligible({
+      client: { getTransactionCount: async () => 7 }, lenderAddress: "x", filePath, snapshots: snaps(), updateRegistry,
+      verifyBundle: async () => ({ ok: false, code: "CONFIG_MISMATCH", error: "bundle.lenderAddress !== config lender" }),
+      isEligible: () => true,
+    });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8")).bundles["m@7"];
+    expect(stored.status).toBe("pending"); // KHÔNG bị đánh invalid
+    expect(stored.error).toBeUndefined();
+    expect(String(stored.verifyError)).toMatch(/lender/);
+    expect(result.problems).toEqual([
+      { id: "m@7", marketId: "m", nonce: 7, kind: "config", error: expect.stringContaining("lender") },
+    ]);
+  });
+
+  it("BUNDLE_INVALID ⇒ invalid + problems(kind=invalid), vẫn trả problems khi không claim được gì", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 3, bundles: { "m@7": rung() } });
+    const result = await broadcastEligible({
+      client: { getTransactionCount: async () => 7 }, lenderAddress: "x", filePath, snapshots: snaps(), updateRegistry,
+      verifyBundle: async () => ({ ok: false, code: "BUNDLE_INVALID", error: "withdrawals[0]: assets 999 !== amountWei 50" }),
+      isEligible: () => true,
+    });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8")).bundles["m@7"];
+    expect(stored.status).toBe("invalid");
+    expect(String(stored.error)).toMatch(/amountWei/);
+    expect(stored.verifyError).toBeUndefined();
+    // Không có gì để claim ⇒ kết quả KHÔNG null mà mang theo problems.
+    expect(result.problems?.[0]).toMatchObject({ id: "m@7", kind: "invalid", nonce: 7 });
+  });
+
+  it("lỗi KHÔNG có code (verify cũ/ngoài) vẫn fail closed về phía invalid", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 3, bundles: { "m@7": rung() } });
+    await broadcastEligible({
+      client: { getTransactionCount: async () => 7 }, lenderAddress: "x", filePath, snapshots: snaps(), updateRegistry,
+      verifyBundle: async () => ({ ok: false, error: "no code from this verifier" }),
+      isEligible: () => true,
+    });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8")).bundles["m@7"];
+    expect(stored.status).toBe("invalid");
+  });
+
+  it("sửa .env xong ⇒ chu kỳ sau verify xanh, verifyError bị xoá và rung được claim", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 3, bundles: { "m@7": rung() } });
+    await broadcastEligible({
+      client: { getTransactionCount: async () => 7 }, lenderAddress: "x", filePath, snapshots: snaps(), updateRegistry,
+      verifyBundle: async () => ({ ok: false, code: "CONFIG_MISSING", error: "missing lenderAddress" }),
+      isEligible: () => true,
+    });
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8")).bundles["m@7"].verifyError).toBeTruthy();
+
+    const sends = [];
+    const client2 = {
+      getTransactionCount: async () => 7,
+      sendRawTransaction: async ({ serializedTransaction }) => { sends.push(serializedTransaction); return "0xaccepted"; },
+      waitForTransactionReceipt: async () => minedReceipt(),
+    };
+    const claim = await broadcastEligible({
+      client: client2, lenderAddress: "x", filePath, snapshots: snaps(), updateRegistry,
+      verifyBundle: async () => ({ ok: true }), isEligible: () => true,
+    });
+    expect(claim.id).toBe("m@7");
+    expect(sends).toEqual(["0x01"]); // tự hồi phục: không cần ký lại
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8")).bundles["m@7"];
+    expect(stored.status).toBe("submitted");
+    expect(stored.verifyError).toBeUndefined();
+  });
+});
