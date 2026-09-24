@@ -191,6 +191,29 @@ export function createRequestHandler({
     }
 
     // ---- API: GET /api/presign ----
+    // ---- API: GET /api/overview — trạng thái bundle của MỌI market ----
+    // Auth như /api/presign (đọc registry). Trả summary theo allow-list;
+    // market không có bundle → { exists: false }. Nonce on-chain không nằm ở
+    // đây (webapp không chạy RPC server-side); browser tự tính cảnh báo
+    // trùng nonce từ các nonce của bundle.
+    if (req.method === "GET" && pathname === "/api/overview") {
+      if (!verifyToken(req, LENDER_ADDRESS)) {
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+      try {
+        const bundles = readRegistry(presignedPath).bundles;
+        sendJson(res, 200, {
+          ok: true,
+          lenderAddress: LENDER_ADDRESS,
+          markets: markets.map((market) => ({ id: market.id, ...registrySummary(bundles[market.id]) })),
+        });
+      } catch (err) {
+        sendJson(res, statusForError(err), { ok: false, error: err.message });
+      }
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/presign") {
       if (!verifyToken(req, LENDER_ADDRESS)) {
         sendJson(res, 401, { ok: false, error: "Unauthorized" });

@@ -135,6 +135,7 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       bundle.broadcastingTier = withdrawal.label;
       bundle.rawTx = withdrawal.signedTx;
       bundle.txHash = keccak256(withdrawal.signedTx);
+      logger?.log?.(`[presign] claiming ${id} (nonce ${bundle.nonce}, tier ${withdrawal.label})`);
       return { id, bundle, rawTx: withdrawal.signedTx, stuck: false };
     }
 
@@ -193,6 +194,7 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       bundle.terminalAt = stamped;
       bundle.minedAt = stamped;
       delete bundle.rawTx; // raw bytes are no longer needed once terminal
+      logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${nonce}`);
       // A mined receipt consumes the nonce: expire same-nonce siblings.
       for (const [id, other] of Object.entries(registry.bundles)) {
         if (id !== claim.id && Number(other.nonce) === Number(nonce) && other.status !== "submitted" && other.status !== "failed") other.status = "expired";

@@ -55,6 +55,35 @@ describe("presigned broadcaster lifecycle", () => {
     expect(stored.bundles.b.status).toBe("expired");
   });
 
+  // Observation (2026-09-24): broadcast thành công phải để lại dấu vết trong
+  // logs — claim (nonce, tier) và terminal (market, txHash, tier, nonce).
+  it("logs claim and terminal broadcast with market/txHash/tier/nonce", async () => {
+    const filePath = tempRegistryPath();
+    const tx = "0xdead";
+    seedRegistry(filePath, { version: 2, bundles: { a: pending(7, tx) } });
+    const lines = [];
+    const logger = { log: (m) => lines.push(String(m)), warn: () => {}, error: () => {} };
+    const client = { getTransactionCount: async () => 7, sendRawTransaction: async () => "ignored", waitForTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true, logger });
+    expect(lines.some((l) => l.includes("claiming a") && l.includes("nonce 7") && l.includes("tier small"))).toBe(true);
+    expect(lines.some((l) => l.includes("broadcast submitted") && l.includes("market=a") && l.includes("tier=small") && l.includes("nonce=7"))).toBe(true);
+    expect(lines.some((l) => l.includes("txHash="))).toBe(true);
+  });
+
+  it("logs nothing on a same-nonce conflict (fail closed stays quiet-ish)", async () => {
+    const filePath = tempRegistryPath();
+    const tx1 = "0x01";
+    seedRegistry(filePath, { version: 2, bundles: { a: { ...pending(7, tx1), status: "broadcasting", broadcastingAt: new Date().toISOString(), rawTx: tx1, txHash: keccak256(tx1) } } });
+    const lines = [];
+    const logger = { log: (m) => lines.push(String(m)), warn: () => {}, error: () => {} };
+    // Registry has one active claim; a second pending bundle at the SAME nonce
+    // would violate the one-claim invariant — but here we assert that a plain
+    // reconcile run logs no claim line (claim already exists, not newly claimed).
+    const client = { getTransactionCount: async () => 7 };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true, logger });
+    expect(lines.filter((l) => l.includes("claiming "))).toHaveLength(0);
+  });
+
   it("persists rawTx + txHash at claim and clears rawTx only at terminal state", async () => {
     const filePath = tempRegistryPath();
     const tx = stringToHex("payload");

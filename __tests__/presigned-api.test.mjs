@@ -172,6 +172,30 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(unknownPage.text).toContain("test</html>");
   });
 
+  // ---- GET /api/overview — trạng thái bundle của mọi market ----
+  it("GET /api/overview trả summary theo allow-list; market không có bundle → exists:false", async () => {
+    seedRegistry({
+      [MARKET_A]: { nonce: 5, status: "pending", withdrawals: [{ label: "t1", amountWei: "10", signedTx: "0x01" }] },
+      [MARKET_B]: { nonce: 9, status: "submitted", terminalAt: "2026-09-24T00:00:00.000Z", withdrawals: [] },
+    });
+    const resp = await api("GET", "/api/overview");
+    expect(resp.status).toBe(200);
+    expect(resp.json.ok).toBe(true);
+    expect(resp.json.markets).toHaveLength(2);
+    const a = resp.json.markets.find((m) => m.id === MARKET_A);
+    const b = resp.json.markets.find((m) => m.id === MARKET_B);
+    expect(a).toMatchObject({ id: MARKET_A, exists: true, status: "pending", nonce: 5 });
+    expect(a.tiers).toHaveLength(1);
+    expect(b).toMatchObject({ id: MARKET_B, exists: true, status: "submitted", nonce: 9 });
+  });
+
+  it("GET /api/overview trên registry rỗng: mọi market exists:false", async () => {
+    seedRegistry({});
+    const resp = await api("GET", "/api/overview");
+    expect(resp.status).toBe(200);
+    expect(resp.json.markets.every((m) => m.exists === false)).toBe(true);
+  });
+
   it("M10: state challenge là per-handler (không chia sẻ giữa các handler)", async () => {
     // Handler thứ hai có state riêng: challenge của handler này không hợp lệ ở handler kia.
     const isolated = createRequestHandler({ presignedPath: registryPath, markets, content });

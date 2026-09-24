@@ -207,6 +207,12 @@
     <div class="tab" data-tab="presign" onclick="switchTab('presign')">✍️ Ký Trước</div>
   </div>
 
+  <!-- Market switcher: chỉ hiện khi server cấu hình >1 market -->
+  <div id="market-switcher-wrap" style="display:none;margin:8px 0">
+    <label for="market-switcher" style="font-size:0.85rem;color:var(--text-dim,#888)">Market:</label>
+    <select id="market-switcher" onchange="switchMarket(this.value)" style="max-width:100%;padding:6px 8px"></select>
+  </div>
+
   <!-- Loading -->
   <div id="loading" class="loading">
     <div class="spinner"></div>
@@ -291,6 +297,12 @@
 
     <!-- Wallet compatibility -->
     <div id="presign-wallet-banner" class="banner info" style="display:none"></div>
+
+    <!-- Presign overview: trạng thái bundle của MỌI market (đã cấu hình) -->
+    <div id="presign-overview" style="display:none">
+      <h2>🗂️ Tổng Quan Presign (mọi market)</h2>
+      <div class="card" id="presign-overview-info">⏳ Đang tải...</div>
+    </div>
 
     <!-- Market info (read-only) -->
     <div id="presign-market-section" style="display:none">
@@ -1058,8 +1070,76 @@
         renderWalletCompatibility();
         updatePresignWalletUI();
         fetchExistingBundle();
+        refreshPresignOverview();
       }
     };
+
+    // ============================================================
+    // MARKET SWITCHER (>1 market)
+    // ============================================================
+    function initMarketSwitcher() {
+      const wrap = document.getElementById("market-switcher-wrap");
+      const select = document.getElementById("market-switcher");
+      if (!wrap || !select || SERVER_MARKETS.length <= 1) return;
+      const short = (id) => `${id.slice(0, 10)}…${id.slice(-4)}`;
+      select.innerHTML = SERVER_MARKETS.map((m) =>
+        `<option value="${m.id}"${m.id === marketId ? " selected" : ""}>${short(m.id)}</option>`
+      ).join("");
+      wrap.style.display = "block";
+    }
+
+    window.switchMarket = function(id) {
+      if (!id || id === marketId) return;
+      location.search = `?market=${encodeURIComponent(id)}`;
+    };
+
+    // ============================================================
+    // PRESIGN OVERVIEW (mọi market)
+    // ============================================================
+    async function refreshPresignOverview() {
+      const section = document.getElementById("presign-overview");
+      const info = document.getElementById("presign-overview-info");
+      if (!section || !info) return;
+      if (!isAuthenticated()) { section.style.display = "none"; return; }
+      section.style.display = "block";
+      try {
+        const resp = await fetch("/api/overview", { headers: { ...getAuthHeaders() } });
+        if (resp.status === 401) { section.style.display = "none"; return; }
+        if (!resp.ok) { info.textContent = "Không tải được tổng quan presign."; return; }
+        const data = await resp.json();
+        if (!data.ok) { info.textContent = "Không tải được tổng quan presign."; return; }
+        renderPresignOverview(data.markets || []);
+      } catch { info.textContent = "Lỗi mạng khi tải tổng quan presign."; }
+    }
+
+    function renderPresignOverview(rows) {
+      const info = document.getElementById("presign-overview-info");
+      if (!rows.length) { info.textContent = "Không có market nào được cấu hình."; return; }
+      const short = (id) => `${id.slice(0, 10)}…${id.slice(-4)}`;
+      const badge = (s) => {
+        if (!s.exists) return "—";
+        const cls = s.status === "broadcasting" ? "banner error" : s.status === "pending" ? "banner info" : s.status === "submitted" ? "banner success" : "banner warn";
+        return `<span class="${cls}" style="padding:1px 8px">${s.status}</span>`;
+      };
+      const body = rows.map((r) =>
+        `<tr><td><code>${short(r.id)}</code></td><td>${badge(r)}</td><td>${r.exists ? r.nonce : "—"}</td><td>${r.exists ? (r.tiers || []).length : "—"}</td></tr>`
+      ).join("");
+      // Cảnh báo: ≥2 bundle hoạt động (pending/broadcasting) dùng chung nonce —
+      // chỉ 1 được mine, còn lại sẽ expired (nonce pending là toàn cục của ví).
+      const byNonce = new Map();
+      for (const r of rows) {
+        if (r.exists && (r.status === "pending" || r.status === "broadcasting")) {
+          byNonce.set(r.nonce, (byNonce.get(r.nonce) ?? 0) + 1);
+        }
+      }
+      const dupes = [...byNonce.entries()].filter(([, n]) => n > 1);
+      const dupeBanner = dupes.length
+        ? `<div class="banner error" style="margin-top:8px">⚠️ Nonce ${dupes.map(([n]) => n).join(", ")} đang được dùng bởi nhiều market cùng lúc — chỉ 1 bundle được mine, các bundle còn lại sẽ expired. Ký lại với nonce mới sau khi bundle trước được mine.</div>`
+        : "";
+      info.innerHTML =
+        `<table style="width:100%;border-collapse:collapse;font-size:0.9rem"><tr style="text-align:left;color:var(--text-dim,#888)"><th>Market</th><th>Bundle</th><th>Nonce</th><th>Tiers</th></tr>${body}</table>` +
+        dupeBanner;
+    }
 
     function getProxyUrl() {
       return SERVER_PROXY_RPC_URL;
@@ -1642,6 +1722,7 @@
             `Monitor sẽ tự động broadcast khi có thanh khoản.`
           );
           document.getElementById("btn-save-server").textContent = "✅ Đã Lưu";
+          refreshPresignOverview();
         } else if (result.error?.includes("No captured transactions")) {
           showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier hoặc 'Ký Rút Toàn Bộ Shares'.");
           document.getElementById("btn-save-server").disabled = false;
@@ -1803,6 +1884,7 @@
         if (result.ok) {
           showPresignSuccess(`✅ Đã xóa tier "${result.removed}" (còn ${result.remaining} tier).`);
           fetchExistingBundle(); // Refresh display
+          refreshPresignOverview();
         } else {
           showPresignError("Lỗi xóa tier: " + (result.error || "Unknown"));
         }
@@ -1829,6 +1911,7 @@
         if (result.ok) {
           showPresignSuccess(`✅ Đã xóa ${result.deleted} bundles.`);
           document.getElementById("presign-existing").style.display = "none";
+          refreshPresignOverview();
         } else {
           showPresignError("Lỗi xóa bundle: " + (result.error || "Unknown"));
         }
@@ -2051,6 +2134,7 @@
         await fetchAllData();
 
         // Render
+        initMarketSwitcher();
         renderMarketInfo();
         renderPosition();
         document.getElementById("wallet-section").style.display = "block";

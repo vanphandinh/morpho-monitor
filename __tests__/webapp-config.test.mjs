@@ -136,6 +136,23 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
     expect(html).toMatch(/nút webapp không thể thêm mạng hộ bạn/);
   });
 
+  it("multi-market: có market switcher + khối overview presign", () => {
+    expect(html).toContain('id="market-switcher"');
+    expect(html).toContain('id="market-switcher-wrap"');
+    expect(html).toMatch(/SERVER_MARKETS\.length <= 1/); // ẩn khi 1 market
+    expect(html).toMatch(/window\.switchMarket = function/);
+    expect(html).toContain('id="presign-overview"');
+    expect(html).toMatch(/api\/overview/);
+    expect(html).toMatch(/refreshPresignOverview\(\)/);
+    expect(html).toMatch(/initMarketSwitcher\(\)/);
+  });
+
+  it("multi-market: cảnh báo trùng nonce giữa các bundle hoạt động", () => {
+    expect(html).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
+    expect(html).toMatch(/chỉ 1 bundle được mine/);
+    expect(html).toMatch(/r\.status === "pending" \|\| r\.status === "broadcasting"/);
+  });
+
   it("M9: bundle expired/submitted hiện hướng dẫn ký lại với nonce mới", () => {
     expect(html).toMatch(/data\.status === "expired"/);
     expect(html).toMatch(/nonce dùng chung cho mọi market/);
