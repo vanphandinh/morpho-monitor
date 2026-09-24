@@ -15,7 +15,10 @@ import { sendVoipNotification } from "./voip.mjs";
 addGlobalErrorHandlers("monitor");
 const markets = loadMarkets(MARKETS_FILE);
 const marketIds = markets.map((market) => market.id);
-const publicClient = createRobustPublicClient(RPC_URLS);
+// Audit vòng 2: 2s sticky để các lần đọc liên tiếp trong cùng chu kỳ nhìn CÙNG một
+// node — đặc biệt cặp bằng chứng receipt → nonce khi nhả claim (xoay sang node khác
+// sẽ trộn hai góc nhìn lệch nhau). Chỉ bật ở monitor để giữ blast radius nhỏ.
+const publicClient = createRobustPublicClient(RPC_URLS, { stickyMs: 2_000 });
 const topic = NTFY_TOPIC || `morpho-monitor-${crypto.randomBytes(4).toString("hex")}`;
 const states = new Map();
 let reader, notificationsToday = 0, dayStart = Date.now(), scheduler, wssWatcher;
