@@ -8,6 +8,7 @@
  * When editing webapp.html logic, update both the HTML and this test file.
  */
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 
 // ============================================================
 // Mirror of webapp.html pure functions
@@ -345,6 +346,28 @@ describe("webapp: validateWithdraw()", () => {
       liquidity: 500_000000n,
     });
     expect(result.valid).toBe(true);
+  });
+});
+
+describe("webapp.html — contract xoá tier theo rung (R2)", () => {
+  // webapp.html không import được bằng vitest (browser ESM) nên kiểm hợp đồng
+  // tĩnh: nút ✕ PHẢI gọi kèm nonce, và URL DELETE phải gửi market+nonce+tier.
+  // Không có nonce, API đã guard (F3) sẽ trả 400 cho market có ladder — tức là
+  // người dùng không xoá được tier nào cả.
+  const html = fs.readFileSync(new URL("../webapp.html", import.meta.url), "utf8");
+
+  it("mọi nút ✕ đều gọi deleteTierFromBundle kèm (nonce, index)", () => {
+    const onclickCalls = [...html.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
+    expect(onclickCalls.length).toBeGreaterThan(0);
+    for (const args of onclickCalls) expect(args.split(",").length).toBe(2);
+  });
+
+  it("URL DELETE gửi kèm market + nonce + tier", () => {
+    expect(html).toContain("/api/presign?market=${encodeURIComponent(marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
+  });
+
+  it("rung đang broadcasting không hiện nút xoá (API trả 409)", () => {
+    expect(html).toContain('r.status !== "broadcasting"');
   });
 });
 
