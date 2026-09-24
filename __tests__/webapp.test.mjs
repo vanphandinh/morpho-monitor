@@ -1,151 +1,34 @@
 /**
- * Unit tests for pure computation logic from webapp.html.
+ * Test cho logic thuần của webapp.
  *
- * These functions mirror the browser code in webapp.html <script type="module">.
- * They're duplicated here for unit testing since browser ESM can't be
- * directly imported by vitest (Node.js).
+ * Audit A.1b: các hàm dưới đây nay nằm trong `webapp-logic.mjs` — CHÍNH module mà
+ * browser tải (`webapp-app.mjs` import từ `./webapp-logic.mjs`). Trước đây file
+ * này phải NHÂN BẢN chúng ("mirror"), nên test có thể xanh trong khi code chạy
+ * thật đã khác — đúng lớp lỗi mà audit A.1 muốn diệt.
  *
- * When editing webapp.html logic, update both the HTML and this test file.
+ * Phần cuối file ghim hợp đồng giữa HTML ↔ module ↔ route: một `onclick` gọi hàm
+ * không tồn tại vẫn parse hợp lệ và chỉ chết lúc người dùng bấm nút.
  */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import {
+  CLAIM_RECOVERY_MS_FALLBACK,
+  TX_VERIFY_ATTEMPTS,
+  TX_VERIFY_DELAY_MS,
+  wadToPercent,
+  shortenAddr,
+  broadcastingAgeMinutes,
+  isClaimOverdue,
+  txVisibleOnChain,
+  computeSupplyAssets,
+  computeBorrowAssets,
+  computeLiquidity,
+  computeUtilization,
+  computeMaxWithdraw,
+  validateWithdraw,
+} from "../webapp-logic.mjs";
 
-// ============================================================
-// Mirror of webapp.html pure functions
-// ============================================================
-
-/**
- * Format a WAD-scaled value (1e18) as a percentage string.
- * Mirrors webapp.html line 345-347.
- */
-function wadToPercent(wad) {
-  return (Number(wad) / 1e16).toFixed(2) + "%";
-}
-
-/**
- * Shorten an Ethereum address for display.
- * Mirrors webapp.html line 349-351.
- */
-function shortenAddr(addr) {
-  if (!addr) return "N/A";
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-/**
- * Age in minutes of a broadcasting claim (audit R1).
- * Mirrors webapp.html `broadcastingAgeMinutes`.
- */
-function broadcastingAgeMinutes(broadcastingAt, nowMs = Date.now()) {
-  const started = Date.parse(broadcastingAt ?? "");
-  if (!Number.isFinite(started)) return null;
-  return Math.floor(Math.max(0, nowMs - started) / 60000);
-}
-
-/**
- * Is a broadcasting claim past the recovery threshold?
- * Mirrors webapp.html `isClaimOverdue`. Threshold is injected by the server
- * (window.MORPHO_CONFIG.claimRecoveryMs) from presigned-broadcast.mjs.
- */
-const CLAIM_RECOVERY_MS = 180_000;
-function isClaimOverdue(r, nowMs = Date.now()) {
-  if (!r || r.status !== "broadcasting") return false;
-  const started = Date.parse(r.broadcastingAt ?? "");
-  return Number.isFinite(started) && nowMs - started > CLAIM_RECOVERY_MS;
-}
-
-/**
- * Ngân sách xác minh tx của tab "Rút Tiền" (audit R4).
- * Mirrors webapp.html `TX_VERIFY_ATTEMPTS` / `TX_VERIFY_DELAY_MS`.
- */
-const TX_VERIFY_ATTEMPTS = 4;
-const TX_VERIFY_DELAY_MS = 3000;
-
-/**
- * Hash mà ví trả về có thật sự nằm trên RPC công khai?
- * Mirrors webapp.html `txVisibleOnChain`. `sleep` được inject để test không phải
- * chờ thật.
- */
-async function txVisibleOnChain(client, hash, {
-  attempts = TX_VERIFY_ATTEMPTS,
-  delayMs = TX_VERIFY_DELAY_MS,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-} = {}) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    try {
-      if (await client.getTransaction({ hash })) return true;
-    } catch {
-      // Chưa thấy, hoặc RPC lỗi tạm thời → thử lại.
-    }
-    if (attempt < attempts - 1) await sleep(delayMs);
-  }
-  return false;
-}
-
-/**
- * Compute supply assets from shares.
- * Mirrors webapp.html line 454-456.
- *
- * assets = (shares * totalSupplyAssets) / totalSupplyShares
- */
-function computeSupplyAssets(shares, totalSupplyAssets, totalSupplyShares) {
-  if (totalSupplyShares === 0n) return 0n;
-  return (shares * totalSupplyAssets) / totalSupplyShares;
-}
-
-/**
- * Compute borrow assets from shares.
- * Mirrors webapp.html line 507-509.
- */
-function computeBorrowAssets(shares, totalBorrowAssets, totalBorrowShares) {
-  if (totalBorrowShares === 0n) return 0n;
-  return (shares * totalBorrowAssets) / totalBorrowShares;
-}
-
-/**
- * Compute market liquidity.
- * Mirrors webapp.html line 458-460.
- */
-function computeLiquidity(totalSupplyAssets, totalBorrowAssets) {
-  const liquidity = totalSupplyAssets - totalBorrowAssets;
-  return liquidity < 0n ? 0n : liquidity;
-}
-
-/**
- * Compute utilization (WAD-scaled).
- * Mirrors webapp.html line 463-465.
- */
-function computeUtilization(totalBorrowAssets, totalSupplyAssets) {
-  if (totalSupplyAssets === 0n) return 0n;
-  return (totalBorrowAssets * BigInt(1e18)) / totalSupplyAssets;
-}
-
-/**
- * Compute the max withdrawable amount.
- * MAX = min(supplyAssets, liquidity)
- * Mirrors the MAX button logic in webapp.html.
- */
-function computeMaxWithdraw(supplyAssets, liquidity) {
-  return supplyAssets < liquidity ? supplyAssets : liquidity;
-}
-
-/**
- * Validate withdraw input (client-side check before on-chain tx).
- * Mirrors the validation logic added to webapp.html withdrawAmount().
- *
- * Returns { valid: boolean, error: string | null }
- */
-function validateWithdraw({ assets, supplyAssets, liquidity }) {
-  if (assets === 0n) {
-    return { valid: false, error: "Số lượng rút không thể bằng 0." };
-  }
-  if (assets > supplyAssets) {
-    return { valid: false, error: "Số lượng vượt quá số dư có thể rút." };
-  }
-  if (assets > liquidity) {
-    return { valid: false, error: "Thanh khoản market không đủ." };
-  }
-  return { valid: true, error: null };
-}
+const readSource = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
 // ============================================================
 // Tests: wadToPercent
@@ -318,84 +201,45 @@ describe("webapp: validateWithdraw()", () => {
   const liquidity = 500_000000n; // 500 USDC available
 
   it("passes valid withdrawal (assets ≤ supply and ≤ liquidity)", () => {
-    const result = validateWithdraw({
-      assets: 300_000000n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: 300_000000n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(true);
-    expect(result.error).toBeNull();
+    expect(result.reason).toBeNull();
   });
 
   it("rejects zero amount", () => {
-    const result = validateWithdraw({
-      assets: 0n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: 0n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(false);
-    expect(result.error).toContain("0");
+    expect(result.reason).toBe("zero");
   });
 
   it("rejects amount exceeding supply assets", () => {
-    const result = validateWithdraw({
-      assets: supply + 1n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: supply + 1n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(false);
-    expect(result.error).toContain("số dư");
+    expect(result.reason).toBe("over_balance");
   });
 
   it("rejects amount exceeding liquidity", () => {
-    const result = validateWithdraw({
-      assets: liquidity + 1n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: liquidity + 1n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(false);
-    expect(result.error).toContain("Thanh khoản");
+    expect(result.reason).toBe("over_liquidity");
   });
 
   it("rejects when both supply and liquidity exceeded", () => {
     // asset > both: supply check fires first
-    const result = validateWithdraw({
-      assets: supply + 1n,
-      supplyAssets: supply,
-      liquidity: 1_000000n,
-    });
+    const result = validateWithdraw({ assets: supply + 1n, supplyAssets: supply, liquidity: 1_000000n });
     expect(result.valid).toBe(false);
+    expect(result.reason).toBe("over_balance");
   });
 
   it("allows exact max (assets == supplyAssets == liquidity)", () => {
-    const result = validateWithdraw({
-      assets: 500_000000n,
-      supplyAssets: 500_000000n,
-      liquidity: 500_000000n,
-    });
+    const result = validateWithdraw({ assets: 500_000000n, supplyAssets: 500_000000n, liquidity: 500_000000n });
     expect(result.valid).toBe(true);
   });
-});
 
-describe("webapp-app — contract xoá tier theo rung (R2)", () => {
-  // Code UI nằm ở module webapp-app.mjs (audit A.1) nên kiểm hợp đồng tĩnh trên
-  // module: nút ✕ PHẢI gọi kèm nonce, và URL DELETE phải gửi market+nonce+tier.
-  // Không có nonce, API đã guard (F3) sẽ trả 400 cho market có ladder — tức là
-  // người dùng không xoá được tier nào cả.
-  const app = fs.readFileSync(new URL("../webapp-app.mjs", import.meta.url), "utf8");
-
-  it("mọi nút ✕ đều gọi deleteTierFromBundle kèm (nonce, index)", () => {
-    const onclickCalls = [...app.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
-    expect(onclickCalls.length).toBeGreaterThan(0);
-    for (const args of onclickCalls) expect(args.split(",").length).toBe(2);
-  });
-
-  it("URL DELETE gửi kèm market + nonce + tier", () => {
-    expect(app).toContain("/api/presign?market=${encodeURIComponent(marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
-  });
-
-  it("rung đang broadcasting không hiện nút xoá (API trả 409)", () => {
-    expect(app).toContain('r.status !== "broadcasting"');
+  it("không có vị thế và nhập 0 ⇒ 'zero', không phải 'over_balance'", () => {
+    // Rút 0 với supply 0: 0 > 0 là false, nên phải rơi xuống nhánh zero.
+    const result = validateWithdraw({ assets: 0n, supplyAssets: 0n, liquidity: 0n });
+    expect(result.reason).toBe("zero");
   });
 });
 
@@ -422,9 +266,17 @@ describe("claim age hiển thị cho claim đang broadcasting (R1)", () => {
   });
 
   it("quá ngưỡng recovery (180s) ⇒ báo quá hạn; đúng ngưỡng thì chưa", () => {
-    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(CLAIM_RECOVERY_MS) }, now)).toBe(false);
-    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(CLAIM_RECOVERY_MS + 1) }, now)).toBe(true);
+    const M = CLAIM_RECOVERY_MS_FALLBACK;
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(M) }, now)).toBe(false);
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(M + 1) }, now)).toBe(true);
     expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: null }, now)).toBe(false);
+  });
+
+  it("ngưỡng do server inject (CFG.claimRecoveryMs) phải được tôn trọng", () => {
+    // webapp-app.mjs truyền CLAIM_RECOVERY_MS của chính nó vào tham số thứ ba.
+    const r = { status: "broadcasting", broadcastingAt: ago(200_000) };
+    expect(isClaimOverdue(r, now)).toBe(true); // mặc định 180s
+    expect(isClaimOverdue(r, now, 600_000)).toBe(false); // server cấu hình 10 phút
   });
 });
 
@@ -484,14 +336,87 @@ describe("webapp-app — xác minh tx của tab Rút Tiền (R4)", () => {
     await expect(txVisibleOnChain(client, "0xabc", { attempts: 2, delayMs: 10, sleep })).resolves.toBe(false);
     expect(sleeps).toEqual([10]);
   });
+});
+
+describe("webapp-app — contract xoá tier theo rung (R2)", () => {
+  // Code UI nằm ở module webapp-app.mjs (audit A.1) nên kiểm hợp đồng tĩnh trên
+  // module: nút ✕ PHẢI gọi kèm nonce, và URL DELETE phải gửi market+nonce+tier.
+  // Không có nonce, API đã guard (F3) sẽ trả 400 cho market có ladder — tức là
+  // người dùng không xoá được tier nào cả.
+  const app = readSource("webapp-app.mjs");
+
+  it("mọi nút ✕ đều gọi deleteTierFromBundle kèm (nonce, index)", () => {
+    const onclickCalls = [...app.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
+    expect(onclickCalls.length).toBeGreaterThan(0);
+    for (const args of onclickCalls) expect(args.split(",").length).toBe(2);
+  });
+
+  it("URL DELETE gửi kèm market + nonce + tier", () => {
+    expect(app).toContain("/api/presign?market=${encodeURIComponent(marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
+  });
+
+  it("rung đang broadcasting không hiện nút xoá (API trả 409)", () => {
+    expect(app).toContain('r.status !== "broadcasting"');
+  });
 
   it("doWithdraw gọi xác minh và render note cảnh báo capture", () => {
-    const app = fs.readFileSync(new URL("../webapp-app.mjs", import.meta.url), "utf8");
     expect(app).toContain("txVisibleOnChain(publicClient, hash)");
     expect(app).toContain('id="tx-verify-note"');
     // Kết quả xác minh của lần rút cũ không được ghi đè banner của lần rút mới.
     expect(app).toContain("verifyToken !== txVerifyToken");
     // Cảnh báo phải nêu rõ nguyên nhân (ví trỏ RPC về proxy ⇒ chỉ được capture).
     expect(app).toContain("ghi lại (capture)");
+  });
+});
+
+describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai là UI chết lặng)", () => {
+  const html = readSource("webapp.html");
+  const app = readSource("webapp-app.mjs");
+  const logic = readSource("webapp-logic.mjs");
+  const server = readSource("webapp-server.mjs");
+  const handlerSrc = readSource("webapp-handler.mjs");
+
+  it("MỌI hàm được gọi từ thuộc tính on* trong HTML đều là thuộc tính của window trong module", () => {
+    const attr = /\son(?:click|change|input|keydown|keyup|submit|blur|focus)="([^"]*)"/g;
+    const called = new Set();
+    for (const [, body] of html.matchAll(attr)) {
+      for (const m of body.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1]);
+    }
+    // Chốt chống regex hỏng: HTML có ~18 handler, đừng để test xanh vì match rỗng.
+    expect(called.size).toBeGreaterThanOrEqual(15);
+    const missing = [...called].filter((name) => !new RegExp(`window\\.${name}\\s*=`).test(app));
+    expect(missing).toEqual([]);
+  });
+
+  it("webapp-logic.mjs là hàm THUẦN: không chạm DOM/window (nên import được trong test)", () => {
+    expect(logic).not.toMatch(/\bdocument\b|\bwindow\b|localStorage|navigator/);
+  });
+
+  it("webapp-app.mjs import logic từ module chung, KHÔNG còn bản sao cục bộ", () => {
+    for (const name of [
+      "wadToPercent", "shortenAddr", "broadcastingAgeMinutes", "isClaimOverdue",
+      "txVisibleOnChain", "computeSupplyAssets", "computeBorrowAssets", "computeLiquidity",
+      "computeUtilization", "computeMaxWithdraw", "validateWithdraw",
+    ]) {
+      expect(app).toMatch(new RegExp(`^\\s*${name},?$`, "m"));           // có trong khối import
+      expect(app).not.toMatch(new RegExp(`function ${name}\\b`));        // không định nghĩa lại
+    }
+    expect(app).toMatch(/from "\.\/webapp-logic\.mjs"/);
+  });
+
+  it("server đọc + truyền module logic, handler phục vụ route của nó", () => {
+    expect(server).toContain("webapp-logic.mjs");
+    expect(handlerSrc).toContain('"/webapp-logic.mjs"');
+  });
+
+  it("bản sao logic đã chuyển sang module chung được dùng ở đúng call site", () => {
+    // Rút tiền: validation + MAX phải đi qua hàm chung (nếu không, test trên
+    // module xanh mà UI vẫn dùng bản cũ — đúng thứ A.1b muốn chặn).
+    expect(app).toContain("validateWithdraw({");
+    expect(app).toContain("computeMaxWithdraw(");
+    expect(app).toContain("computeSupplyAssets(");
+    expect(app).toContain("computeBorrowAssets(");
+    expect(app).toContain("computeLiquidity(");
+    expect(app).toContain("computeUtilization(");
   });
 });

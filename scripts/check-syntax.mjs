@@ -71,6 +71,20 @@ if (fs.existsSync(webappPath)) {
   }
   checked++;
 
+  // Audit A.1b: logic thuần nằm ở webapp-logic.mjs — module dùng chung cho
+  // browser (import từ webapp-app.mjs, route do webapp-handler.mjs phục vụ) và
+  // test (import trực tiếp trong vitest). Thiếu file, hoặc app không import nó,
+  // nghĩa là hoặc UI chết lặng, hoặc logic rơi về bản sao cục bộ mà test không
+  // chạm tới — đúng lớp lỗi mà A.1 muốn diệt.
+  const logicModulePath = path.join(root, "webapp-logic.mjs");
+  if (!fs.existsSync(logicModulePath)) {
+    fail("thiếu webapp-logic.mjs — webapp-app.mjs import file này (route /webapp-logic.mjs)");
+  }
+  checked++;
+  if (fs.existsSync(appModulePath) && !/from "\.\/webapp-logic\.mjs"/.test(fs.readFileSync(appModulePath, "utf8"))) {
+    fail('webapp-app.mjs phải import logic dùng chung: from "./webapp-logic.mjs"');
+  }
+
   // importmap: JSON hợp lệ — viem resolve qua đây; JSON hỏng thì browser bỏ qua im lặng.
   const importMap = html.match(/<script\b[^>]*\btype="importmap"[^>]*>([\s\S]*?)<\/script>/);
   if (importMap) {

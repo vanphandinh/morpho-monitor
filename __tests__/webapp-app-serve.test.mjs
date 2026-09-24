@@ -13,6 +13,7 @@ import { createRequestHandler } from "../webapp-handler.mjs";
 
 const markets = [{ id: "0x" + "a".repeat(64) }];
 const APP_SOURCE = "// app\nwindow.deleteTierFromBundle = function () {};\n";
+const LOGIC_SOURCE = "// logic\nexport const wadToPercent = (wad) => wad;\n";
 
 async function listen(handler) {
   const server = http.createServer(handler);
@@ -20,9 +21,17 @@ async function listen(handler) {
   return { server, port: server.address().port };
 }
 
-const withApp = await listen(createRequestHandler({ markets, content: "<html>x</html>", appScript: APP_SOURCE }));
+const withApp = await listen(createRequestHandler({
+  markets,
+  content: "<html>x</html>",
+  appScript: APP_SOURCE,
+  logicScript: LOGIC_SOURCE,
+}));
 const withoutApp = await listen(createRequestHandler({ markets, content: "<html>x</html>" }));
-afterAll(() => Promise.all([withApp, withoutApp].map(({ server }) => new Promise((resolve) => server.close(resolve)))));
+const appOnly = await listen(createRequestHandler({ markets, content: "<html>x</html>", appScript: APP_SOURCE }));
+afterAll(() => Promise.all(
+  [withApp, withoutApp, appOnly].map(({ server }) => new Promise((resolve) => server.close(resolve))),
+));
 
 describe("A.1 — GET /webapp-app.mjs", () => {
   it("phục vụ module với MIME đúng và không cache", async () => {
@@ -52,5 +61,22 @@ describe("A.1 — GET /webapp-app.mjs", () => {
     expect(resp.status).toBe(200);
     expect(resp.headers.get("content-type")).toContain("text/html");
     await expect(resp.text()).resolves.toBe("<html>x</html>");
+  });
+});
+
+describe("A.1b — GET /webapp-logic.mjs (module logic dùng chung)", () => {
+  it("phục vụ module với MIME đúng và không cache", async () => {
+    const resp = await fetch(`http://127.0.0.1:${withApp.port}/webapp-logic.mjs`);
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect(resp.headers.get("cache-control")).toBe("no-store");
+    expect(resp.headers.get("x-content-type-options")).toBe("nosniff");
+    await expect(resp.text()).resolves.toBe(LOGIC_SOURCE);
+  });
+
+  it("thiếu module logic ⇒ 404 JSON, không trả HTML 200 (browser bỏ qua import hỏng)", async () => {
+    const resp = await fetch(`http://127.0.0.1:${appOnly.port}/webapp-logic.mjs`);
+    expect(resp.status).toBe(404);
+    expect(resp.headers.get("content-type")).toContain("application/json");
   });
 });

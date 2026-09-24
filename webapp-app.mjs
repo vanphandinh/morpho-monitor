@@ -16,6 +16,25 @@
       formatUnits, parseUnits, encodeFunctionData,
     } from "viem";
     import { mainnet } from "viem/chains";
+    // Audit A.1b: logic thuần nằm ở webapp-logic.mjs — CÙNG một đoạn code chạy
+    // trong browser và trong test (__tests__/webapp.test.mjs), nên không còn bản
+    // sao có thể lệch nhau. Route /webapp-logic.mjs do webapp-handler.mjs phục vụ
+    // song song với /webapp-app.mjs.
+    import {
+      TX_VERIFY_ATTEMPTS,
+      TX_VERIFY_DELAY_MS,
+      wadToPercent,
+      shortenAddr,
+      broadcastingAgeMinutes,
+      isClaimOverdue,
+      txVisibleOnChain,
+      computeSupplyAssets,
+      computeBorrowAssets,
+      computeLiquidity,
+      computeUtilization,
+      computeMaxWithdraw,
+      validateWithdraw,
+    } from "./webapp-logic.mjs";
 
     // ============================================================
     // CONFIG (injected by server via window.MORPHO_CONFIG)
@@ -28,11 +47,8 @@
     // broadcasting lâu hơn ngưỡng này là dấu hiệu bị thay thế/kẹt — phải hiện UI.
     const CLAIM_RECOVERY_MS = Number(CFG.claimRecoveryMs) > 0 ? Number(CFG.claimRecoveryMs) : 180000;
 
-    // R4: ngân sách xác minh tx của tab "Rút Tiền" (không presign) — xem
-    // txVisibleOnChain(). 4 lần × 3s: đủ để tx vừa gửi lan truyền tới RPC công
-    // khai, mà user vẫn không phải chờ lâu.
-    const TX_VERIFY_ATTEMPTS = 4;
-    const TX_VERIFY_DELAY_MS = 3000;
+    // R4: ngân sách xác minh tx (TX_VERIFY_ATTEMPTS / TX_VERIFY_DELAY_MS) nay nằm
+    // trong webapp-logic.mjs cùng với txVisibleOnChain() — xem module đó.
 
     const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
 
@@ -146,66 +162,14 @@
     // ============================================================
     // HELPERS
     // ============================================================
-    function wadToPercent(wad) {
-      return (Number(wad) / 1e16).toFixed(2) + "%";
-    }
-
+    // wadToPercent / shortenAddr / broadcastingAgeMinutes / isClaimOverdue /
+    // txVisibleOnChain nay nằm trong webapp-logic.mjs (A.1b): browser tải chính
+    // module đó, và test import đúng nó — không còn hai bản có thể lệch nhau.
     function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
-    function shortenAddr(addr) {
-      return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-    }
-
     /**
-     * Số phút một claim đang broadcasting (null nếu thiếu/không hợp lệ mốc thời
-     * gian). Server trả `broadcastingAt` trong ladder (audit R1): claim không mine
-     * được sẽ chặn CẢ bậc thang, nên tuổi claim phải nhìn thấy được trong UI.
+     * R4 (đã chuyển sang webapp-logic.mjs): giao dịch mà ví trả về hash có thật
+     * sự nằm trên chain?
      */
-    function broadcastingAgeMinutes(broadcastingAt, nowMs = Date.now()) {
-      const started = Date.parse(broadcastingAt ?? "");
-      if (!Number.isFinite(started)) return null;
-      return Math.floor(Math.max(0, nowMs - started) / 60000);
-    }
-
-    /**
-     * Claim đang broadcasting đã quá ngưỡng recovery (presigned-broadcast.mjs,
-     * inject qua window.MORPHO_CONFIG.claimRecoveryMs): có thể đã bị một tx khác
-     * thay thế hoặc kẹt vì fee thấp.
-     */
-    function isClaimOverdue(r, nowMs = Date.now()) {
-      if (!r || r.status !== "broadcasting") return false;
-      const started = Date.parse(r.broadcastingAt ?? "");
-      return Number.isFinite(started) && nowMs - started > CLAIM_RECOVERY_MS;
-    }
-
-    /**
-     * R4: giao dịch mà ví trả về hash có thật sự nằm trên chain?
-     *
-     * Tab "Rút Tiền" gửi tx qua `walletClient.writeContract` → RPC do VÍ cấu hình
-     * quyết định đường đi. Nếu ví đang trỏ vào proxy (port 8545), tx chỉ bị
-     * CAPTURE chứ không broadcast, nhưng UI vẫn báo thành công cho một giao dịch
-     * chưa từng lên chain. Ta không đọc được RPC của ví, nhưng kiểm tra được điều
-     * ngược lại: hash có xuất hiện trên RPC công khai (CFG.rpcUrls) hay không.
-     *
-     * Chỉ dùng để CẢNH BÁO: `false` cũng là kết quả đúng khi tx chưa lan truyền
-     * kịp, nên tuyệt đối không chặn UI và không kết luận tx thất bại (H5 preflight
-     * đã bị gỡ vì lý do tương tự — không có cách chắc chắn để hỏi ví).
-     */
-    async function txVisibleOnChain(client, hash, {
-      attempts = TX_VERIFY_ATTEMPTS,
-      delayMs = TX_VERIFY_DELAY_MS,
-      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    } = {}) {
-      for (let attempt = 0; attempt < attempts; attempt++) {
-        try {
-          if (await client.getTransaction({ hash })) return true;
-        } catch {
-          // Chưa thấy, hoặc RPC lỗi tạm thời → thử lại.
-        }
-        if (attempt < attempts - 1) await sleep(delayMs);
-      }
-      return false;
-    }
-
     function showError(msg) {
       const el = document.getElementById("error-banner");
       el.textContent = "❌ " + msg;
@@ -470,18 +434,15 @@
       loanToken = lToken;
 
       // Compute derived values
-      const supplyAssets = marketData.totalSupplyShares > 0n
-        ? (positionData.supplyShares * marketData.totalSupplyAssets) / marketData.totalSupplyShares
-        : 0n;
+      const supplyAssets = computeSupplyAssets(
+        positionData.supplyShares,
+        marketData.totalSupplyAssets,
+        marketData.totalSupplyShares
+      );
 
-      const liquidity = marketData.totalSupplyAssets - marketData.totalBorrowAssets;
-      if (liquidity < 0n) marketData.liquidity = 0n;
-      else marketData.liquidity = liquidity;
-
+      marketData.liquidity = computeLiquidity(marketData.totalSupplyAssets, marketData.totalBorrowAssets);
       marketData.supplyAssets = supplyAssets;
-      marketData.utilization = marketData.totalSupplyAssets > 0n
-        ? (marketData.totalBorrowAssets * BigInt(1e18)) / marketData.totalSupplyAssets
-        : 0n;
+      marketData.utilization = computeUtilization(marketData.totalBorrowAssets, marketData.totalSupplyAssets);
     }
 
     // ============================================================
@@ -524,9 +485,7 @@
         row("Supply Assets", formatToken(supplyAssets, loanToken)),
         row("Borrow Shares", positionData.borrowShares.toString()),
         row("Borrow Assets", formatToken(
-          marketData.totalBorrowShares > 0n
-            ? (positionData.borrowShares * marketData.totalBorrowAssets) / marketData.totalBorrowShares
-            : 0n,
+          computeBorrowAssets(positionData.borrowShares, marketData.totalBorrowAssets, marketData.totalBorrowShares),
           loanToken
         )),
         row("Collateral", formatToken(positionData.collateral, collateralToken)),
@@ -1480,7 +1439,7 @@
                   ? '<span style="color:var(--red)" title="Nonce đã bị một giao dịch khác tiêu thụ — chữ ký này không thể lên bảng">bị thay thế</span>'
                   : '<span style="color:var(--text-dim)">' + esc(r.status) + '</span>';
           // Tuổi claim: claim không mine được sẽ chặn cả bậc thang (audit R1).
-          const overdue = isClaimOverdue(r);
+          const overdue = isClaimOverdue(r, Date.now(), CLAIM_RECOVERY_MS);
           const ageMinutes = r.status === "broadcasting" ? broadcastingAgeMinutes(r.broadcastingAt) : null;
           const ageLabel = ageMinutes === null
             ? ""
@@ -1527,7 +1486,7 @@
           document.getElementById("presign-existing-info").innerHTML +=
             `<div class="banner warn" style="margin-top:8px">♻️ Có bundle <b>superseded</b>: nonce của nó đã bị một giao dịch KHÁC tiêu thụ, nên on-chain nonce đã đi qua và chữ ký cũ không thể lên bảng. Lấy nonce mới rồi ký lại nếu vẫn muốn rút; bản ghi này chỉ là lịch sử (xoá được).</div>`;
         }
-        const overdueRungs = ladder.filter((r) => isClaimOverdue(r));
+        const overdueRungs = ladder.filter((r) => isClaimOverdue(r, Date.now(), CLAIM_RECOVERY_MS));
         if (overdueRungs.length > 0) {
           document.getElementById("presign-existing-info").innerHTML +=
             `<div class="banner error" style="margin-top:8px">⚠️ Bundle nonce ${overdueRungs.map((r) => r.nonce).join(", ")} đang <b>broadcasting quá ${Math.round(CLAIM_RECOVERY_MS / 60000)} phút</b> — có thể giao dịch đã bị ví thay thế hoặc kẹt (fee thấp). Kiểm tra nonce trên Etherscan: nếu nonce đó đã bị tx khác dùng, monitor sẽ tự nhả sang <b>superseded</b> rồi rung kế tiếp được broadcast; nếu chưa, đối soát txHash trước khi sửa registry.</div>`;
@@ -1639,18 +1598,19 @@
         marketData.totalBorrowShares = market[3];
 
         // Recompute derived values
-        const supplyAssets = marketData.totalSupplyShares > 0n
-          ? (positionData.supplyShares * marketData.totalSupplyAssets) / marketData.totalSupplyShares
-          : 0n;
-        const rawLiquidity = marketData.totalSupplyAssets - marketData.totalBorrowAssets;
-        const liquidity = rawLiquidity < 0n ? 0n : rawLiquidity;
+        const supplyAssets = computeSupplyAssets(
+          positionData.supplyShares,
+          marketData.totalSupplyAssets,
+          marketData.totalSupplyShares
+        );
+        const liquidity = computeLiquidity(marketData.totalSupplyAssets, marketData.totalBorrowAssets);
 
         marketData.supplyAssets = supplyAssets;
         marketData.liquidity = liquidity;
 
-        // MAX = min(supplyAssets, liquidity)
-        // Nếu thanh khoản < số tiền đã cung cấp, chỉ rút được tối đa = thanh khoản
-        const max = supplyAssets < liquidity ? supplyAssets : liquidity;
+        // MAX = min(supplyAssets, liquidity): thanh khoản thấp hơn số đã cung cấp
+        // thì chỉ rút được tối đa bằng thanh khoản.
+        const max = computeMaxWithdraw(supplyAssets, liquidity);
 
         document.getElementById("withdraw-amount").value = formatUnits(max, loanToken.decimals);
         document.getElementById("max-withdraw").textContent = formatToken(max, loanToken);
@@ -1658,7 +1618,7 @@
         // Fallback to cached value if re-fetch fails
         const supplyAssets = marketData.supplyAssets ?? 0n;
         const liquidity = marketData.liquidity ?? 0n;
-        const max = supplyAssets < liquidity ? supplyAssets : liquidity;
+        const max = computeMaxWithdraw(supplyAssets, liquidity);
         document.getElementById("withdraw-amount").value = formatUnits(max, loanToken.decimals);
         document.getElementById("max-withdraw").textContent = formatToken(max, loanToken);
       }
@@ -1673,23 +1633,26 @@
 
       const assets = parseUnits(amountStr, loanToken.decimals);
 
-      // Client-side validation: catch obvious errors before sending on-chain
-      if (assets > marketData.supplyAssets) {
-        showError(
-          `Số lượng vượt quá số dư có thể rút (${formatToken(marketData.supplyAssets, loanToken)}).`
-        );
-        return;
-      }
-
-      if (assets > marketData.liquidity) {
-        showError(
-          `Thanh khoản market không đủ. Chỉ có ${formatToken(marketData.liquidity, loanToken)} khả dụng.`
-        );
-        return;
-      }
-
-      if (assets === 0n) {
-        showError("Số lượng rút không thể bằng 0.");
+      // Client-side validation: catch obvious errors before sending on-chain.
+      // Phép kiểm tra nằm ở webapp-logic.mjs (A.1b) nên test import đúng code
+      // này — chỉ phần hiển thị (kèm số tiền đã format) ở lại đây.
+      const check = validateWithdraw({
+        assets,
+        supplyAssets: marketData.supplyAssets,
+        liquidity: marketData.liquidity,
+      });
+      if (!check.valid) {
+        if (check.reason === "over_balance") {
+          showError(
+            `Số lượng vượt quá số dư có thể rút (${formatToken(marketData.supplyAssets, loanToken)}).`
+          );
+        } else if (check.reason === "over_liquidity") {
+          showError(
+            `Thanh khoản market không đủ. Chỉ có ${formatToken(marketData.liquidity, loanToken)} khả dụng.`
+          );
+        } else {
+          showError("Số lượng rút không thể bằng 0.");
+        }
         return;
       }
 
@@ -1712,9 +1675,11 @@
           args: [marketId, lenderAddress],
         });
         positionData.supplyShares = position[0];
-        const supplyAssets = marketData.totalSupplyShares > 0n
-          ? (positionData.supplyShares * marketData.totalSupplyAssets) / marketData.totalSupplyShares
-          : 0n;
+        const supplyAssets = computeSupplyAssets(
+          positionData.supplyShares,
+          marketData.totalSupplyAssets,
+          marketData.totalSupplyShares
+        );
         marketData.supplyAssets = supplyAssets;
       } catch {
         // Continue with cached data if refresh fails

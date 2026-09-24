@@ -90,6 +90,11 @@ export function createRequestHandler({
   // lint + import được trong test — nên nó được phục vụ ở đây thay vì nằm inline
   // trong HTML. Không truyền thì route trả 404 (tương thích với test cũ).
   appScript = null,
+  // Audit A.1b: logic thuần dùng chung (webapp-logic.mjs). webapp-app.mjs import
+  // nó bằng đường dẫn tương đối `./webapp-logic.mjs`, nên nó PHẢI được phục vụ ở
+  // cùng gốc: thiếu route này thì browser nhận 404 cho import và TOÀN BỘ UI chết
+  // lặng (module không nạp được ⇒ không handler nào tồn tại).
+  logicScript = null,
   proxyUrl = PROXY_RPC_URL.replace(/\/+$/, ""),
   proxyPassword = WEBAPP_PASSWORD,
   fetchImpl = fetch,
@@ -537,9 +542,10 @@ export function createRequestHandler({
       return;
     }
 
-    // ---- Static: module app (A.1) ----
-    if (req.method === "GET" && pathname === "/webapp-app.mjs") {
-      if (!appScript) {
+    // ---- Static: module app (A.1 / A.1b) ----
+    if (req.method === "GET" && (pathname === "/webapp-app.mjs" || pathname === "/webapp-logic.mjs")) {
+      const body = pathname === "/webapp-app.mjs" ? appScript : logicScript;
+      if (!body) {
         sendJson(res, 404, { ok: false, error: "app script not configured" });
         return;
       }
@@ -550,7 +556,7 @@ export function createRequestHandler({
       // JS lệch với HTML (đúng lớp lỗi mà việc tách file này muốn tránh).
       res.setHeader("Cache-Control", "no-store");
       res.writeHead(200);
-      res.end(appScript);
+      res.end(body);
       return;
     }
 

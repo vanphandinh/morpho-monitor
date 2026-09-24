@@ -33,6 +33,9 @@ const WEBAPP_FILE = path.join(__dirname, "webapp.html");
 // Audit A.1: script chính là module riêng (được lint + test) chứ không còn inline
 // trong webapp.html, nên nó phải được phục vụ như một file tĩnh.
 const WEBAPP_APP_FILE = path.join(__dirname, "webapp-app.mjs");
+// Audit A.1b: logic thuần dùng chung cho browser và test. webapp-app.mjs import
+// nó qua `./webapp-logic.mjs` nên nó cũng phải được phục vụ như file tĩnh.
+const WEBAPP_LOGIC_FILE = path.join(__dirname, "webapp-logic.mjs");
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
 const configuredMarkets = loadMarkets(path.join(__dirname, MARKETS_FILE));
@@ -65,6 +68,16 @@ try {
   appScript = fs.readFileSync(WEBAPP_APP_FILE, "utf-8");
 } catch {
   console.error(`❌ Không tìm thấy ${WEBAPP_APP_FILE}. Đây là script chính của webapp.`);
+  process.exit(1);
+}
+
+// Thiếu file này thì import `./webapp-logic.mjs` của app trả 404 và UI chết lặng
+// (không handler nào tồn tại) ⇒ fail-fast cùng kiểu với webapp.html.
+let logicScript;
+try {
+  logicScript = fs.readFileSync(WEBAPP_LOGIC_FILE, "utf-8");
+} catch {
+  console.error(`❌ Không tìm thấy ${WEBAPP_LOGIC_FILE}. webapp-app.mjs import file này.`);
   process.exit(1);
 }
 
@@ -102,6 +115,7 @@ const handler = createRequestHandler({
   markets: configuredMarkets,
   content: htmlContent,
   appScript,
+  logicScript,
 });
 
 // Challenge/rate-limit state nằm trong closure của handler (M10); vòng dọn
