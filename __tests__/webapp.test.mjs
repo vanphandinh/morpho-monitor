@@ -377,25 +377,25 @@ describe("webapp: validateWithdraw()", () => {
   });
 });
 
-describe("webapp.html — contract xoá tier theo rung (R2)", () => {
-  // webapp.html không import được bằng vitest (browser ESM) nên kiểm hợp đồng
-  // tĩnh: nút ✕ PHẢI gọi kèm nonce, và URL DELETE phải gửi market+nonce+tier.
+describe("webapp-app — contract xoá tier theo rung (R2)", () => {
+  // Code UI nằm ở module webapp-app.mjs (audit A.1) nên kiểm hợp đồng tĩnh trên
+  // module: nút ✕ PHẢI gọi kèm nonce, và URL DELETE phải gửi market+nonce+tier.
   // Không có nonce, API đã guard (F3) sẽ trả 400 cho market có ladder — tức là
   // người dùng không xoá được tier nào cả.
-  const html = fs.readFileSync(new URL("../webapp.html", import.meta.url), "utf8");
+  const app = fs.readFileSync(new URL("../webapp-app.mjs", import.meta.url), "utf8");
 
   it("mọi nút ✕ đều gọi deleteTierFromBundle kèm (nonce, index)", () => {
-    const onclickCalls = [...html.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
+    const onclickCalls = [...app.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
     expect(onclickCalls.length).toBeGreaterThan(0);
     for (const args of onclickCalls) expect(args.split(",").length).toBe(2);
   });
 
   it("URL DELETE gửi kèm market + nonce + tier", () => {
-    expect(html).toContain("/api/presign?market=${encodeURIComponent(marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
+    expect(app).toContain("/api/presign?market=${encodeURIComponent(marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
   });
 
   it("rung đang broadcasting không hiện nút xoá (API trả 409)", () => {
-    expect(html).toContain('r.status !== "broadcasting"');
+    expect(app).toContain('r.status !== "broadcasting"');
   });
 });
 
@@ -428,7 +428,7 @@ describe("claim age hiển thị cho claim đang broadcasting (R1)", () => {
   });
 });
 
-describe("webapp.html — xác minh tx của tab Rút Tiền (R4)", () => {
+describe("webapp-app — xác minh tx của tab Rút Tiền (R4)", () => {
   // Ví trỏ RPC về proxy ⇒ tx bị capture, không bao giờ lên chain, nhưng ví vẫn
   // trả hash nên UI cũ báo "thành công". Hàm này chỉ CẢNH BÁO (best-effort):
   // false cũng là kết quả đúng khi tx chưa lan truyền kịp.
@@ -486,12 +486,12 @@ describe("webapp.html — xác minh tx của tab Rút Tiền (R4)", () => {
   });
 
   it("doWithdraw gọi xác minh và render note cảnh báo capture", () => {
-    const html = fs.readFileSync(new URL("../webapp.html", import.meta.url), "utf8");
-    expect(html).toContain("txVisibleOnChain(publicClient, hash)");
-    expect(html).toContain('id="tx-verify-note"');
+    const app = fs.readFileSync(new URL("../webapp-app.mjs", import.meta.url), "utf8");
+    expect(app).toContain("txVisibleOnChain(publicClient, hash)");
+    expect(app).toContain('id="tx-verify-note"');
     // Kết quả xác minh của lần rút cũ không được ghi đè banner của lần rút mới.
-    expect(html).toContain("verifyToken !== txVerifyToken");
+    expect(app).toContain("verifyToken !== txVerifyToken");
     // Cảnh báo phải nêu rõ nguyên nhân (ví trỏ RPC về proxy ⇒ chỉ được capture).
-    expect(html).toContain("ghi lại (capture)");
+    expect(app).toContain("ghi lại (capture)");
   });
 });

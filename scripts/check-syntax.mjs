@@ -37,35 +37,39 @@ for (const file of targets) {
 }
 
 /**
- * webapp.html giữ code production trong thẻ `<script type="module">` nội tuyến
- * (SPA ~2200 dòng) mà không cổng nào chạm tới: `node --check` theo file không đọc
- * HTML, oxlint chỉ quét `.mjs`. Lỗi cú pháp ở đó chỉ lộ ra khi user mở trang.
- * `node --input-type=module --check` nhận source từ stdin nên không cần file tạm.
+ * webapp.html từng giữ code production trong thẻ `<script type="module">` NỘI
+ * TUYẾN (~1900 dòng) mà không cổng nào chạm tới: `node --check` theo file không
+ * đọc HTML, oxlint chỉ quét `.mjs` — nên một lỗi `no-undef` trong đó vẫn parse
+ * hợp lệ và chỉ chết lúc người dùng bấm nút. Audit A.1 đã chuyển khối đó ra
+ * `webapp-app.mjs` (được lint, `node --check`, và import được trong test).
+ *
+ * Ở đây chỉ còn GHIM bất biến đó: HTML không được chứa module nội tuyến trở lại,
+ * phải trỏ tới module đã tách, và file đó phải tồn tại. Kèm kiểm tra importmap là
+ * JSON hợp lệ (viem resolve qua đây; JSON hỏng thì browser bỏ qua im lặng).
  */
 const webappPath = path.join(root, "webapp.html");
 if (fs.existsSync(webappPath)) {
+  checked++;
   const html = fs.readFileSync(webappPath, "utf8");
-  const modules = [...html.matchAll(/<script\b[^>]*\btype="module"[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const moduleTags = [...html.matchAll(/<script\b[^>]*\btype="module"[^>]*>/g)].map((m) => m[0]);
+  const fail = (message) => { failed++; console.error(`❌ webapp.html: ${message}`); };
 
-  if (modules.length === 0) {
-    checked++;
-    failed++;
-    console.error('❌ Syntax error: webapp.html — không tìm thấy thẻ <script type="module"> nào (format đổi?)');
+  if (moduleTags.length === 0) {
+    fail('không còn thẻ <script type="module"> nào (format đổi?)');
   }
-  for (const [index, source] of modules.entries()) {
-    checked++;
-    try {
-      execFileSync(process.execPath, ["--input-type=module", "--check"], {
-        input: source,
-        stdio: ["pipe", "ignore", "pipe"],
-      });
-    } catch (err) {
-      failed++;
-      const label = modules.length > 1 ? `webapp.html (inline module #${index + 1})` : "webapp.html (inline module)";
-      console.error(`❌ Syntax error: ${label}`);
-      console.error(err.stderr?.toString().trim() || err.message);
+  for (const tag of moduleTags) {
+    if (!/\bsrc\s*=/.test(tag)) {
+      fail(`A.1: module NỘI TUYẾN (${tag.slice(0, 60)}…) ⇒ code production đó không được lint. Chuyển vào webapp-app.mjs.`);
     }
   }
+  if (moduleTags.length > 0 && !/src="\/webapp-app\.mjs"/.test(html)) {
+    fail("thẻ module phải trỏ tới /webapp-app.mjs (route do webapp-handler.mjs phục vụ)");
+  }
+  const appModulePath = path.join(root, "webapp-app.mjs");
+  if (!fs.existsSync(appModulePath)) {
+    fail("thiếu webapp-app.mjs — server sẽ fail-fast khi khởi động");
+  }
+  checked++;
 
   // importmap: JSON hợp lệ — viem resolve qua đây; JSON hỏng thì browser bỏ qua im lặng.
   const importMap = html.match(/<script\b[^>]*\btype="importmap"[^>]*>([\s\S]*?)<\/script>/);
@@ -85,4 +89,4 @@ if (failed > 0) {
   console.error(`❌ node --check: ${failed}/${checked} target lỗi cú pháp`);
   process.exit(1);
 }
-console.log(`✅ node --check: ${checked}/${checked} target OK (${targets.length} file .mjs + webapp.html inline)`);
+console.log(`✅ node --check: ${checked}/${checked} target OK (${targets.length} file .mjs + webapp.html no-inline-module)`);

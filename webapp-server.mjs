@@ -30,6 +30,9 @@ addGlobalErrorHandlers("webapp-server");
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = WEBAPP_PORT;
 const WEBAPP_FILE = path.join(__dirname, "webapp.html");
+// Audit A.1: script chính là module riêng (được lint + test) chứ không còn inline
+// trong webapp.html, nên nó phải được phục vụ như một file tĩnh.
+const WEBAPP_APP_FILE = path.join(__dirname, "webapp-app.mjs");
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
 const configuredMarkets = loadMarkets(path.join(__dirname, MARKETS_FILE));
@@ -54,6 +57,16 @@ try {
   process.exit(1);
 }
 htmlContent = injectWebappConfig(htmlContent, webappConfig);
+
+// Đọc module app một lần lúc khởi động, fail-fast cùng kiểu với webapp.html:
+// thiếu file này thì trang tải được nhưng KHÔNG có JS nào chạy (UI chết lặng).
+let appScript;
+try {
+  appScript = fs.readFileSync(WEBAPP_APP_FILE, "utf-8");
+} catch {
+  console.error(`❌ Không tìm thấy ${WEBAPP_APP_FILE}. Đây là script chính của webapp.`);
+  process.exit(1);
+}
 
 // Fail closed khi thiếu WEBAPP_PASSWORD (audit 2026-09-24 P1): không password
 // thì MỌI request (kể cả DELETE bundle đã ký) đều được coi là đã xác thực.
@@ -88,6 +101,7 @@ const handler = createRequestHandler({
   presignedPath: PRESIGNED_PATH,
   markets: configuredMarkets,
   content: htmlContent,
+  appScript,
 });
 
 // Challenge/rate-limit state nằm trong closure của handler (M10); vòng dọn

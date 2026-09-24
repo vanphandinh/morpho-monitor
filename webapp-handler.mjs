@@ -86,6 +86,10 @@ export function createRequestHandler({
   presignedPath,
   markets,
   content,
+  // Audit A.1: script chính của webapp là module riêng (webapp-app.mjs) — được
+  // lint + import được trong test — nên nó được phục vụ ở đây thay vì nằm inline
+  // trong HTML. Không truyền thì route trả 404 (tương thích với test cũ).
+  appScript = null,
   proxyUrl = PROXY_RPC_URL.replace(/\/+$/, ""),
   proxyPassword = WEBAPP_PASSWORD,
   fetchImpl = fetch,
@@ -530,6 +534,23 @@ export function createRequestHandler({
     // ---- Unknown API route: JSON 404, không rơi vào SPA HTML 200 ----
     if (pathname.startsWith("/api/")) {
       sendJson(res, 404, { ok: false, error: `Unknown API route: ${req.method} ${pathname}` });
+      return;
+    }
+
+    // ---- Static: module app (A.1) ----
+    if (req.method === "GET" && pathname === "/webapp-app.mjs") {
+      if (!appScript) {
+        sendJson(res, 404, { ok: false, error: "app script not configured" });
+        return;
+      }
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+      // Không cache: module đổi giữa các lần deploy, browser giữ bản cũ sẽ chạy
+      // JS lệch với HTML (đúng lớp lỗi mà việc tách file này muốn tránh).
+      res.setHeader("Cache-Control", "no-store");
+      res.writeHead(200);
+      res.end(appScript);
       return;
     }
 

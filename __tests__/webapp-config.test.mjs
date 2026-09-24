@@ -19,6 +19,11 @@ import { RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
+// Audit A.1: script chính của webapp là module RIÊNG (webapp-app.mjs) để được lint
+// + `node --check` + import trong test. Hợp đồng về CODE đọc từ module; hợp đồng
+// về MARKUP (element id) vẫn đọc từ HTML. Kiểm tra trên HTML sau khi tách file sẽ
+// trở thành "vô nghĩa nhưng vẫn xanh" — đúng lớp lỗ hổng A.1 muốn đóng.
+const app = fs.readFileSync(path.join(__dirname, "..", "webapp-app.mjs"), "utf8");
 
 const MARKET = { id: "0x" + "a".repeat(64), minLiquidity: "100", suddenDrainMultiplier: 2 };
 const LENDER = "0x" + "b".repeat(40);
@@ -78,18 +83,22 @@ describe("injectWebappConfig (A3)", () => {
 
 describe("webapp.html hygiene (M2)", () => {
   it("không còn RPC URL kèm API key trong file phục vụ công khai", () => {
-    expect(html).not.toMatch(/infura\.io\/v3\//);
-    expect(html).not.toMatch(/ankr\.com\/eth\/0x/);
-    expect(html).not.toMatch(/alchemy\.com\/v2\//);
-    expect(html).not.toMatch(/lb\.drpc\.live\/ethereum\//);
-    expect(html).not.toMatch(/core\.chainstack\.com\//);
-    expect(html).not.toMatch(/onfinality\.io\/rpc\?apikey=/);
+    // A.1: file phục vụ công khai nay gồm CẢ webapp-app.mjs — phải kiểm cả hai,
+    // nếu không thì danh sách RPC đã chuyển sang module sẽ không còn ai ghim.
+    for (const source of [html, app]) {
+      expect(source).not.toMatch(/infura\.io\/v3\//);
+      expect(source).not.toMatch(/ankr\.com\/eth\/0x/);
+      expect(source).not.toMatch(/alchemy\.com\/v2\//);
+      expect(source).not.toMatch(/lb\.drpc\.live\/ethereum\//);
+      expect(source).not.toMatch(/core\.chainstack\.com\//);
+      expect(source).not.toMatch(/onfinality\.io\/rpc\?apikey=/);
+    }
   });
 
   it("dùng CFG.rpcUrls do server inject, với fallback keyless", () => {
-    expect(html).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
-    expect(html).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
-    expect(html).toMatch(/https:\/\/rpc\.ankr\.com\/eth"/); // endpoint công khai, không key
+    expect(app).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
+    expect(app).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
+    expect(app).toMatch(/https:\/\/rpc\.ankr\.com\/eth"/); // endpoint công khai, không key
   });
 });
 
@@ -171,68 +180,68 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
   // Trade-off: ví EOA trỏ sai RPC sẽ không bị chặn trước khi ký.
 
   it("H5 gỡ sạch: không còn probe/ gate trong webapp", () => {
-    expect(html).not.toContain("morpho_proxyInfo");
-    expect(html).not.toContain("assertProxyNetwork");
-    expect(html).not.toContain("PROXY_INFO_METHOD");
-    expect(html).not.toContain("CHẶN KÝ");
-    expect(html).not.toMatch(/wallet_addEthereumChain[\s\S]{0,400}morpho_proxyInfo/);
+    expect(app).not.toContain("morpho_proxyInfo");
+    expect(app).not.toContain("assertProxyNetwork");
+    expect(app).not.toContain("PROXY_INFO_METHOD");
+    expect(app).not.toContain("CHẶN KÝ");
+    expect(app).not.toMatch(/wallet_addEthereumChain[\s\S]{0,400}morpho_proxyInfo/);
   });
 
   it("banner compat theo thương hiệu ví như main, mọi ví đều ok: true", () => {
     // Cấu trúc switch giống main; Ambire có case riêng thay vì default.
-    expect(html).toMatch(/case "rabby": return \{ ok: true,/);
-    expect(html).toMatch(/case "metamask": return \{ ok: true,/);
-    expect(html).toMatch(/case "ambire": return \{ ok: true,/);
-    expect(html).toMatch(/case "frame": return \{ ok: true,/);
-    expect(html).toMatch(/case "coinbase": return \{ ok: true,/);
-    expect(html).toMatch(/case "trust": return \{ ok: true,/);
-    expect(html).toMatch(/default: return \{ ok: true,/);
+    expect(app).toMatch(/case "rabby": return \{ ok: true,/);
+    expect(app).toMatch(/case "metamask": return \{ ok: true,/);
+    expect(app).toMatch(/case "ambire": return \{ ok: true,/);
+    expect(app).toMatch(/case "frame": return \{ ok: true,/);
+    expect(app).toMatch(/case "coinbase": return \{ ok: true,/);
+    expect(app).toMatch(/case "trust": return \{ ok: true,/);
+    expect(app).toMatch(/default: return \{ ok: true,/);
     // Không còn nhánh chặn nào trong banner.
-    expect(html).not.toMatch(/ok: false/);
+    expect(app).not.toMatch(/ok: false/);
   });
 
   it("nhận diện Ambire qua provider flag (chỉ để hiển thị)", () => {
-    expect(html).toMatch(/if \(e\.isAmbire\) return "ambire";/);
+    expect(app).toMatch(/if \(e\.isAmbire\) return "ambire";/);
   });
 
   it("ký gọi thẳng sendTransaction, không gate phía trước", () => {
-    const sends = [...html.matchAll(/walletClient\.sendTransaction\(/g)].map((m) => m.index);
+    const sends = [...app.matchAll(/walletClient\.sendTransaction\(/g)].map((m) => m.index);
     expect(sends).toHaveLength(2);
-    expect(html).not.toMatch(/await assertProxyNetwork\(\)/);
+    expect(app).not.toMatch(/await assertProxyNetwork\(\)/);
   });
 
   it("nút Thêm Mạng Proxy: message thành công như main + giữ hướng dẫn khi ví chặn method", () => {
-    expect(html).toContain('✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.');
+    expect(app).toContain('✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.');
     // UX-only: chỉ hướng dẫn thủ công, không chặn gì.
-    expect(html).toMatch(/msg\.includes\("corresponding handler"\)/);
-    expect(html).toMatch(/nút webapp không thể thêm mạng hộ bạn/);
+    expect(app).toMatch(/msg\.includes\("corresponding handler"\)/);
+    expect(app).toMatch(/nút webapp không thể thêm mạng hộ bạn/);
   });
 
   it("multi-market: có market switcher + khối overview presign", () => {
-    expect(html).toContain('id="market-switcher"');
+    expect(html).toContain('id="market-switcher"'); // markup
     expect(html).toContain('id="market-switcher-wrap"');
-    expect(html).toMatch(/SERVER_MARKETS\.length <= 1/); // ẩn khi 1 market
-    expect(html).toMatch(/window\.switchMarket = function/);
     expect(html).toContain('id="presign-overview"');
-    expect(html).toMatch(/api\/overview/);
-    expect(html).toMatch(/refreshPresignOverview\(\)/);
-    expect(html).toMatch(/initMarketSwitcher\(\)/);
+    expect(app).toMatch(/SERVER_MARKETS\.length <= 1/); // ẩn khi 1 market
+    expect(app).toMatch(/window\.switchMarket = function/);
+    expect(app).toMatch(/api\/overview/);
+    expect(app).toMatch(/refreshPresignOverview\(\)/);
+    expect(app).toMatch(/initMarketSwitcher\(\)/);
   });
 
   it("multi-market: cảnh báo race cùng nonce + note bậc thang nonce", () => {
-    expect(html).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
-    expect(html).toMatch(/trigger trước/);
-    expect(html).toMatch(/sẽ <b>expired<\/b>/);
-    expect(html).toMatch(/Bậc thang nonce/);
+    expect(app).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
+    expect(app).toMatch(/trigger trước/);
+    expect(app).toMatch(/sẽ <b>expired<\/b>/);
+    expect(app).toMatch(/Bậc thang nonce/);
     // Race check trước khi ký: confirm dialog, không chặn cứng.
-    expect(html).toMatch(/TRIGGER trước/);
-    expect(html).toMatch(/EXPIRED ngay khi nonce này được tiêu thụ/);
+    expect(app).toMatch(/TRIGGER trước/);
+    expect(app).toMatch(/EXPIRED ngay khi nonce này được tiêu thụ/);
   });
 
   it("M9: bundle expired/submitted hiện hướng dẫn ký lại với nonce mới", () => {
-    expect(html).toMatch(/r\.status === "expired"/);
-    expect(html).toMatch(/on-chain nonce đã đi qua nonce của bundle đó/);
-    expect(html).toMatch(/Ký lại với nonce mới/);
-    expect(html).toMatch(/submitted\/failed/);
+    expect(app).toMatch(/r\.status === "expired"/);
+    expect(app).toMatch(/on-chain nonce đã đi qua nonce của bundle đó/);
+    expect(app).toMatch(/Ký lại với nonce mới/);
+    expect(app).toMatch(/submitted\/failed/);
   });
 });
