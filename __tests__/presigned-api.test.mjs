@@ -172,11 +172,11 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(unknownPage.text).toContain("test</html>");
   });
 
-  // ---- GET /api/overview — trạng thái bundle của mọi market ----
-  it("GET /api/overview trả summary theo allow-list; market không có bundle → exists:false", async () => {
+  // ---- GET /api/overview — ladder mọi market (v3) ----
+  it("GET /api/overview trả ladder theo allow-list; market không có bundle → ladder rỗng", async () => {
     seedRegistry({
-      [MARKET_A]: { nonce: 5, status: "pending", withdrawals: [{ label: "t1", amountWei: "10", signedTx: "0x01" }] },
-      [MARKET_B]: { nonce: 9, status: "submitted", terminalAt: "2026-09-24T00:00:00.000Z", withdrawals: [] },
+      [MARKET_A]: { marketId: MARKET_A, nonce: 5, status: "pending", withdrawals: [{ label: "t1", amountWei: "10", signedTx: "0x01" }] },
+      [MARKET_B]: { marketId: MARKET_B, nonce: 9, status: "submitted", terminalAt: "2026-09-24T00:00:00.000Z", withdrawals: [] },
     });
     const resp = await api("GET", "/api/overview");
     expect(resp.status).toBe(200);
@@ -184,16 +184,45 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(resp.json.markets).toHaveLength(2);
     const a = resp.json.markets.find((m) => m.id === MARKET_A);
     const b = resp.json.markets.find((m) => m.id === MARKET_B);
-    expect(a).toMatchObject({ id: MARKET_A, exists: true, status: "pending", nonce: 5 });
-    expect(a.tiers).toHaveLength(1);
-    expect(b).toMatchObject({ id: MARKET_B, exists: true, status: "submitted", nonce: 9 });
+    expect(a.ladder).toHaveLength(1);
+    expect(a.ladder[0]).toMatchObject({ status: "pending", nonce: 5 });
+    expect(a.ladder[0].tiers).toHaveLength(1);
+    expect(b.ladder[0]).toMatchObject({ status: "submitted", nonce: 9 });
+    // rounds: nhóm theo nonce, mỗi entry mang marketId + summary
+    const round9 = resp.json.rounds.find((r) => r.nonce === 9);
+    expect(round9.markets[0]).toMatchObject({ id: MARKET_B, status: "submitted" });
   });
 
-  it("GET /api/overview trên registry rỗng: mọi market exists:false", async () => {
+  it("GET /api/overview: cùng nonce 2 market → 1 round 2 entry (race view)", async () => {
+    seedRegistry({
+      [MARKET_A]: { marketId: MARKET_A, nonce: 7, status: "pending", withdrawals: [] },
+      [MARKET_B]: { marketId: MARKET_B, nonce: 7, status: "pending", withdrawals: [] },
+    });
+    const resp = await api("GET", "/api/overview");
+    expect(resp.status).toBe(200);
+    const round7 = resp.json.rounds.find((r) => r.nonce === 7);
+    expect(round7.markets).toHaveLength(2);
+  });
+
+  it("GET /api/overview trên registry rỗng: ladder rỗng, rounds rỗng", async () => {
     seedRegistry({});
     const resp = await api("GET", "/api/overview");
     expect(resp.status).toBe(200);
-    expect(resp.json.markets.every((m) => m.exists === false)).toBe(true);
+    expect(resp.json.markets.every((m) => m.ladder.length === 0)).toBe(true);
+    expect(resp.json.rounds).toEqual([]);
+  });
+
+  it("v3 ladder: cùng market nhiều nonce → GET /api/presign trả ladder đầy đủ, head = nonce thấp nhất", async () => {
+    seedRegistry({
+      [`${MARKET_A}@7`]: { marketId: MARKET_A, nonce: 7, status: "submitted", withdrawals: [] },
+      [`${MARKET_A}@8`]: { marketId: MARKET_A, nonce: 8, status: "pending", withdrawals: [{ label: "t1", amountWei: "10", signedTx: "0x01" }] },
+    });
+    const resp = await api("GET", `/api/presign?market=${MARKET_A}`);
+    expect(resp.status).toBe(200);
+    expect(resp.json.ladder).toHaveLength(2);
+    expect(resp.json.ladder[0].nonce).toBe(7); // head = nonce thấp nhất
+    expect(resp.json.ladder[1].nonce).toBe(8);
+    expect(resp.json.status).toBe("submitted"); // head back-compat
   });
 
   it("M10: state challenge là per-handler (không chia sẻ giữa các handler)", async () => {

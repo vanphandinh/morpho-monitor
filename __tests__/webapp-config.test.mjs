@@ -147,15 +147,20 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
     expect(html).toMatch(/initMarketSwitcher\(\)/);
   });
 
-  it("multi-market: cảnh báo trùng nonce giữa các bundle hoạt động", () => {
+  it("multi-market: cảnh báo race cùng nonce + note bậc thang nonce", () => {
     expect(html).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
-    expect(html).toMatch(/chỉ 1 bundle được mine/);
-    expect(html).toMatch(/r\.status === "pending" \|\| r\.status === "broadcasting"/);
+    expect(html).toMatch(/trigger trước/);
+    expect(html).toMatch(/sẽ <b>expired<\/b>/);
+    expect(html).toMatch(/Bậc thang nonce/);
+    // Race check trước khi ký: confirm dialog, không chặn cứng.
+    expect(html).toMatch(/TRIGGER trước/);
+    expect(html).toMatch(/EXPIRED ngay khi nonce này được tiêu thụ/);
   });
 
   it("M9: bundle expired/submitted hiện hướng dẫn ký lại với nonce mới", () => {
-    expect(html).toMatch(/data\.status === "expired"/);
-    expect(html).toMatch(/nonce dùng chung cho mọi market/);
-    expect(html).toMatch(/ký lại/);
+    expect(html).toMatch(/r\.status === "expired"/);
+    expect(html).toMatch(/on-chain nonce đã đi qua nonce của bundle đó/);
+    expect(html).toMatch(/Ký lại với nonce mới/);
+    expect(html).toMatch(/submitted\/failed/);
   });
 });

@@ -25,7 +25,7 @@ import {
   MARKET_INPUT_INVALID,
   MARKET_NOT_CONFIGURED,
 } from "./market-config.mjs";
-import { readRegistry, updateRegistry, registrySummary, ACTIVE_CLAIM_CONFLICT } from "./presigned-store.mjs";
+import { readRegistry, updateRegistry, registrySummary, marketBundles, nonceRounds, bundleKey, ACTIVE_CLAIM_CONFLICT } from "./presigned-store.mjs";
 import { verifyPresignedBundle } from "./presign-verify.mjs";
 
 // Rate limit for /api/challenge: max 10 requests per minute per IP
@@ -203,10 +203,24 @@ export function createRequestHandler({
       }
       try {
         const bundles = readRegistry(presignedPath).bundles;
+        // Multi-nonce ladder (v3): mỗi market có THỂ giữ nhiều bundle (nonce
+        // liên tiếp). Trả ladder nonce tăng dần + rounds cùng nonce để browser
+        // vẽ overview và cảnh báo race.
+        const rounds = nonceRounds(bundles)
+          .map(({ nonce, entries }) => ({
+            nonce,
+            markets: entries
+              .map((e) => ({ id: e.marketId, key: e.key, ...registrySummary(e.bundle) }))
+              .sort((a, b) => (markets.findIndex((m) => m.id === a.id) - markets.findIndex((m) => m.id === b.id))),
+          }));
         sendJson(res, 200, {
           ok: true,
           lenderAddress: LENDER_ADDRESS,
-          markets: markets.map((market) => ({ id: market.id, ...registrySummary(bundles[market.id]) })),
+          markets: markets.map((market) => ({
+            id: market.id,
+            ladder: marketBundles(bundles, market.id).map(({ key, bundle }) => ({ key, ...registrySummary(bundle) })),
+          })),
+          rounds,
         });
       } catch (err) {
         sendJson(res, statusForError(err), { ok: false, error: err.message });
@@ -221,8 +235,16 @@ export function createRequestHandler({
       }
       try {
         const marketId = requireMarket(new URL(req.url, "http://localhost").searchParams.get("market"));
-        const summary = registrySummary(readRegistry(presignedPath).bundles[marketId]);
-        sendJson(res, 200, { ok: true, ...summary });
+        // v3: trả LADDER — mọi bundle của market này, nonce tăng dần.
+        const ladder = marketBundles(readRegistry(presignedPath).bundles, marketId)
+          .map(({ key, bundle }) => ({ key, ...registrySummary(bundle) }));
+        const head = ladder[0];
+        sendJson(res, 200, {
+          ok: true,
+          ladder,
+          // Back-compat head: bundle nonce thấp nhất (shape cũ per-market).
+          ...(head ? { ...head } : { exists: false }),
+        });
       } catch (err) {
         sendJson(res, statusForError(err), { ok: false, exists: false, error: err.message });
       }
@@ -282,22 +304,36 @@ export function createRequestHandler({
 
       try {
         const marketId = requireMarket(urlObj.searchParams.get("market"));
+        const nonceParam = urlObj.searchParams.get("nonce");
         let outcome;
         await updateRegistry(presignedPath, (registry) => {
-          const bundle = registry.bundles[marketId];
-          if (tierIdx !== null && bundle) {
-            const idx = parseInt(tierIdx, 10);
-            if (isNaN(idx) || idx < 0 || idx >= (bundle.withdrawals?.length || 0)) {
-              throw Object.assign(new Error(`Invalid tier index: ${tierIdx}`), { code: MARKET_INPUT_INVALID });
+          // v3: bundles are keyed `marketId@nonce`. DELETE without nonce →
+          // delete EVERY bundle of this market (old per-market semantics,
+          // still guarded by the active-claim check). With nonce → only that
+          // ladder rung.
+          const targets = marketBundles(registry.bundles, marketId);
+          if (tierIdx !== null) {
+            const rung = nonceParam !== null ? targets.filter((t) => String(t.bundle.nonce) === nonceParam) : targets;
+            const bundle = rung[0]?.bundle;
+            if (bundle) {
+              const idx = parseInt(tierIdx, 10);
+              if (isNaN(idx) || idx < 0 || idx >= (bundle.withdrawals?.length || 0)) {
+                throw Object.assign(new Error(`Invalid tier index: ${tierIdx}`), { code: MARKET_INPUT_INVALID });
+              }
+              const removed = bundle.withdrawals.splice(idx, 1)[0];
+              console.log(
+                `[${new Date().toISOString()}] 🗑️  Removed tier "${removed.label}" from presigned bundle ${rung[0].key} (${bundle.withdrawals.length} remaining)`
+              );
+              outcome = { ok: true, removed: removed.label, remaining: bundle.withdrawals.length };
+            } else {
+              outcome = { ok: true, removed: null, remaining: 0 };
             }
-            const removed = bundle.withdrawals.splice(idx, 1)[0];
-            console.log(
-              `[${new Date().toISOString()}] 🗑️  Removed tier "${removed.label}" from presigned bundle (${bundle.withdrawals.length} remaining)`
-            );
-            outcome = { ok: true, removed: removed.label, remaining: bundle.withdrawals.length };
           } else {
-            const deleted = bundle ? 1 : 0;
-            delete registry.bundles[marketId];
+            let deleted = 0;
+            for (const { key, bundle } of targets) {
+              if (bundle) deleted++;
+              delete registry.bundles[key];
+            }
             console.log(
               `[${new Date().toISOString()}] 🗑️  Presigned bundle deleted for market ${marketId.slice(0, 12)}… (${deleted} bundle)`
             );
@@ -348,7 +384,11 @@ export function createRequestHandler({
           if (parsed.version !== 2) {
             throw Object.assign(new Error("Presigned bundle must use version 2"), { code: MARKET_INPUT_INVALID });
           }
+          if (!Number.isFinite(Number(parsed.nonce))) {
+            throw Object.assign(new Error("Presigned bundle requires a numeric nonce"), { code: MARKET_INPUT_INVALID });
+          }
           const incoming = sanitizePendingBundle(parsed);
+          incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
           const verified = await verifyPresignedBundle(incoming, {
             morphoBlueAddress: MORPHO_BLUE_ADDRESS,
             lenderAddress: LENDER_ADDRESS,
@@ -363,7 +403,8 @@ export function createRequestHandler({
 
           {
             try {
-              const old = registry.bundles[marketId];
+              const key = bundleKey(marketId, incoming.nonce);
+              const old = registry.bundles[key];
               if (old && old.withdrawals && old.withdrawals.length > 0 && !["broadcasting", "submitted", "failed"].includes(old.status)) {
                 if (old.nonce === incoming.nonce) {
                   const getMergeKey = (w) => {
@@ -410,13 +451,14 @@ export function createRequestHandler({
             throw Object.assign(new Error(`Merged bundle verify failed: ${mergedVerified.error}`), { code: MARKET_INPUT_INVALID });
           }
 
-          registry.bundles[marketId] = merged;
+          const key = bundleKey(marketId, incoming.nonce);
+          registry.bundles[key] = merged;
 
           console.log(
-            `[${new Date().toISOString()}] 📝 Presigned bundle ${action}: ` +
+            `[${new Date().toISOString()}] 📝 Presigned bundle ${action} at ${key.slice(0, 22)}…: ` +
               `${merged.withdrawals.length} tiers, nonce=${incoming.nonce}`
           );
-          outcome = { ok: true, tiers: merged.withdrawals.length, action };
+          outcome = { ok: true, tiers: merged.withdrawals.length, action, key };
         }, { origin: "user" });
         // Response only after the mutation committed (guard passed).
         sendJson(res, 200, outcome);
