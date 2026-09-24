@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig } from "../webapp-config.mjs";
+import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig, assertProxyAuthConfig } from "../webapp-config.mjs";
 import { RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -110,6 +110,35 @@ describe("assertWebappAuthConfig (P1, 2026-09-24)", () => {
 
   it("có WEBAPP_PASSWORD → secure, không cảnh báo", () => {
     expect(assertWebappAuthConfig({ password: "s3cret" })).toEqual({ secure: true, warning: null });
+  });
+});
+
+describe("assertProxyAuthConfig (R3)", () => {
+  it("loopback không cần mật khẩu (dev) — không cảnh báo, không throw", () => {
+    for (const host of [undefined, "127.0.0.1", "localhost", "::1"]) {
+      expect(assertProxyAuthConfig({ host, password: "", allowInsecure: false })).toEqual({ secure: false, warning: null, publicBind: false });
+    }
+  });
+
+  it("bind PUBLIC mà thiếu mật khẩu ⇒ fail-fast, message có hành động", () => {
+    let err = null;
+    try { assertProxyAuthConfig({ host: "0.0.0.0", password: "", allowInsecure: false }); } catch (e) { err = e; }
+    expect(err).not.toBeNull();
+    expect(err.message).toContain("PROXY_HOST=0.0.0.0");
+    expect(err.message).toContain("WEBAPP_PASSWORD");
+    expect(err.message).toContain("WEBAPP_ALLOW_INSECURE=1");
+    expect(err.message).toContain("127.0.0.1");
+  });
+
+  it("WEBAPP_ALLOW_INSECURE=1 ⇒ chạy được nhưng cảnh báo rõ /captured mở", () => {
+    const mode = assertProxyAuthConfig({ host: "0.0.0.0", password: "", allowInsecure: true });
+    expect(mode.secure).toBe(false);
+    expect(mode.publicBind).toBe(true);
+    expect(mode.warning).toContain("/captured");
+  });
+
+  it("có mật khẩu ⇒ secure kể cả bind public (deployment hiện tại không bị ảnh hưởng)", () => {
+    expect(assertProxyAuthConfig({ host: "0.0.0.0", password: "s3cret" })).toEqual({ secure: true, warning: null, publicBind: true });
   });
 });
 

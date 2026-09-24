@@ -26,6 +26,7 @@ import {
 import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
 import { createProxyRequestHandler, defaultBlockFallback } from "./proxy-dispatcher.mjs";
+import { assertProxyAuthConfig } from "./webapp-config.mjs";
 
 // Install global error handlers so unhandled RPC rejections don't crash the process
 addGlobalErrorHandlers("proxy-rpc");
@@ -33,7 +34,18 @@ addGlobalErrorHandlers("proxy-rpc");
 const PORT = PROXY_PORT || 8545;
 const BIND_HOST = PROXY_HOST || "127.0.0.1";
 
-// Market allow-list first: config errors must fail fast with an actionable message.
+// Auth policy TRƯỚC khi mở port (R3): bind public mà thiếu WEBAPP_PASSWORD thì
+// /captured và DELETE /captured mở cho mọi người (dev mode). Fail-fast giống
+// webapp-server, trừ khi deployment chấp nhận rủi ro bằng WEBAPP_ALLOW_INSECURE=1.
+try {
+  const authMode = assertProxyAuthConfig({ host: BIND_HOST });
+  if (authMode.warning) console.warn(authMode.warning);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
+// Market allow-list next: config errors must fail fast with an actionable message.
 const configuredMarkets = loadMarkets(MARKETS_FILE);
 
 // Robust public client with round-robin across all RPC URLs,
@@ -106,10 +118,7 @@ server.listen(PORT, BIND_HOST, () => {
   console.log(`  🔗 Bundle:   POST ${proto}://127.0.0.1:${PORT}/bundle`);
   console.log(`  👛 Capture chỉ chấp nhận tx from=${LENDER_ADDRESS?.slice(0, 10)}... (Morpho withdraw)`);
   if (BIND_HOST !== "127.0.0.1" && BIND_HOST !== "localhost") {
-    console.warn(`  ⚠️  Proxy bind ${BIND_HOST} (public). JSON-RPC không auth — gate bằng sender=lender.`);
-    if (!WEBAPP_PASSWORD) {
-      console.warn(`  ⚠️  WEBAPP_PASSWORD trống — /bundle và /captured mở (dev mode). Nên đặt mật khẩu khi public.`);
-    }
+    console.warn(`  ⚠️  Proxy bind ${BIND_HOST} (public). JSON-RPC không auth — gate bằng sender=lender + market allow-list.`);
   }
   if (sslOptions) console.log(`  🔒 SSL enabled — cert: ${SSL_CERT_PATH}`);
   console.log("");

@@ -79,6 +79,43 @@ export function injectWebappConfig(html, config, { marker = "</head>" } = {}) {
  * (xóa bundle đã ký) — trong khi docker-compose publish webapp ra ngoài.
  * Dev local có thể chủ đích tắt bằng WEBAPP_ALLOW_INSECURE=1.
  */
+/**
+ * Chính sách auth của proxy (audit R3).
+ *
+ * webapp fail-fast khi thiếu WEBAPP_PASSWORD, nhưng proxy chỉ warn — mà trong dev
+ * mode `checkInternalSecret()` trả `true` cho MỌI request, nên bind public mà
+ * không có mật khẩu là mở `GET /captured` (liệt kê txHash) và `DELETE /captured`
+ * (xoá buffer capture) cho bất kỳ ai vào được port 8545. docker-compose publish
+ * đúng port này, nên đây không phải tình huống giả định.
+ *
+ * Loopback (mặc định) vẫn chạy không cần mật khẩu cho dev. Bind public thì cần
+ * mật khẩu, hoặc chấp nhận rủi ro TƯỜNG MINH bằng WEBAPP_ALLOW_INSECURE=1.
+ */
+export function assertProxyAuthConfig({
+  host,
+  password = WEBAPP_PASSWORD,
+  allowInsecure = /^(1|true|yes)$/i.test(process.env.WEBAPP_ALLOW_INSECURE || ""),
+} = {}) {
+  const isLoopback = !host || host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const publicBind = !isLoopback;
+  if (password) return { secure: true, warning: null, publicBind };
+  if (!publicBind) return { secure: false, warning: null, publicBind: false };
+  if (allowInsecure) {
+    return {
+      secure: false,
+      publicBind: true,
+      warning:
+        `⚠️  WEBAPP_PASSWORD trống + PROXY_HOST=${host} (public) — /captured và DELETE /captured MỞ cho mọi người (dev mode).` +
+        "\n   Chỉ dùng tạm để debug; đặt WEBAPP_PASSWORD trong .env trước khi expose.",
+    };
+  }
+  throw new Error(
+    `❌ PROXY_HOST=${host} (public) nhưng WEBAPP_PASSWORD trống — proxy sẽ MỞ /captured và DELETE /captured cho bất kỳ ai.\n` +
+    "   → Đặt WEBAPP_PASSWORD=<mật khẩu mạnh> trong .env, hoặc bind loopback (PROXY_HOST=127.0.0.1).\n" +
+    "   → Chấp nhận rủi ro có ý thức (KHÔNG dùng trên VPS): set WEBAPP_ALLOW_INSECURE=1."
+  );
+}
+
 export function assertWebappAuthConfig({
   password = WEBAPP_PASSWORD,
   allowInsecure = /^(1|true|yes)$/i.test(process.env.WEBAPP_ALLOW_INSECURE || ""),
