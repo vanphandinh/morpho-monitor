@@ -372,3 +372,78 @@ Chuỗi test qua cả hai vòng audit: `356` → `394` → **`419`** (+63, 24 fi
 2. `invalid` vẫn là terminal với lỗi nội dung (đúng chủ ý: verify là hàm thuần, chạy lại cũng sai như vậy) —
    khác biệt so với trước là nay **có cảnh báo**.
 3. `.env.example` dòng giới hạn market (do người dùng sửa tay) vẫn chưa được commit.
+
+---
+
+## 9. Vòng 3 — đo hạ tầng RPC, rồi sửa theo số đo (2026-09-24)
+
+Nghi vấn nêu ở §8: `getTransactionReceipt` và `getTransactionCount` là **hai lời gọi
+liền nhau**, mà vòng xoay đổi endpoint sau **mỗi** request ⇒ hai góc nhìn khác node.
+Thay vì sửa theo cảm tính, đo trước.
+
+### Phép đo (11 endpoint trong `RPC_URLS`, 10 mẫu cách nhau 2.5s)
+
+```text
+cặp slot LIỀN KỀ trong vòng xoay lệch head nhau: 2/80 mẫu = 2.5%
+skew lớn nhất quan sát được: 1 block (12s); 9/10 mẫu skew = 0
+
+rpc.ankr.com (2/11 slot) → HTTP 401 {"error":"message: API key disabled, json-rpc code: -32051"}
+                            ở 10/10 mẫu
+ethereum-rpc.publicnode.com → 1/11 request timeout 6s (không lặp lại)
+```
+
+Kết luận: cơ chế lệch node **có thật** nhưng thưa (đúng như phân tích — cần đồng thời
+lệch head *và* tx của claim vừa mine). Nhưng phép đo lộ ra một vấn đề **thực tế hơn**:
+
+### D5 (MEDIUM, vận hành) — endpoint chết vĩnh viễn không bao giờ bị quarantine
+
+`isTransportError` chỉ coi 408/429/5xx là lỗi tạm thời, nên **401/403 không được tính
+vào circuit breaker**: `recordFailure` không được gọi ⇒ circuit không mở ⇒ 2/11 slot
+(với deployment hiện tại: cả hai URL ankr) bị gọi ở **mọi** vòng xoay, mãi mãi, **không
+một dòng log nào**. Chi phí: mỗi lần rơi vào slot đó là một round-trip vô ích rồi mới
+fallback (~0.4–0.5s theo phép đo) — tức ~18% request của mọi service.
+
+**Đã sửa** (`5ff5048`): `isPermanentEndpointError` (401/403, và message khớp
+`api key (disabled|invalid|not found|expired|missing)`), `recordFailure({ isPermanent })`
+mở circuit ngay sau 1 lần với cooldown trần riêng **10 phút** (thay vì 2 phút: endpoint
+chết thì không cần probe mỗi 2 phút, nhưng vẫn tự phục hồi nếu key được bật lại).
+
+### D6 (LOW-HIGH tuỳ điều kiện) — hai lần đọc liền nhau đi qua hai node
+
+**Đã sửa** (`5ff5048` + `823f673`), hai lớp:
+
+1. **Cùng node** — `stickyMs` trên transport (mặc định `0` = không đổi hành vi; chỉ
+   `monitor.mjs` bật `2_000`). Cửa sổ đo từ lúc request trước **hoàn tất**, nên một
+   call chậm (timeout rồi retry) không phá cặp; endpoint đang dính mà circuit OPEN thì
+   vẫn fallback.
+2. **Neo block** — `nonceConsumedByAnotherTx` đọc `getBlockNumber()` rồi
+   `getTransactionCount({ blockNumber: head - EVIDENCE_CONFIRMATIONS })` (=2 ≈ 24s)
+   thay cho `blockTag: "latest"`, và trả `anchorBlock` để ghi vào
+   `diagnostic`/`reason` (người vận hành kiểm tay được đúng block đã đọc nonce).
+
+### Bằng chứng sau fix
+
+```text
+# A) endpoint thật trả 401 → bị quarantine kèm thông báo hành động được
+[rpc] Circuit OPEN for rpc.ankr.com — endpoint từ chối vĩnh viễn (HTTP 401 / HTTP request failed.
+      Status: 401 URL: https://rpc.ankr.com/) — kiểm tra URL và API key trong .env RPC_URLS, cooldown 60s
+circuit: permanent=true failures=1 open=true cooldown=61.2s
+
+# B) cùng một node, đối chứng logic cũ vs mới (latest=8, nonce ở head-2=7, claim nonce=7)
+logic CŨ (latest)  ⇒ nhả? true     ← nhả SAI
+logic MỚI (head-2) ⇒ nhả? false    ← giữ claim
+```
+
+Test: 8 test mới (`stickyMs` mặc định/xuyên chuỗi/hết cửa sổ/fallback khi dính OPEN,
+phân loại lỗi vĩnh viễn, cooldown trần, và test (f) đối chứng node tụt hậu).
+
+### Quyết định phạm vi
+
+- **P5 (2 chu kỳ đồng thuận) vẫn KHÔNG làm** — hai chu kỳ cách nhau 30s vẫn có thể cùng
+  lệch node; D6 sửa đúng gốc, rẻ hơn và không thêm trạng thái persist.
+- **Không bật sticky cho proxy/CLI** (giữ blast radius nhỏ: `createRoundRobinTransport`
+  là transport dùng chung, `detect_changes` xếp **high** cho lần sửa này). Nếu sau này
+  ví qua proxy cần nhất quán (nonce/fee/estimate liền nhau), chỉ cần truyền `stickyMs`.
+- **Việc của người vận hành, không phải của code:** 2 endpoint ankr trong `.env` có
+  API key đã bị tắt — cần thay URL hoặc bật lại key, nếu không thì ~18% request vẫn
+  phải đi vòng qua một endpoint bị quarantine 10 phút/lần.
