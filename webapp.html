@@ -473,6 +473,9 @@
     const SERVER_MARKETS = Array.isArray(CFG.markets) ? CFG.markets : [];
     const SERVER_LENDER_ADDRESS = CFG.lenderAddress || null;
     const SERVER_PROXY_RPC_URL = CFG.proxyRpcUrl || "http://127.0.0.1:8545";
+    // Ngưỡng recovery của presigned-broadcast.mjs (inject từ server). Claim đang
+    // broadcasting lâu hơn ngưỡng này là dấu hiệu bị thay thế/kẹt — phải hiện UI.
+    const CLAIM_RECOVERY_MS = Number(CFG.claimRecoveryMs) > 0 ? Number(CFG.claimRecoveryMs) : 180000;
 
     const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
 
@@ -590,6 +593,28 @@
     function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
     function shortenAddr(addr) {
       return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+    }
+
+    /**
+     * Số phút một claim đang broadcasting (null nếu thiếu/không hợp lệ mốc thời
+     * gian). Server trả `broadcastingAt` trong ladder (audit R1): claim không mine
+     * được sẽ chặn CẢ bậc thang, nên tuổi claim phải nhìn thấy được trong UI.
+     */
+    function broadcastingAgeMinutes(broadcastingAt, nowMs = Date.now()) {
+      const started = Date.parse(broadcastingAt ?? "");
+      if (!Number.isFinite(started)) return null;
+      return Math.floor(Math.max(0, nowMs - started) / 60000);
+    }
+
+    /**
+     * Claim đang broadcasting đã quá ngưỡng recovery (presigned-broadcast.mjs,
+     * inject qua window.MORPHO_CONFIG.claimRecoveryMs): có thể đã bị một tx khác
+     * thay thế hoặc kẹt vì fee thấp.
+     */
+    function isClaimOverdue(r, nowMs = Date.now()) {
+      if (!r || r.status !== "broadcasting") return false;
+      const started = Date.parse(r.broadcastingAt ?? "");
+      return Number.isFinite(started) && nowMs - started > CLAIM_RECOVERY_MS;
     }
 
     function showError(msg) {
@@ -1852,7 +1877,15 @@
               ? '<span style="color:var(--yellow)">' + esc(r.status) + '</span>'
               : r.status === "submitted"
                 ? '<span style="color:var(--green)">' + esc(r.status) + '</span>'
-                : '<span style="color:var(--text-dim)">' + esc(r.status) + '</span>';
+                : r.status === "superseded"
+                  ? '<span style="color:var(--red)" title="Nonce đã bị một giao dịch khác tiêu thụ — chữ ký này không thể lên bảng">bị thay thế</span>'
+                  : '<span style="color:var(--text-dim)">' + esc(r.status) + '</span>';
+          // Tuổi claim: claim không mine được sẽ chặn cả bậc thang (audit R1).
+          const overdue = isClaimOverdue(r);
+          const ageMinutes = r.status === "broadcasting" ? broadcastingAgeMinutes(r.broadcastingAt) : null;
+          const ageLabel = ageMinutes === null
+            ? ""
+            : ` <span style="font-size:0.8rem;color:${overdue ? "var(--red)" : "var(--text-dim)"}">(đang broadcast ${ageMinutes} phút${overdue ? " — QUÁ HẠN" : ""})</span>`;
           const tierList = (r.tiers || []).map((t) => {
             const label = t.type === "all-shares"
               ? `🔄 Rút toàn bộ shares (${t.sharesWei || "?"} shares)`
@@ -1864,6 +1897,7 @@
             `<div class="row"><span class="label">Nonce:</span><span class="value nonce-display">${r.nonce ?? "—"}</span>` +
             `<span class="label" style="margin-left:12px">Trạng thái:</span>${badge}` +
             (isHead ? ' <span style="color:var(--text-dim);font-size:0.8rem">(nonce kế tiếp sẽ broadcast)</span>' : "") +
+            ageLabel +
             `</div>${tierList}</div>`;
         };
 
@@ -1882,9 +1916,18 @@
           document.getElementById("presign-existing-info").innerHTML +=
             `<div class="banner warn" style="margin-top:8px">♻️ Có bundle đã <b>expired</b>: on-chain nonce đã đi qua nonce của bundle đó (bị market khác/tự nhận tiêu thụ) — bundle cũ không thể broadcast nữa. Ký lại với nonce mới nếu vẫn muốn rút.</div>`;
         }
-        if (ladder.some((r) => r.status === "submitted" || r.status === "failed")) {
+        if (ladder.some((r) => r.status === "superseded")) {
           document.getElementById("presign-existing-info").innerHTML +=
-            `<div class="banner info" style="margin-top:8px">📜 Có record terminal (<b>submitted/failed</b>) — chỉ là lịch sử, có thể xóa để registry gọn.</div>`;
+            `<div class="banner warn" style="margin-top:8px">♻️ Có bundle <b>superseded</b>: nonce của nó đã bị một giao dịch KHÁC tiêu thụ, nên on-chain nonce đã đi qua và chữ ký cũ không thể lên bảng. Lấy nonce mới rồi ký lại nếu vẫn muốn rút; bản ghi này chỉ là lịch sử (xoá được).</div>`;
+        }
+        const overdueRungs = ladder.filter((r) => isClaimOverdue(r));
+        if (overdueRungs.length > 0) {
+          document.getElementById("presign-existing-info").innerHTML +=
+            `<div class="banner error" style="margin-top:8px">⚠️ Bundle nonce ${overdueRungs.map((r) => r.nonce).join(", ")} đang <b>broadcasting quá ${Math.round(CLAIM_RECOVERY_MS / 60000)} phút</b> — có thể giao dịch đã bị ví thay thế hoặc kẹt (fee thấp). Kiểm tra nonce trên Etherscan: nếu nonce đó đã bị tx khác dùng, monitor sẽ tự nhả sang <b>superseded</b> rồi rung kế tiếp được broadcast; nếu chưa, đối soát txHash trước khi sửa registry.</div>`;
+        }
+        if (ladder.some((r) => r.status === "submitted" || r.status === "failed" || r.status === "superseded")) {
+          document.getElementById("presign-existing-info").innerHTML +=
+            `<div class="banner info" style="margin-top:8px">📜 Có record terminal (<b>submitted/failed/superseded</b>) — chỉ là lịch sử, có thể xóa để registry gọn.</div>`;
         }
         document.getElementById("presign-existing-info").innerHTML +=
           `<button class="btn-danger" onclick="deleteBundle()" style="margin-top:8px">🗑️ Xóa Mọi Bundle Của Market Này</button>`;

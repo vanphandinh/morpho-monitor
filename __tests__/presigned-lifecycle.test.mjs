@@ -161,6 +161,8 @@ describe("presigned broadcaster lifecycle", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const claim = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     expect(claim.conflict).toBe(true);
+    // Cảnh báo xung đột nonce dùng (kind, nonce) làm danh tính (audit R1).
+    expect(claim.nonce).toBe(7);
     expect(client.sendRawTransaction).not.toHaveBeenCalled();
     // Cả hai claim vẫn nguyên vẹn — không tự phá một cái nào.
     const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -395,6 +397,10 @@ describe("R1 — nhả claim chết (nonce đã bị tx KHÁC tiêu thụ)", () 
     };
     const c1 = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["b", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     expect(c1.superseded).toBe(true);
+    // Contract cho kênh cảnh báo (monitor.alertOnLifecycle): phải có id/nonce/diagnostic.
+    expect(c1.id).toBe("a@7");
+    expect(c1.bundle?.nonce).toBe(7);
+    expect(typeof c1.diagnostic).toBe("string");
     // Bằng chứng phải dùng nonce ĐÃ MINE ("latest"), không phải pending.
     expect(blockTags).toContain("latest");
     // Nonce đã tiêu thụ ⇒ không rebroadcast vô ích.

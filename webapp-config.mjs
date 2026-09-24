@@ -8,6 +8,7 @@
  * qua HTTPS địa chỉ đó trỏ về máy của user, không phải server.
  */
 import { LENDER_ADDRESS, PROXY_RPC_URL, RPC_URLS, WEBAPP_PASSWORD } from "./shared.mjs";
+import { RECOVERY_THRESHOLD_MS } from "./presigned-broadcast.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -55,7 +56,9 @@ export function buildWebappConfig({
     );
   }
 
-  return { markets, lenderAddress: lender, proxyRpcUrl: proxyUrl, rpcUrls: urls };
+  // claimRecoveryMs: ngưỡng "claim đã quá hạn recovery" (presigned-broadcast.mjs)
+  // để browser hiển thị tuổi claim đang broadcasting mà không copy hằng số (R1).
+  return { markets, lenderAddress: lender, proxyRpcUrl: proxyUrl, rpcUrls: urls, claimRecoveryMs: RECOVERY_THRESHOLD_MS };
 }
 
 /**

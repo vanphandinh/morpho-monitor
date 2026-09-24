@@ -31,6 +31,28 @@ function shortenAddr(addr) {
 }
 
 /**
+ * Age in minutes of a broadcasting claim (audit R1).
+ * Mirrors webapp.html `broadcastingAgeMinutes`.
+ */
+function broadcastingAgeMinutes(broadcastingAt, nowMs = Date.now()) {
+  const started = Date.parse(broadcastingAt ?? "");
+  if (!Number.isFinite(started)) return null;
+  return Math.floor(Math.max(0, nowMs - started) / 60000);
+}
+
+/**
+ * Is a broadcasting claim past the recovery threshold?
+ * Mirrors webapp.html `isClaimOverdue`. Threshold is injected by the server
+ * (window.MORPHO_CONFIG.claimRecoveryMs) from presigned-broadcast.mjs.
+ */
+const CLAIM_RECOVERY_MS = 180_000;
+function isClaimOverdue(r, nowMs = Date.now()) {
+  if (!r || r.status !== "broadcasting") return false;
+  const started = Date.parse(r.broadcastingAt ?? "");
+  return Number.isFinite(started) && nowMs - started > CLAIM_RECOVERY_MS;
+}
+
+/**
  * Compute supply assets from shares.
  * Mirrors webapp.html line 454-456.
  *
@@ -323,5 +345,34 @@ describe("webapp: validateWithdraw()", () => {
       liquidity: 500_000000n,
     });
     expect(result.valid).toBe(true);
+  });
+});
+
+describe("claim age hiển thị cho claim đang broadcasting (R1)", () => {
+  const now = Date.parse("2026-09-24T12:00:00.000Z");
+  const ago = (ms) => new Date(now - ms).toISOString();
+
+  it("tính số phút từ broadcastingAt", () => {
+    expect(broadcastingAgeMinutes(ago(90_000), now)).toBe(1);
+    expect(broadcastingAgeMinutes(ago(3_600_000), now)).toBe(60);
+    expect(broadcastingAgeMinutes(ago(0), now)).toBe(0);
+  });
+
+  it("thiếu/không hợp lệ mốc thời gian ⇒ null (không vẽ tuổi giả)", () => {
+    expect(broadcastingAgeMinutes(null, now)).toBe(null);
+    expect(broadcastingAgeMinutes(undefined, now)).toBe(null);
+    expect(broadcastingAgeMinutes("không-phải-ngày", now)).toBe(null);
+  });
+
+  it("chỉ claim đang broadcasting mới có tuổi", () => {
+    expect(broadcastingAgeMinutes(ago(120_000), now)).toBe(2); // hàm thuần: caller giới hạn theo status
+    expect(isClaimOverdue({ status: "pending", broadcastingAt: ago(600_000) }, now)).toBe(false);
+    expect(isClaimOverdue({ status: "submitted", broadcastingAt: ago(600_000) }, now)).toBe(false);
+  });
+
+  it("quá ngưỡng recovery (180s) ⇒ báo quá hạn; đúng ngưỡng thì chưa", () => {
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(CLAIM_RECOVERY_MS) }, now)).toBe(false);
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(CLAIM_RECOVERY_MS + 1) }, now)).toBe(true);
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: null }, now)).toBe(false);
   });
 });

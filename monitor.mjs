@@ -9,6 +9,7 @@ import { createCheckScheduler, createWssWatcher } from "./monitor-triggers.mjs";
 import { createWssConnect } from "./wss-connect.mjs";
 import { broadcastEligible as runPresignedBroadcast } from "./presigned-broadcast.mjs";
 import { dispatchNotifications } from "./notification-dispatch.mjs";
+import { createLifecycleAlerter, postNtfy } from "./lifecycle-alert.mjs";
 import { sendVoipNotification } from "./voip.mjs";
 
 addGlobalErrorHandlers("monitor");
@@ -18,6 +19,13 @@ const publicClient = createRobustPublicClient(RPC_URLS);
 const topic = NTFY_TOPIC || `morpho-monitor-${crypto.randomBytes(4).toString("hex")}`;
 const states = new Map();
 let reader, notificationsToday = 0, dayStart = Date.now(), scheduler, wssWatcher;
+
+// R1: claim bị tx khác thay thế / cần đối soát tay / xung đột nonce là những ca
+// "bậc thang không thể tiến". Trước đây chúng chỉ nằm trong log mỗi chu kỳ nên
+// monitor im lặng dù đã ngừng broadcast. Kênh này KHÔNG tiêu quota thanh khoản.
+const lifecycleAlerts = createLifecycleAlerter({
+  send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
+});
 
 function stateFor(id) { if (!states.has(id)) states.set(id, { lastSeenLiquidity: null, hasNotifiedThisCycle: false, lastNotificationTime: 0 }); return states.get(id); }
 function resetDaily() { if (Date.now() - dayStart >= 86_400_000) { notificationsToday = 0; dayStart = Date.now(); } }
@@ -47,6 +55,22 @@ async function broadcastEligible(snapshots) {
   });
 }
 
+/**
+ * Biến kết quả broadcastEligible thành cảnh báo (R1). Chỉ báo khi BẬC THANG KHÔNG
+ * TIẾN: claim đã tự nhả vì bị tx khác thay thế (`superseded`), claim cần đối
+ * soát tay (`stuck`), hay xung đột nonce (`conflict`). Kết quả thông tin
+ * (idle/terminal-only) không báo gì.
+ */
+async function alertOnLifecycle(result) {
+  if (!result) return;
+  const marketId = result.marketId ?? result.bundle?.marketId ?? null;
+  const nonce = result.nonce ?? result.bundle?.nonce ?? null;
+  const tier = result.bundle?.broadcastingTier ?? null;
+  if (result.superseded) await lifecycleAlerts.notify("superseded", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
+  else if (result.conflict) await lifecycleAlerts.notify("conflict", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
+  else if (result.stuck) await lifecycleAlerts.notify("stuck", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
+}
+
 async function checkMarkets(ids = marketIds) {
   try {
     resetDaily();
@@ -65,7 +89,7 @@ async function checkMarkets(ids = marketIds) {
       if (state.hasNotifiedThisCycle && (liquidity < snapshot.minLiquidityWei || liquidity > computeDrainThreshold(supplyAssets, multiplier))) state.hasNotifiedThisCycle = false;
       state.lastSeenLiquidity = liquidity;
     }
-    await broadcastEligible(snapshots);
+    await alertOnLifecycle(await broadcastEligible(snapshots));
   } catch (err) {
     // RPC outage / any cycle failure: log per cycle, keep the loop alive (M5).
     console.error(`[monitor] check cycle failed (loop continues): ${err?.message || err}`);

@@ -192,7 +192,9 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     }
     if ([...byNonce.values()].some((count) => count > 1)) {
       logger?.error?.(`[presign] FAIL CLOSED: multiple active claims share a nonce (${claims.map(([id, bundle]) => `${id}:${bundle.nonce}`).join(", ")}); no broadcast will be attempted`);
-      return { conflict: true, diagnostic: "multiple active broadcasting claims share a nonce; no broadcast attempted" };
+      // `nonce` đi kèm để monitor cảnh báo được theo (kind, nonce) — xung đột nonce
+      // là ca bắt buộc phải báo, không chỉ log (audit R1).
+      return { conflict: true, nonce: Number(claims[0][1].nonce), diagnostic: "multiple active broadcasting claims share a nonce; no broadcast attempted" };
     }
     // Exactly one claim per cycle, oldest broadcastingAt first. Never claim a
     // new bundle while a durable claim is still being reconciled.

@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig } from "../webapp-config.mjs";
+import { RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
@@ -34,6 +35,9 @@ describe("buildWebappConfig (A3)", () => {
     expect(config.lenderAddress).toBe(LENDER);
     expect(config.proxyRpcUrl).toBe("https://vps.example.com:8545");
     expect(config.rpcUrls).toEqual(["https://rpc.example.com"]); // blank filtered
+    // R1: ngưỡng quá hạn của claim broadcasting phải là MỘT nguồn sự thật
+    // (presigned-broadcast.mjs), inject cho browser thay vì copy hằng số.
+    expect(config.claimRecoveryMs).toBe(RECOVERY_THRESHOLD_MS);
   });
 
   it("C3: thiếu/zero LENDER_ADDRESS → fail-fast với hướng dẫn tiếng Việt", () => {
