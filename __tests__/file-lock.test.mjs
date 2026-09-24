@@ -6,7 +6,7 @@
  * retry thì ném LOCK_STALE kèm holder + tuổi lock + lệnh khôi phục — KHÔNG tự
  * phá lock (không steal).
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

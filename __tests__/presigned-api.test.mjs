@@ -38,11 +38,11 @@ await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
 afterAll(() => new Promise((resolve) => server.close(resolve)));
 
 async function api(method, urlPath, body) {
-  const resp = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // GET kèm `body` (dù undefined) là option không hợp lệ — chỉ gắn `body` khi
+  // thực sự có, để lint `unicorn/no-invalid-fetch-options` không còn cảnh báo.
+  const options = { method, headers: body ? { "Content-Type": "application/json" } : {} };
+  if (body) options.body = JSON.stringify(body);
+  const resp = await fetch(`http://127.0.0.1:${port}${urlPath}`, options);
   const text = await resp.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* HTML response */ }

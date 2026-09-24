@@ -378,7 +378,7 @@ export function createRobustWalletClient(urls) {
  * @param {string} serviceName - Label for log messages (e.g. "monitor")
  */
 export function addGlobalErrorHandlers(serviceName) {
-  process.on("unhandledRejection", (reason, promise) => {
+  process.on("unhandledRejection", (reason) => {
     const ts = new Date().toISOString();
     const msg = reason instanceof Error ? reason.message : String(reason);
     console.error(`[${ts}] [${serviceName}] UNHANDLED REJECTION: ${msg}`);

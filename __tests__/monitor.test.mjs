@@ -6,7 +6,7 @@
  * focuses on integration: verifying the monitor wiring works
  * end-to-end with mocked I/O.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import fs from "node:fs";
 import { shouldNotify, computeDrainThreshold } from "../shared.mjs";
 import { shouldSendLifecycleAlert } from "../lifecycle-alert.mjs";
@@ -20,7 +20,6 @@ describe("monitor anti-spam scenarios (integration)", () => {
   const MAX_PER_DAY = 10;
   const SUPPLY = 100_000_000_000_000n; // rất lớn để tests tập trung vào anti-spam
   const DRAIN_MULTIPLIER = 2;
-  const DRAIN = computeDrainThreshold(SUPPLY, DRAIN_MULTIPLIER);
 
   // Simulate what the monitor passes to shouldNotify each cycle
   function simulateCycle(state, liquidity) {

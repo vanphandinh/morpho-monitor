@@ -9,7 +9,8 @@ import { broadcastEligible } from "../../presigned-broadcast.mjs";
 import { updateRegistry } from "../../presigned-store.mjs";
 import fs from "node:fs";
 
-const [registryPath, marketId, signedTx] = process.argv.slice(2);
+// argv[3] (signedTx) cố ý không được đọc: worker tự dựng bundle từ store.
+const [registryPath, marketId] = process.argv.slice(2);
 const snapshot = { market: { liquidity: 100n, totalSupplyAssets: 100n, totalSupplyShares: 100n }, position: { supplyAssets: 1000n } };
 
 let sentCalls = 0;

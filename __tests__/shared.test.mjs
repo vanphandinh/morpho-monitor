@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   env,
   envNum,
@@ -283,7 +283,6 @@ describe("shouldNotify() — sudden drain", () => {
   const COOLDOWN = 30 * 60 * 1000;
   const SUPPLY = 10_000_000n;   // 10 USDC supply
   const MULTIPLIER = 2;
-  const DRAIN = computeDrainThreshold(SUPPLY, MULTIPLIER); // 20 USDC với MULTIPLIER=2
 
   const base = {
     supplyAssets: SUPPLY,
@@ -592,7 +591,7 @@ describe("createSessionToken() & verifySessionToken()", () => {
 
   it("verify trả về null với token bị chỉnh sửa payload", () => {
     const token = createSessionToken("0xabc", 3600000);
-    const [payload, hmac] = token.split(".");
+    const [, hmac] = token.split(".");
     const tamperedToken = "tampered." + hmac;
     expect(verifySessionToken(tamperedToken)).toBeNull();
   });

@@ -21,7 +21,7 @@ function runWorker(registryPath, marketId, signedTx) {
       if (err && !stdout) return reject(err);
       // Worker prints exactly one JSON line at the end.
       const line = stdout.trim().split("\n").filter(Boolean).pop();
-      try { resolve(JSON.parse(line)); } catch (e) { reject(new Error(`Bad worker output: ${stdout}`)); }
+      try { resolve(JSON.parse(line)); } catch { reject(new Error(`Bad worker output: ${stdout}`)); }
     });
   });
 }

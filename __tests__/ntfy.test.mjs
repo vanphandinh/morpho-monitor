@@ -131,7 +131,7 @@ describe("ntfy notification headers", () => {
         ...FIXTURES,
       });
 
-      for (const [name, value] of Object.entries(headers)) {
+      for (const [, value] of Object.entries(headers)) {
         for (let i = 0; i < value.length; i++) {
           const cp = value.charCodeAt(i);
           expect(cp).toBeLessThanOrEqual(255);
@@ -467,7 +467,7 @@ describe("ntfy drain notification", () => {
         collateralSymbol: "WETH",
         ...FIXTURES,
       });
-      for (const [name, value] of Object.entries(headers)) {
+      for (const [, value] of Object.entries(headers)) {
         for (let i = 0; i < value.length; i++) {
           expect(value.charCodeAt(i)).toBeLessThanOrEqual(255);
         }
