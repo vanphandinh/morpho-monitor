@@ -476,7 +476,6 @@
         "https://rpc.ankr.com/eth",
         "https://eth.drpc.org",
       ];
-    const PROXY_INFO_METHOD = "morpho_proxyInfo";
 
     // Minimal ABI for Morpho Blue
     const MORPHO_ABI = [
@@ -1081,107 +1080,17 @@
       return "unknown";
     }
 
-    const WALLET_LABELS = { rabby: "Rabby", metamask: "MetaMask", frame: "Frame", coinbase: "Coinbase Wallet", trust: "Trust Wallet", ambire: "Ambire", unknown: "Ví đã kết nối" };
-
-    // ---- Proxy RPC preflight (B2/H5, mở rộng 2026-09-24) ----
-    // Thương hiệu ví KHÔNG đủ để biết giao dịch có bị broadcast thật hay không.
-    // Chỉ khi RPC hiện tại của ví trả về `morpho_proxyInfo` của proxy thì mới chắc
-    // chắn tx được capture. Nếu không → chặn ký.
-    //
-    // Ngoại lệ đã gặp thực tế: một số ví (Ambire, một số build MetaMask/Rabby)
-    // chặn method JSON-RPC tùy chỉnh ngay ở client với lỗi
-    // "method [morpho_proxyInfo] doesn't has corresponding handler" — tức RPC
-    // chưa hề được gọi. Khi đó fallback qua `web3_clientVersion`: proxy trả
-    // "MorphoProxy/v1" còn node thật trả tên client thật (Geth/Nethermind...).
-    // Fallback này CHỈ dùng khi ví chặn morpho_proxyInfo ngay ở client (RPC
-    // chưa hề được gọi). "MorphoProxy/v1" không thể trùng ngẫu nhiên — node
-    // thật luôn trả tên client thật — nên khi khớp, coi như đã xác nhận proxy
-    // và CHO PHÉP ký (nếu không, ví như Ambire sẽ bị chặn vĩnh viễn dù đã trỏ
-    // đúng RPC). RPC sai trả tên khác ⇒ vẫn chặn.
-    let proxyNetworkCheck = { checked: false, ok: false, error: null, unsupported: false };
-
-    function isProxyInfoResponse(info) {
-      return Boolean(info && typeof info === "object" && info.server === "morpho-proxy" && Number(info.chainId) === 1);
-    }
-
-    async function checkProxyNetwork() {
-      const e = window.ethereum;
-      if (!e) {
-        proxyNetworkCheck = { checked: true, ok: false, error: "Không tìm thấy ví (window.ethereum)." };
-        return proxyNetworkCheck;
-      }
-      try {
-        const info = await e.request({ method: PROXY_INFO_METHOD });
-        proxyNetworkCheck = isProxyInfoResponse(info)
-          ? { checked: true, ok: true, error: null, unsupported: false }
-          : { checked: true, ok: false, error: "RPC hiện tại trả về dữ liệu không phải morpho-proxy.", unsupported: false };
-      } catch (err) {
-        // Ví chặn method tùy chỉnh ngay ở client (RPC chưa được gọi): dấu hiệu là
-        // chuỗi "doesn't has corresponding handler" trong message lỗi.
-        const raw = String(err?.message || err);
-        if (raw.includes("corresponding handler")) {
-          try {
-            const version = await e.request({ method: "web3_clientVersion" });
-            if (version === "MorphoProxy/v1") {
-              // Node thật không bao giờ trả "MorphoProxy/v1" (Geth/Nethermind
-              // trả tên client thật) ⇒ RPC đang là proxy ⇒ cho phép ký.
-              proxyNetworkCheck = { checked: true, ok: true, error: null, unsupported: true };
-            } else {
-              proxyNetworkCheck = { checked: true, ok: false, unsupported: true,
-                error: `Ví chặn morpho_proxyInfo (lỗi 'corresponding handler'); web3_clientVersion trả về '${version}' — RPC hiện tại KHÔNG phải proxy.` };
-            }
-          } catch (err2) {
-            proxyNetworkCheck = { checked: true, ok: false, unsupported: true,
-              error: `Ví chặn morpho_proxyInfo (lỗi 'corresponding handler'), kể cả web3_clientVersion: ${err2?.message || err2}` };
-          }
-        } else {
-          proxyNetworkCheck = { checked: true, ok: false, error: raw, unsupported: false };
-        }
-      }
-      return proxyNetworkCheck;
-    }
-
-    /**
-     * Chạy NGAY trước mọi walletClient.sendTransaction. Trả false ⇒ TUYỆT ĐỐI
-     * không ký, vì tx sẽ được gửi thật lên mainnet nếu RPC không phải proxy.
-     */
-    async function assertProxyNetwork() {
-      const check = await checkProxyNetwork();
-      renderWalletCompatibility();
-      if (check.ok) return true;
-      const wallet = getWalletProviderName();
-      const handlerBlock = check.unsupported
-        ? "<b>Nguyên nhân:</b> ví của bạn tự chặn method kiểm tra <code>morpho_proxyInfo</code> ngay trong app (lỗi \"doesn't has corresponding handler\") — yêu cầu chưa hề tới proxy RPC. Đây là giới hạn của ví, không phải proxy chạy sai; nút \"Thêm Mạng Proxy\" cũng bị ví từ chối cùng lỗi đó.<br><br>"
-        : "";
-      showPresignError(
-        "⛔ CHẶN KÝ: ví chưa trỏ vào proxy RPC nên giao dịch sẽ được broadcast THẬT lên mainnet.<br><br>" +
-        handlerBlock +
-        (wallet === "rabby"
-          ? "<b>Rabby</b> không cho thêm chainId=1 trùng: vào Settings → Networks → Ethereum → đổi RPC thành:<br>"
-          : wallet === "ambire"
-            ? "<b>Ambire</b> cần đổi RPC qua ứng dụng Ambire (không phải trong extension): mở Ambire → Settings/Networks → chọn Ethereum → thay RPC URL bằng:<br>"
-            : "<b>Cách sửa:</b> thêm/chuyển mạng sang <b>Ethereum Proxy Sign</b> với RPC:<br>") +
-        `<code>${getProxyUrl()}</code><br>` +
-        `<small>Hoặc bấm nút “Thêm Mạng Proxy”. (Lỗi kiểm tra: ${check.error ?? "unknown"})</small>`
-      );
-      return false;
-    }
-
     function getCompatibilityMessage() {
-      const name = WALLET_LABELS[getWalletProviderName()] ?? WALLET_LABELS.unknown;
-      if (!proxyNetworkCheck.checked) {
-        return { ok: null, msg: `ℹ️ ${name}. Chưa kiểm tra RPC — hệ thống sẽ kiểm tra trước khi ký.` };
+      const wallet = getWalletProviderName();
+      switch (wallet) {
+        case "rabby": return { ok: true, msg: "✅ Rabby được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "metamask": return { ok: true, msg: "✅ MetaMask được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "ambire": return { ok: true, msg: "✅ Ambire được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "frame": return { ok: true, msg: "✅ Frame được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "coinbase": return { ok: true, msg: "✅ Coinbase Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        case "trust": return { ok: true, msg: "✅ Trust Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
+        default: return { ok: true, msg: "✅ Ví đã kết nối. Sẵn sàng ký giao dịch qua proxy RPC." };
       }
-      if (!proxyNetworkCheck.ok) {
-        const why = proxyNetworkCheck.unsupported
-          ? `⚠️ ${name}: ví chặn method kiểm tra ("corresponding handler") nên không xác nhận được qua RPC — SẼ chặn ký đến khi bạn đổi RPC trong ví sang <code>${getProxyUrl()}</code>.`
-          : `⚠️ ${name} nhưng RPC hiện tại KHÔNG phải proxy (<code>${getProxyUrl()}</code>). Sẽ chặn ký để tránh broadcast thật lên mainnet.`;
-        return { ok: false, msg: why };
-      }
-      if (proxyNetworkCheck.unsupported) {
-        return { ok: true, msg: `✅ ${name}: ví chặn morpho_proxyInfo nhưng web3_clientVersion xác nhận đây là proxy (MorphoProxy/v1). Sẵn sàng ký giao dịch qua proxy.` };
-      }
-      return { ok: true, msg: `✅ ${name} + proxy RPC đã xác nhận. Sẵn sàng ký giao dịch qua proxy.` };
     }
 
     function renderWalletCompatibility() {
@@ -1189,7 +1098,7 @@
       const compat = getCompatibilityMessage();
       banner.style.display = "block";
       banner.innerHTML = compat.msg;
-      banner.className = compat.ok === false ? "banner error" : (compat.ok === true ? "banner success" : "banner info");
+      banner.className = "banner info";
     }
 
     function updatePresignWalletUI() {
@@ -1241,9 +1150,7 @@
             blockExplorerUrls: ["https://etherscan.io"],
           }],
         });
-        // Không assume thành công tuyệt đối: một số ví chấp nhận im lặng hoặc
-        // từ chối ngầm method này. Luôn yêu cầu user xác nhận lại qua preflight.
-        showPresignSuccess("✅ Yêu cầu thêm mạng đã gửi. Hãy chuyển ví sang mạng <b>Ethereum Proxy Sign</b> rồi ký lại — hệ thống sẽ tự kiểm tra RPC trước khi cho ký.");
+        showPresignSuccess("✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.");
         document.getElementById("btn-add-proxy-network").textContent = "✅ Đã Thêm";
         document.getElementById("btn-add-proxy-network").disabled = true;
       } catch (err) {
@@ -1500,13 +1407,6 @@
         showPresignError("Vui lòng thêm ít nhất 1 mốc tiền hợp lệ.");
         return;
       }
-      // Preflight RPC (H5): nếu ví không trỏ vào proxy, tx sẽ được broadcast
-      // thật lên mainnet → chặn ký trước khi gọi sendTransaction.
-      if (!(await assertProxyNetwork())) {
-        document.getElementById("btn-sign-all").disabled = false;
-        return;
-      }
-
       isSigningInProgress = true;
       document.getElementById("btn-sign-all").disabled = true;
       document.getElementById("btn-save-server").disabled = true;
@@ -1615,9 +1515,6 @@
         showPresignError("Bạn không có supply shares để rút.");
         return;
       }
-      // Preflight RPC (H5) — cùng lý do như signAllTiers.
-      if (!(await assertProxyNetwork())) return;
-
       isSigningInProgress = true;
       const btn = document.getElementById("btn-sign-withdraw-all");
       btn.disabled = true;

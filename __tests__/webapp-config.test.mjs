@@ -4,12 +4,11 @@
  * - `buildWebappConfig`/`injectWebappConfig` (webapp-config.mjs) là production
  *   code; test import trực tiếp (không boot server, không listen).
  * - `webapp.html` được đọc dưới dạng text để khẳng định: không còn API key của
- *   nhà cung cấp RPC trong file phục vụ công khai, và preflight proxy RPC được
- *   gọi TRƯỚC mọi `walletClient.sendTransaction`.
+ *   nhà cung cấp RPC trong file phục vụ công khai; từ 2026-09-24 cổng preflight
+ *   H5 đã gỡ theo quyết định user (mục sign flow bên dưới).
  *
- * Lưu ý: webapp.html là browser ESM (không import được bằng vitest), nên
- * predicate `isProxyInfoResponse` dưới đây là bản sao của production — debt đã
- * ghi trong CLAUDE.md, cùng convention với webapp.test.mjs.
+ * Lưu ý: webapp.html là browser ESM (không import được bằng vitest), nên các
+ * assertion chạy trên text của file — cùng convention với webapp.test.mjs.
  */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
@@ -90,86 +89,56 @@ describe("webapp.html hygiene (M2)", () => {
   });
 });
 
-describe("webapp.html proxy preflight (B2/H5)", () => {
-  const isProxyInfoResponse = (info) =>
-    Boolean(info && typeof info === "object" && info.server === "morpho-proxy" && Number(info.chainId) === 1);
+describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
+  // Quyết định 2026-09-24: GỠ cổng preflight H5 (morpho_proxyInfo chặn ký).
+  // Nguyên nhân: Ambire (smart-contract wallet) chặn method tùy chỉnh ngay ở
+  // client ("doesn't has corresponding handler") và tự trả lời
+  // web3_clientVersion ("Ambire v6.21.4") nên không thể xác thực RPC qua ví.
+  // Flow ký quay về như main: mọi ví → ok, an toàn dựa vào các check
+  // server-side (đúng lender, đúng market đã cấu hình, đúng bundle/nonce).
+  // Trade-off: ví EOA trỏ sai RPC sẽ không bị chặn trước khi ký.
 
-  it("predicate nhận đúng response của proxy và từ chối mọi thứ khác", () => {
-    expect(isProxyInfoResponse({ server: "morpho-proxy", chainId: 1 })).toBe(true);
-    expect(isProxyInfoResponse({ server: "morpho-proxy", chainId: "1" })).toBe(true);
-    for (const bad of [null, undefined, "MorphoProxy/v1", {}, { server: "geth" }, { server: "morpho-proxy", chainId: 5 }, []]) {
-      expect(isProxyInfoResponse(bad), JSON.stringify(bad)).toBe(false);
-    }
+  it("H5 gỡ sạch: không còn probe/ gate trong webapp", () => {
+    expect(html).not.toContain("morpho_proxyInfo");
+    expect(html).not.toContain("assertProxyNetwork");
+    expect(html).not.toContain("PROXY_INFO_METHOD");
+    expect(html).not.toContain("CHẶN KÝ");
+    expect(html).not.toMatch(/wallet_addEthereumChain[\s\S]{0,400}morpho_proxyInfo/);
   });
 
-  it("HTML dùng morpho_proxyInfo và predicate production giống bản test", () => {
-    expect(html).toContain('const PROXY_INFO_METHOD = "morpho_proxyInfo";');
-    expect(html).toContain('info.server === "morpho-proxy"');
-    expect(html).toContain("Number(info.chainId) === 1");
+  it("banner compat theo thương hiệu ví như main, mọi ví đều ok: true", () => {
+    // Cấu trúc switch giống main; Ambire có case riêng thay vì default.
+    expect(html).toMatch(/case "rabby": return \{ ok: true,/);
+    expect(html).toMatch(/case "metamask": return \{ ok: true,/);
+    expect(html).toMatch(/case "ambire": return \{ ok: true,/);
+    expect(html).toMatch(/case "frame": return \{ ok: true,/);
+    expect(html).toMatch(/case "coinbase": return \{ ok: true,/);
+    expect(html).toMatch(/case "trust": return \{ ok: true,/);
+    expect(html).toMatch(/default: return \{ ok: true,/);
+    // Không còn nhánh chặn nào trong banner.
+    expect(html).not.toMatch(/ok: false/);
   });
 
-  it("assertProxyNetwork() chạy TRƯỚC mọi walletClient.sendTransaction", () => {
-    const preflights = [...html.matchAll(/await assertProxyNetwork\(\)/g)].map((m) => m.index);
+  it("nhận diện Ambire qua provider flag (chỉ để hiển thị)", () => {
+    expect(html).toMatch(/if \(e\.isAmbire\) return "ambire";/);
+  });
+
+  it("ký gọi thẳng sendTransaction, không gate phía trước", () => {
     const sends = [...html.matchAll(/walletClient\.sendTransaction\(/g)].map((m) => m.index);
-    expect(preflights).toHaveLength(2);
     expect(sends).toHaveLength(2);
-    sends.forEach((sendIdx, i) => expect(preflights[i]).toBeLessThan(sendIdx));
+    expect(html).not.toMatch(/await assertProxyNetwork\(\)/);
   });
 
-  it("banner compat phản ánh kết quả kiểm tra thật (không chỉ thương hiệu ví)", () => {
-    expect(html).toMatch(/let proxyNetworkCheck = \{ checked: false, ok: false, error: null, unsupported: false \}/);
-    expect(html).toMatch(/if \(!proxyNetworkCheck\.checked\)/);
-    expect(html).toMatch(/if \(!proxyNetworkCheck\.ok\)/);
-    expect(html).toMatch(/banner\.className = compat\.ok === false \? "banner error"/);
+  it("nút Thêm Mạng Proxy: message thành công như main + giữ hướng dẫn khi ví chặn method", () => {
+    expect(html).toContain('✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.');
+    // UX-only: chỉ hướng dẫn thủ công, không chặn gì.
+    expect(html).toMatch(/msg\.includes\("corresponding handler"\)/);
+    expect(html).toMatch(/nút webapp không thể thêm mạng hộ bạn/);
   });
 
   it("M9: bundle expired/submitted hiện hướng dẫn ký lại với nonce mới", () => {
     expect(html).toMatch(/data\.status === "expired"/);
     expect(html).toMatch(/nonce dùng chung cho mọi market/);
     expect(html).toMatch(/ký lại/);
-  });
-
-  // Regression 2026-09-24: một số ví (Ambire, một số build MetaMask/Rabby) chặn
-  // method JSON-RPC tùy chỉnh ngay ở client với lỗi
-  // "method [morpho_proxyInfo] doesn't has corresponding handler" — RPC chưa hề
-  // được gọi. Webapp phải (1) nhận diện ví Ambire, (2) fallback web3_clientVersion
-  // để phân biệt proxy/node thật, (3) cho phép ký khi fallback xác nhận
-  // MorphoProxy/v1 nhưng vẫn chặn khi RPC sai (nếu không, ví như Ambire sẽ bị
-  // chặn vĩnh viễn dù đã trỏ đúng RPC), (4) nút "Thêm Mạng Proxy" có hướng dẫn
-  // thủ công riêng.
-  describe("wallets blocking custom methods (corresponding handler)", () => {
-    it("nhận diện ví Ambire qua provider flag", () => {
-      expect(html).toMatch(/if \(e\.isAmbire\) return "ambire";/);
-      expect(html).toMatch(/ambire: "Ambire"/);
-    });
-
-    it("fallback web3_clientVersion: MorphoProxy/v1 ⇒ cho phép ký, client khác ⇒ chặn", () => {
-      expect(html).toMatch(/raw\.includes\("corresponding handler"\)/);
-      expect(html).toMatch(/method: "web3_clientVersion"/);
-      // Nhánh khớp proxy: ok: true (nếu không, ví như Ambire bị chặn vĩnh viễn
-      // dù đã trỏ đúng RPC — node thật không bao giờ trả "MorphoProxy/v1").
-      expect(html).toMatch(/if \(version === "MorphoProxy\/v1"\)/);
-      expect(html).toMatch(/ok: true, error: null, unsupported: true/);
-      // Nhánh RPC sai hoặc không gọi được: vẫn chặn.
-      expect(html).toMatch(/ok: false, unsupported: true,/);
-      expect(html).toMatch(/KHÔNG phải proxy\./);
-    });
-
-    it("banner hiển thị xác nhận qua fallback khi ví chặn morpho_proxyInfo", () => {
-      expect(html).toMatch(/web3_clientVersion xác nhận đây là proxy \(MorphoProxy\/v1\)/);
-    });
-
-    it("thông báo chặn ký giải thích nguyên nhân ví chặn method (không phải proxy sai)", () => {
-      expect(html).toMatch(/check\.unsupported/);
-      expect(html).toMatch(/Nguyên nhân:<\/b> ví của bạn tự chặn method kiểm tra/);
-      expect(html).toMatch(/không phải proxy chạy sai/);
-      expect(html).toMatch(/cũng bị ví từ chối cùng lỗi đó/);
-    });
-
-    it("nút Thêm Mạng Proxy có hướng dẫn thủ công khi ví chặn wallet_addEthereumChain", () => {
-      expect(html).toMatch(/msg\.includes\("corresponding handler"\)/);
-      expect(html).toMatch(/chặn <code>wallet_addEthereumChain<\/code> ngay trong app/);
-      expect(html).toMatch(/nút webapp không thể thêm mạng hộ bạn/);
-    });
   });
 });
