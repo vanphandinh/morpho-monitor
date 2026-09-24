@@ -432,12 +432,30 @@ export function createRequestHandler({
           {
             const sameIdentity = marketBundles(registry.bundles, marketId)
               .filter(({ bundle }) => Number(bundle?.nonce) === Number(incoming.nonce));
+
+            // Claim sống phải được xử lý TRƯỚC khi chọn key để ghi: nếu bản sao
+            // `broadcasting` đứng SAU bản `pending` (đúng thứ tự file mà bug
+            // tra-key trước F1 tạo ra), `sameIdentity[0]` là bản pending ⇒ merged
+            // được ghi vào bản pending và bản broadcasting không bị dọn ⇒ registry
+            // còn HAI rung cùng identity (marketId, nonce) ⇒ overview báo race GIẢ
+            // cho cùng một market, đúng triệu chứng mà F1 sinh ra để xoá (audit D4).
+            // Ký lại một nonce đang được broadcast là mơ hồ ⇒ 409 rõ nghĩa, không
+            // ghi gì (lifecycle guard cũng sẽ chặn — nay chặn sớm và có thông báo).
+            const liveClaim = sameIdentity.find(({ bundle }) => bundle?.status === "broadcasting");
+            if (liveClaim) {
+              throw Object.assign(
+                new Error(
+                  `nonce ${incoming.nonce} đang được broadcast (claim ${liveClaim.key}) — chờ tx mine hoặc lấy nonce mới rồi ký lại`
+                ),
+                { code: ACTIVE_CLAIM_CONFLICT }
+              );
+            }
+
             const target = sameIdentity[0];
-            // Bản sao identity (state hỏng do bug tra-key trước fix): giữ rung
-            // đầu, dọn các bản còn lại. Không bao giờ dọn rung đang claim
-            // (broadcasting) — lifecycle guard cũng fail closed trong trường hợp đó.
+            // Bản sao identity (state hỏng do bug tra-key trước F1): giữ bản đầu,
+            // dọn MỌI bản còn lại — không còn nhánh `broadcasting` nào ở đây vì
+            // claim sống đã bị chặn ở trên.
             for (const dup of sameIdentity.slice(1)) {
-              if (dup.bundle?.status === "broadcasting") continue;
               delete registry.bundles[dup.key];
               console.log(
                 `[${new Date().toISOString()}] 🧹 Deduped bundle ${dup.key.slice(0, 22)}… (trùng identity market ${marketId.slice(0, 10)}…@${incoming.nonce})`
