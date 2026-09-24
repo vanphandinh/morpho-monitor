@@ -87,6 +87,12 @@ export function injectWebappConfig(html, config, { marker = "</head>" } = {}) {
  *
  * Loopback (mặc định) vẫn chạy không cần mật khẩu cho dev. Bind public thì cần
  * mật khẩu, hoặc chấp nhận rủi ro TƯỜNG MINH bằng WEBAPP_ALLOW_INSECURE=1.
+ *
+ * Audit vòng 2 (D3): đặt mật khẩu KHÔNG làm proxy kín — nó chỉ bảo vệ /bundle và
+ * /captured (lender-gated). Nhánh JSON-RPC phải công khai vì ví (MetaMask) không
+ * gửi được header Authorization, nên bind public = ai vào được port cũng forward
+ * được eth_call/eth_getLogs/eth_feeHistory sang RPC_URLS của bạn. Vì vậy khi
+ * public + ĐÃ có mật khẩu vẫn trả về `warning` (thay vì im lặng).
  */
 export function assertProxyAuthConfig({
   host,
@@ -95,7 +101,19 @@ export function assertProxyAuthConfig({
 } = {}) {
   const isLoopback = !host || host === "127.0.0.1" || host === "localhost" || host === "::1";
   const publicBind = !isLoopback;
-  if (password) return { secure: true, warning: null, publicBind };
+  if (password) {
+    if (!publicBind) return { secure: true, warning: null, publicBind };
+    return {
+      secure: true,
+      publicBind: true,
+      warning:
+        `⚠️  PROXY_HOST=${host} (public): WEBAPP_PASSWORD chỉ bảo vệ /bundle và /captured (lender).` +
+        "\n   JSON-RPC (eth_call, eth_getLogs, eth_feeHistory…) KHÔNG xác thực được — ví không gửi được" +
+        "\n   header Authorization — nên ai vào được port này cũng forward được sang RPC_URLS của bạn" +
+        "\n   (tốn quota/API key, request mang IP của bạn). Capture thì vẫn chỉ nhận tx từ LENDER_ADDRESS." +
+        "\n   → Giới hạn bằng firewall / IP allow-list, hoặc chỉ mở port khi cần MetaMask mobile.",
+    };
+  }
   if (!publicBind) return { secure: false, warning: null, publicBind: false };
   if (allowInsecure) {
     return {

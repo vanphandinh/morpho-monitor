@@ -137,8 +137,27 @@ describe("assertProxyAuthConfig (R3)", () => {
     expect(mode.warning).toContain("/captured");
   });
 
-  it("có mật khẩu ⇒ secure kể cả bind public (deployment hiện tại không bị ảnh hưởng)", () => {
-    expect(assertProxyAuthConfig({ host: "0.0.0.0", password: "s3cret" })).toEqual({ secure: true, warning: null, publicBind: true });
+  it("có mật khẩu + loopback ⇒ secure, im lặng", () => {
+    expect(assertProxyAuthConfig({ host: "127.0.0.1", password: "s3cret" })).toEqual({ secure: true, warning: null, publicBind: false });
+  });
+
+  // D3 (audit vòng 2): mật khẩu KHÔNG làm proxy kín — nhánh JSON-RPC vẫn công khai
+  // (ví không gửi được header Authorization). Trước đây trường hợp này im lặng.
+  it("có mật khẩu + bind public ⇒ vẫn secure nhưng CẢNH BÁO relay JSON-RPC mở (D3)", () => {
+    const mode = assertProxyAuthConfig({ host: "0.0.0.0", password: "s3cret" });
+    expect(mode.secure).toBe(true);
+    expect(mode.publicBind).toBe(true);
+    expect(typeof mode.warning).toBe("string");
+    expect(mode.warning).toContain("PROXY_HOST=0.0.0.0");
+    expect(mode.warning).toContain("JSON-RPC");
+    expect(mode.warning).toContain("LENDER_ADDRESS");
+    expect(mode.warning).toContain("firewall");
+  });
+
+  it("cảnh báo D3 nói rõ phạm vi: /bundle + /captured vẫn được bảo vệ", () => {
+    const mode = assertProxyAuthConfig({ host: "0.0.0.0", password: "s3cret" });
+    expect(mode.warning).toContain("/bundle");
+    expect(mode.warning).toContain("/captured");
   });
 });
 
