@@ -328,6 +328,28 @@ describe("multi-nonce ladder (v3, 2026-09-24)", () => {
     expect(stored.bundles[key].marketId).toBe("m1");
   });
 
+  // AUDIT F4 (2026-09-24): terminal transition phải expire sibling cùng nonce
+  // CỦA CLAIM, không phải sibling của "pending nonce hiện tại". Khi claim nonce 7
+  // đang nằm trong mempool, getTransactionCount(pending) trả 8 (tx của chính nó
+  // được tính) ⇒ nếu code dùng biến `nonce` (pending), nó expire rung 8 vừa được
+  // ký — rung hoàn toàn hợp lệ và chính là bậc thang kế tiếp.
+  it("F4: reconcile claim nonce 7 không được expire rung hợp lệ ở nonce 8", async () => {
+    const filePath = tempRegistryPath();
+    const tx = stringToHex("mined-claim");
+    seedRegistry(filePath, { version: 3, bundles: {
+      ["a@7"]: { marketId: "a", nonce: 7, status: "broadcasting", broadcastingAt: new Date().toISOString(), broadcastingTier: "small", rawTx: tx, txHash: keccak256(tx), withdrawals: [{ label: "small", amountWei: "50", signedTx: tx }] },
+      ["b@8"]: { marketId: "b", nonce: 8, status: "pending", withdrawals: [{ label: "next", amountWei: "50", signedTx: "0x02" }] },
+    } });
+    // Claim nonce 7 đã mine (receipt có block identity) và tx của nó được tính
+    // vào pending nonce ⇒ pending = 8.
+    const client = { getTransactionCount: async () => 8, getTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["b", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles["a@7"].status).toBe("submitted");
+    // Rung 8 chưa bị tiêu thụ bởi bất kỳ tx nào ⇒ phải giữ nguyên pending.
+    expect(stored.bundles["b@8"].status).toBe("pending");
+  });
+
   it("P0 regression: verifyBundle nhận marketId từ VALUE, không bao giờ nhận composite key", async () => {
     const filePath = tempRegistryPath();
     const key = bundleKey("m1", 7);

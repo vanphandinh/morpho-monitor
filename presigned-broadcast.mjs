@@ -204,6 +204,11 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     if (!isMinedReceipt(receipt)) return claim;
 
     // ---- Phase 2: receipt-grounded terminal transition + sibling expiry ----
+    // Audit F4 (2026-09-24): sibling expiry phải dùng NONCE CỦA CLAIM, không phải
+    // `nonce` (pending nonce đọc ở đầu chu kỳ). Khi claim đang nằm trong mempool,
+    // `getTransactionCount(pending)` đã tính chính nó ⇒ pending = claim.nonce + 1,
+    // nên dùng `nonce` sẽ expire rung kế tiếp vừa được ký (rung hoàn toàn hợp lệ).
+    const claimNonce = Number(claim.bundle?.nonce);
     await updateRegistry(filePath, (registry) => {
       const bundle = registry.bundles[claim.id];
       if (!bundle || bundle.status !== "broadcasting" || bundle.txHash !== txHash) return;
@@ -219,10 +224,13 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       bundle.terminalAt = stamped;
       bundle.minedAt = stamped;
       delete bundle.rawTx; // raw bytes are no longer needed once terminal
-      logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.marketId ?? claim.bundle?.marketId ?? claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${nonce}`);
-      // A mined receipt consumes the nonce: expire same-nonce siblings.
-      for (const [id, other] of Object.entries(registry.bundles)) {
-        if (id !== claim.id && Number(other.nonce) === Number(nonce) && other.status !== "submitted" && other.status !== "failed") other.status = "expired";
+      logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.marketId ?? claim.bundle?.marketId ?? claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${Number.isFinite(claimNonce) ? claimNonce : nonce}`);
+      // A mined receipt consumes THE CLAIM'S nonce: expire same-nonce siblings.
+      // A missing/invalid claim nonce expires nobody (fail closed).
+      if (Number.isFinite(claimNonce)) {
+        for (const [id, other] of Object.entries(registry.bundles)) {
+          if (id !== claim.id && Number(other.nonce) === claimNonce && other.status !== "submitted" && other.status !== "failed") other.status = "expired";
+        }
       }
     });
   } catch (err) {

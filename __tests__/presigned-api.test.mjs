@@ -125,6 +125,35 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(resp.json.remaining).toBe(1);
   });
 
+  // AUDIT F3 (2026-09-24): `tier` không kèm `nonce` trên market có ladder (v3)
+  // trước fix luôn sửa rung nonce THẤP NHẤT — có thể khác rung user đang xem.
+  it("F3: DELETE tier thiếu nonce trên market có ladder bị từ chối 400, registry nguyên vẹn", async () => {
+    seedRegistry({
+      [`${MARKET_A}@7`]: { marketId: MARKET_A, nonce: 7, status: "pending", withdrawals: [{ label: "a7", amountWei: "10", signedTx: "0x01" }] },
+      [`${MARKET_A}@8`]: { marketId: MARKET_A, nonce: 8, status: "pending", withdrawals: [{ label: "a8", amountWei: "20", signedTx: "0x02" }] },
+    });
+    const before = fs.readFileSync(registryPath, "utf8");
+    const resp = await api("DELETE", `/api/presign?market=${MARKET_A}&tier=0`);
+    expect(resp.status).toBe(400);
+    expect(fs.readFileSync(registryPath, "utf8")).toBe(before);
+  });
+
+  it("F3: DELETE tier kèm nonce sửa ĐÚNG rung; nonce không tồn tại → 400", async () => {
+    seedRegistry({
+      [`${MARKET_A}@7`]: { marketId: MARKET_A, nonce: 7, status: "pending", withdrawals: [{ label: "a7", amountWei: "10", signedTx: "0x01" }] },
+      [`${MARKET_A}@8`]: { marketId: MARKET_A, nonce: 8, status: "pending", withdrawals: [{ label: "a8", amountWei: "20", signedTx: "0x02" }] },
+    });
+    const resp = await api("DELETE", `/api/presign?market=${MARKET_A}&tier=0&nonce=8`);
+    expect(resp.status).toBe(200);
+    expect(resp.json).toMatchObject({ ok: true, removed: "a8", remaining: 0 });
+    const stored = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+    expect(stored.bundles[`${MARKET_A}@7`].withdrawals).toHaveLength(1); // rung khác không bị đụng
+    expect(stored.bundles[`${MARKET_A}@8`].withdrawals).toHaveLength(0);
+
+    const missing = await api("DELETE", `/api/presign?market=${MARKET_A}&tier=0&nonce=99`);
+    expect(missing.status).toBe(400);
+  });
+
   it("POST /api/presign strips client-supplied lifecycle fields", async () => {
     seedRegistry({});
     // verifyPresignedBundle sẽ fail trên signedTx giả, nhưng field lifecycle

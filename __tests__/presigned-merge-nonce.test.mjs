@@ -18,6 +18,9 @@ import { MARKET_ID_A, MARKET_PARAMS_A, lenderAccount, pendingBundle } from "./he
 // Phải chạy TRƯỚC khi webapp-handler (→ shared.mjs) được nạp.
 process.env.LENDER_ADDRESS = lenderAccount().address;
 const { createRequestHandler } = await import("../webapp-handler.mjs");
+// Cũng phải là import ĐỘNG: static import sẽ nạp shared.mjs (→ LENDER_ADDRESS)
+// trước dòng gán env ở trên, khiến mọi verify dùng zero-address ⇒ 400.
+const { marketBundles } = await import("../presigned-store.mjs");
 
 const content = "<html>test</html>";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "presign-merge-"));
@@ -71,5 +74,39 @@ describe("merge rung cùng nonce không phụ thuộc type nonce", () => {
     expect(rungs).toHaveLength(1); // cùng key marketId@7 — không tạo rung mới
     expect(rungs[0].withdrawals.map((w) => w.label).sort()).toEqual(["t1", "t2"]);
     expect(rungs[0].status).toBe("pending");
+  });
+
+  // AUDIT F1 (2026-09-24): registry v2→v3 migration GIỮ NGUYÊN key cũ (key là
+  // opaque, identity nằm trong VALUE). Nhưng POST /api/presign lại tra rung bằng
+  // `registry.bundles[bundleKey(marketId, nonce)]` — key composite không bao giờ
+  // khớp key legacy ⇒ coi như "bundle mới" và GHI THÊM một rung cùng
+  // (marketId, nonce). Hệ quả: identity trùng lặp, ladder hiển thị race giả, và
+  // broadcaster claim rung CŨ (Object.entries giữ thứ tự chèn) ⇒ có thể broadcast
+  // số tiền cũ mà user đã sửa.
+  it("F1: POST cùng nonce vào registry đã migrate v2 KHÔNG được tạo rung trùng identity", async () => {
+    const legacy = await pendingBundle({
+      marketId: MARKET_ID_A, marketParams: MARKET_PARAMS_A, nonce: 7,
+      tiers: [{ amountWei: "100000000000", label: "old-100" }],
+    });
+    // Registry v2 như trên đĩa của deployment: key = marketId (plain), chưa composite.
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true });
+    fs.writeFileSync(registryPath, JSON.stringify({ version: 2, bundles: { [MARKET_ID_A]: legacy } }));
+
+    const incoming = await pendingBundle({
+      marketId: MARKET_ID_A, marketParams: MARKET_PARAMS_A, nonce: 7,
+      tiers: [{ amountWei: "50000000000", label: "new-50" }],
+    });
+    const resp = await postPresign(incoming);
+    expect(resp.status).toBe(200);
+    expect(resp.json.ok).toBe(true);
+
+    const stored = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+    const rungsAt7 = marketBundles(stored.bundles, MARKET_ID_A).filter(({ bundle }) => Number(bundle.nonce) === 7);
+    // Một identity (marketId, nonce) CHỈ được có một rung.
+    expect(rungsAt7).toHaveLength(1);
+    // Rung mà broadcaster sẽ claim (rung pending đầu tiên ở nonce 7) phải chứa
+    // tier vừa ký — không được là bundle cũ với số tiền cũ.
+    const claimable = rungsAt7.find(({ bundle }) => bundle.status === "pending");
+    expect(claimable.bundle.withdrawals.map((w) => w.label)).toContain("new-50");
   });
 });

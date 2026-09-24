@@ -1743,6 +1743,10 @@
             `Monitor sẽ tự động broadcast khi có thanh khoản.`
           );
           document.getElementById("btn-save-server").textContent = "✅ Đã Lưu";
+          // Ladder trên server vừa thay đổi (merge vào rung cũ hoặc thêm rung mới)
+          // — refresh cả overview lẫn rung đang hiển thị, nếu không UI giữ state cũ
+          // tới lần chuyển tab tiếp theo.
+          fetchExistingBundle();
           refreshPresignOverview();
         } else if (result.error?.includes("No captured transactions")) {
           showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier hoặc 'Ký Rút Toàn Bộ Shares'.");

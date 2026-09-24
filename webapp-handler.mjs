@@ -313,8 +313,23 @@ export function createRequestHandler({
           // ladder rung.
           const targets = marketBundles(registry.bundles, marketId);
           if (tierIdx !== null) {
+            // v3 ladder: `tier` KHÔNG kèm `nonce` là mơ hồ khi market có nhiều
+            // rung — trước fix luôn sửa rung nonce thấp nhất, có thể khác rung
+            // user đang xem ⇒ mất tier ở sai rung mà vẫn trả ok (audit F3).
+            if (nonceParam === null && targets.length > 1) {
+              throw Object.assign(
+                new Error(`market có ${targets.length} rung bundle — cần chỉ định ?nonce=<n> để xóa tier đúng rung`),
+                { code: MARKET_INPUT_INVALID }
+              );
+            }
             const rung = nonceParam !== null ? targets.filter((t) => String(t.bundle.nonce) === nonceParam) : targets;
             const bundle = rung[0]?.bundle;
+            if (nonceParam !== null && !bundle) {
+              throw Object.assign(
+                new Error(`market này không có bundle ở nonce ${nonceParam}`),
+                { code: MARKET_INPUT_INVALID }
+              );
+            }
             if (bundle) {
               const idx = parseInt(tierIdx, 10);
               if (isNaN(idx) || idx < 0 || idx >= (bundle.withdrawals?.length || 0)) {
@@ -400,11 +415,30 @@ export function createRequestHandler({
 
           let merged = incoming;
           let action = "saved";
+          // Key của rung sẽ ghi. Rung được tra theo IDENTITY (marketId, nonce)
+          // đọc từ VALUE — KHÔNG tra bằng key composite: registry v2 migrate giữ
+          // nguyên key cũ (plain marketId) và key là opaque, nên tra bằng
+          // `marketId@nonce` sẽ bỏ sót rung legacy ⇒ ghi thêm một rung trùng
+          // identity, ladder báo race giả và broadcaster claim nhầm bản cũ (audit F1).
+          let targetKey = bundleKey(marketId, incoming.nonce);
 
           {
+            const sameIdentity = marketBundles(registry.bundles, marketId)
+              .filter(({ bundle }) => Number(bundle?.nonce) === Number(incoming.nonce));
+            const target = sameIdentity[0];
+            // Bản sao identity (state hỏng do bug tra-key trước fix): giữ rung
+            // đầu, dọn các bản còn lại. Không bao giờ dọn rung đang claim
+            // (broadcasting) — lifecycle guard cũng fail closed trong trường hợp đó.
+            for (const dup of sameIdentity.slice(1)) {
+              if (dup.bundle?.status === "broadcasting") continue;
+              delete registry.bundles[dup.key];
+              console.log(
+                `[${new Date().toISOString()}] 🧹 Deduped bundle ${dup.key.slice(0, 22)}… (trùng identity market ${marketId.slice(0, 10)}…@${incoming.nonce})`
+              );
+            }
+            if (target) targetKey = target.key;
             try {
-              const key = bundleKey(marketId, incoming.nonce);
-              const old = registry.bundles[key];
+              const old = target?.bundle;
               if (old && old.withdrawals && old.withdrawals.length > 0 && !["broadcasting", "submitted", "failed"].includes(old.status)) {
                 if (Number(old.nonce) === Number(incoming.nonce)) {
                   const getMergeKey = (w) => {
@@ -451,7 +485,7 @@ export function createRequestHandler({
             throw Object.assign(new Error(`Merged bundle verify failed: ${mergedVerified.error}`), { code: MARKET_INPUT_INVALID });
           }
 
-          const key = bundleKey(marketId, incoming.nonce);
+          const key = targetKey;
           registry.bundles[key] = merged;
 
           console.log(
