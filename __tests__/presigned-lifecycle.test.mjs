@@ -238,3 +238,73 @@ describe("registry lifecycle guard (user origin)", () => {
     expect(stored.bundles.active.status).toBe("broadcasting");
   });
 });
+
+describe("multi-nonce ladder (v3, 2026-09-24)", () => {
+  // Bậc thang nonce: nhiều bundle (market khác nhau hoặc cùng market) tồn tại
+  // đồng thời ở nonce liên tiếp. Broadcast luôn claim đúng nonce == on-chain
+  // pending ⇒ tự động theo thứ tự nonce tăng dần; rung nonce cao hơn CHỜ.
+  it("ladder 2 nonce: chỉ nonce thấp nhất (== pending) được claim, rung cao hơn giữ pending", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 2, bundles: {
+      a: pending(7),                       // == pending nonce → claimable
+      ["b@8"]: { marketId: "b", nonce: 8, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x02" }] },
+    } });
+    const client = { getTransactionCount: async () => 7, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles.a.status).toBe("submitted");
+    expect(stored.bundles["b@8"].status).toBe("pending"); // rung cao hơn chờ
+  });
+
+  it("nonce tăng lên: rung kế tiếp trở thành claimable ở chu kỳ sau", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 2, bundles: {
+      done: { marketId: "a", nonce: 7, status: "submitted", txHash: keccak256(stringToHex("mined")), withdrawals: [] },
+      ["b@8"]: { marketId: "b", nonce: 8, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x02" }] },
+    } });
+    const client = { getTransactionCount: async () => 8, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["b@8", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles["b@8"].status).toBe("submitted");
+  });
+
+  it("hết hạn theo on-chain nonce: pending nonce nhảy qua rung → rung expired", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 2, bundles: {
+      ["a@7"]: { marketId: "a", nonce: 7, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x01" }] },
+      ["b@8"]: { marketId: "b", nonce: 8, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x02" }] },
+    } });
+    // Nonce on-chain nhảy thẳng lên 9 (tx ngoài, ví dụ thủ công) — CẢ HAI rung
+    // đều đã bị vượt qua ⇒ expired (đây là nghĩa "hết hạn dựa trên onchain nonce").
+    const client = { getTransactionCount: async () => 9, sendRawTransaction: vi.fn() };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a@7", snapshot], ["b@8", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles["a@7"].status).toBe("expired");
+    expect(stored.bundles["b@8"].status).toBe("expired");
+  });
+
+  it("migrate v2 → v3: giữ nguyên key, stamp marketId từ key, version 3 khi ghi", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 2, bundles: { a: pending(7) } });
+    const client = { getTransactionCount: async () => 7, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.version).toBe(3);
+    expect(stored.bundles.a.marketId).toBe("a"); // stamped, key giữ nguyên
+    expect(stored.bundles.a.status).toBe("submitted");
+  });
+
+  it("cùng market nhiều nonce: mọi rung của market được nhận diện qua marketId field", async () => {
+    const filePath = tempRegistryPath();
+    seedRegistry(filePath, { version: 2, bundles: {
+      ["a@7"]: { marketId: "a", nonce: 7, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x01" }] },
+      ["a@8"]: { marketId: "a", nonce: 8, status: "pending", withdrawals: [{ label: "small", amountWei: "50", signedTx: "0x02" }] },
+    } });
+    const client = { getTransactionCount: async () => 7, sendRawTransaction: vi.fn(), waitForTransactionReceipt: async () => minedReceipt("success") };
+    await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["a@7", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    const stored = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    expect(stored.bundles["a@7"].status).toBe("submitted");
+    // Sibling cùng nonce (không có ở đây) sẽ expired; rung 8 giữ pending.
+    expect(stored.bundles["a@8"].status).toBe("pending");
+  });
+});

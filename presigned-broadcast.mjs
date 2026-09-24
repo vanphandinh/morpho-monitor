@@ -1,4 +1,5 @@
 import { keccak256 } from "viem";
+import { parseBundleKey } from "./presigned-store.mjs";
 
 /**
  * Presigned transaction lifecycle.
@@ -122,6 +123,13 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     // new bundle while a durable claim is still being reconciled.
     if (claims.length > 0) return reconcileBroadcasting(claims[0][0], claims[0][1]);
 
+    // Multi-nonce ladder (v3): entries are keyed `marketId@nonce`, so a market
+    // can hold several bundles at once. Only the entry at the CURRENT on-chain
+    // pending nonce is ever claimable (txs mine strictly in nonce order) — a
+    // future-nonce tx pre-broadcast would mine unconditionally and defeat the
+    // trigger condition. Among same-nonce contenders the first market in
+    // markets.json order wins; siblings stay pending until the nonce is
+    // consumed (then they expire — their signature is bound to that nonce).
     for (const [id, snapshot] of snapshots) {
       const bundle = registry.bundles[id];
       if (!bundle || bundle.status !== "pending" || Number(bundle.nonce) !== Number(nonce) || !isEligible(snapshot)) continue;
@@ -188,6 +196,12 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     await updateRegistry(filePath, (registry) => {
       const bundle = registry.bundles[claim.id];
       if (!bundle || bundle.status !== "broadcasting" || bundle.txHash !== txHash) return;
+      // v3: stamp marketId from the composite key if missing (migrated v2
+      // bundles already carry it).
+      if (bundle.marketId == null) {
+        const { marketId } = parseBundleKey(claim.id);
+        if (marketId) bundle.marketId = marketId;
+      }
       bundle.status = receipt.status === "success" ? "submitted" : "failed";
       const stamped = new Date(now()).toISOString();
       // terminalAt drives retention/display; minedAt kept for older readers.

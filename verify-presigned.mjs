@@ -51,6 +51,31 @@ export function isRegistryV2(parsed) {
   return Boolean(parsed && parsed.version === 2 && parsed.bundles && typeof parsed.bundles === "object" && !Array.isArray(parsed.bundles));
 }
 
+/** Detect registry v3 (composite keys `marketId@nonce`). */
+export function isRegistryV3(parsed) {
+  return Boolean(parsed && parsed.version === 3 && parsed.bundles && typeof parsed.bundles === "object" && !Array.isArray(parsed.bundles));
+}
+
+/**
+ * Normalize any registry version to an iterable list of { key, marketId,
+ * bundle }: v3 keys are composite (`marketId@nonce`) and the bundle's own
+ * `marketId` field is authoritative; v2 keys ARE the market identity (one
+ * bundle per market) so the key wins. Bare bundles stay back-compat.
+ */
+export function iterRegistryBundles(parsed) {
+  if (isRegistryV3(parsed)) {
+    return Object.entries(parsed.bundles).map(([key, bundle]) => {
+      const idx = key.lastIndexOf("@");
+      const keyMarket = idx > 0 ? key.slice(0, idx) : key;
+      return { key, marketId: String(bundle?.marketId ?? keyMarket).toLowerCase(), bundle };
+    });
+  }
+  if (isRegistryV2(parsed)) {
+    return Object.entries(parsed.bundles).map(([key, bundle]) => ({ key, marketId: String(key).toLowerCase(), bundle }));
+  }
+  return [];
+}
+
 /**
  * Verify one bundle and print its tiers. Returns counts for the caller summary.
  * @returns {Promise<{matched: number, mismatched: number, empty: boolean}>}
@@ -179,14 +204,15 @@ async function main() {
 
   const requestedMarket = market ? market.toLowerCase() : null;
 
-  // ---- Registry v2 ----
-  if (isRegistryV2(parsed)) {
-    const ids = Object.keys(parsed.bundles);
-    console.log(`📦 Registry v2: ${ids.length} bundle(s) — ${filePath}`);
+  // ---- Registry v3 (composite keys) / v2 (one bundle per market) ----
+  const entries = iterRegistryBundles(parsed);
+  if (entries.length > 0) {
+    const versionTag = isRegistryV3(parsed) ? "v3" : "v2";
+    console.log(`📦 Registry ${versionTag}: ${entries.length} bundle(s) — ${filePath}`);
     if (requestedMarket) console.log(`🔎 Chỉ kiểm tra market: ${requestedMarket}`);
     console.log("");
 
-    const selected = requestedMarket ? ids.filter((id) => id.toLowerCase() === requestedMarket) : ids;
+    const selected = requestedMarket ? entries.filter((e) => e.marketId === requestedMarket) : entries;
     if (selected.length === 0) {
       console.error(`❌ Không có bundle nào cho market ${requestedMarket} trong registry.`);
       return 1;
@@ -194,9 +220,8 @@ async function main() {
 
     const summary = [];
     let failures = 0;
-    for (const id of selected) {
-      const bundle = parsed.bundles[id];
-      const label = id.length > 16 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
+    for (const { key, marketId, bundle } of selected) {
+      const label = key.length > 16 ? `${key.slice(0, 10)}…${key.slice(-6)}` : key;
       if (!bundle || !Array.isArray(bundle.withdrawals)) {
         console.error(`❌ ${label}: bundle không hợp lệ (thiếu withdrawals).`);
         summary.push({ market: label, status: bundle?.status ?? "?", tiers: 0, matched: 0, mismatched: 0, result: "INVALID" });
@@ -210,8 +235,8 @@ async function main() {
         continue;
       }
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`🔎 Market ${label}`);
-      const counts = await verifyBundle(bundle, { marketId: id.toLowerCase(), filePath });
+      console.log(`🔎 Bundle ${label}`);
+      const counts = await verifyBundle(bundle, { marketId, filePath });
       const ok = counts.mismatched === 0 && counts.bundleOk;
       if (!ok) failures++;
       summary.push({

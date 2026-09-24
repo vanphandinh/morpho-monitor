@@ -2,21 +2,61 @@ import fs from "node:fs";
 import path from "node:path";
 import { withFileLock } from "./shared.mjs";
 
+/**
+ * Registry v3 (multi-nonce presign ladder, 2026-09-24):
+ * bundles được khóa phức hợp `marketId@nonce` thay vì chỉ marketId, nên MỌI
+ * market có thể giữ bundle ở NHIỀU nonce liên tiếp cùng lúc (ký trước, chờ
+ * on-chain nonce đi qua). Mỗi bundle mang field `marketId` (authoritative khi
+ * key bị mâu thuẫn). Broadcast vẫn chỉ claim bundle ở nonce == on-chain
+ * pending; bundle nonce thấp hơn pending/đã tiêu thụ → expired.
+ */
+export const REGISTRY_VERSION = 3;
+
 export function emptyRegistry() {
-  return { version: 2, bundles: {} };
+  return { version: REGISTRY_VERSION, bundles: {} };
+}
+
+/** Composite registry key: `marketId@nonce` (marketId lowercase). */
+export function bundleKey(marketId, nonce) {
+  return `${String(marketId).toLowerCase()}@${Number(nonce)}`;
+}
+
+/** Split a composite key; plain legacy keys → marketId = key, nonce = NaN. */
+export function parseBundleKey(key) {
+  const idx = String(key).lastIndexOf("@");
+  if (idx <= 0) return { marketId: String(key), nonce: NaN };
+  return { marketId: String(key).slice(0, idx), nonce: Number(String(key).slice(idx + 1)) };
+}
+
+/**
+ * Coerce an on-disk registry to v3 shape. v2 (one bundle per marketId) is
+ * migrated in-memory: bundles KEEP their original keys (opaque identifiers —
+ * nothing parses them for identity) and gain a `marketId` field. New saves
+ * via the webapp API write composite keys `marketId@nonce`. Identity of a
+ * bundle is (bundle.marketId ?? key, bundle.nonce) — always read from VALUES,
+ * never from the key. Anything else fails closed (v1 or garbage must never
+ * be silently accepted).
+ */
+function migrateRegistry(parsed) {
+  if (parsed && (parsed.version === REGISTRY_VERSION || parsed.version === 2) && parsed.bundles && typeof parsed.bundles === "object" && !Array.isArray(parsed.bundles)) {
+    const bundles = {};
+    for (const [key, bundle] of Object.entries(parsed.bundles)) {
+      if (!bundle || typeof bundle !== "object") continue;
+      bundles[key] = bundle.marketId != null ? bundle : { ...bundle, marketId: String(key).toLowerCase() };
+    }
+    return { version: REGISTRY_VERSION, bundles };
+  }
+  throw new Error("Presigned registry must use version 3 (or legacy version 2) with a bundles object");
 }
 
 export function readRegistry(filePath) {
   if (!fs.existsSync(filePath)) return emptyRegistry();
   const registry = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  if (!registry || registry.version !== 2 || !registry.bundles || Array.isArray(registry.bundles)) {
-    throw new Error("Presigned registry must use version 2 with a bundles object");
-  }
-  return registry;
+  return migrateRegistry(registry);
 }
 
 export function writeRegistry(filePath, registry) {
-  if (registry?.version !== 2 || !registry.bundles || Array.isArray(registry.bundles)) {
+  if (registry?.version !== REGISTRY_VERSION || !registry.bundles || Array.isArray(registry.bundles)) {
     throw new Error("Refusing to write invalid presigned registry");
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -126,4 +166,34 @@ export function registrySummary(bundle) {
       ...(w.type === "all-shares" ? { type: w.type, sharesWei: w.sharesWei } : {}),
     })),
   };
+}
+
+/** Every bundle of one market, ascending nonce. Identity comes from bundle VALUES (marketId field, nonce); the key is opaque. */
+export function marketBundles(registryOrBundles, marketId) {
+  const bundles = registryOrBundles?.bundles ?? registryOrBundles ?? {};
+  const id = String(marketId).toLowerCase();
+  return Object.entries(bundles)
+    .filter(([, bundle]) => String(bundle?.marketId ?? "").toLowerCase() === id)
+    .map(([key, bundle]) => ({ key, bundle }))
+    .sort((a, b) => Number(a.bundle?.nonce) - Number(b.bundle?.nonce));
+}
+
+/**
+ * Group bundles by nonce ascending. Each round: { nonce, entries: [{ key,
+ * marketId, bundle }] } — the webapp overview renders one row per round and
+ * the broadcaster resolves same-nonce races by trigger order.
+ */
+export function nonceRounds(registryOrBundles) {
+  const bundles = registryOrBundles?.bundles ?? registryOrBundles ?? {};
+  const rounds = new Map();
+  for (const [key, bundle] of Object.entries(bundles)) {
+    const marketId = String(bundle?.marketId ?? parseBundleKey(key).marketId).toLowerCase();
+    const n = Number(bundle?.nonce);
+    if (!Number.isFinite(n)) continue;
+    if (!rounds.has(n)) rounds.set(n, []);
+    rounds.get(n).push({ key, marketId, bundle });
+  }
+  return [...rounds.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([nonce, entries]) => ({ nonce, entries }));
 }
