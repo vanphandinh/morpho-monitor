@@ -1,0 +1,87 @@
+# CI — cổng kiểm tra + kiểm artifact triển khai (vòng 6, P5).
+#
+# Hai lý do tồn tại:
+#
+#  1. Cổng ở local không phải là cổng. D10 (vòng 5) chỉ lộ ra trên Windows: cùng một lệnh npm, shell
+#     của cmd.exe không expand `*.mjs` nên cổng lint quét 47 file thay vì 82, và vẫn xanh. Ma trận
+#     dưới đây chạy CẢ hai hệ để không có "máy tôi xanh" nào là bằng chứng duy nhất.
+#  2. Image là artifact thật, mà không test nào trong repo chạm vào nó. Job `image` build rồi boot
+#     webapp TỪ TRONG image, kiểm đồ thị module có đủ file và các route trả đúng mã — bắt được lớp
+#     lỗi "Dockerfile copy thiếu module" mà mọi test trên cây nguồn đều mù.
+#
+# Ghi chú giới hạn (không nên đọc quá lời): CI này chỉ chạy khi repo được push lên một remote có
+# GitHub Actions. `npm run check` ở máy vẫn là cổng nhanh nhất; CI là cổng không thể bỏ qua.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    name: gate · ${{ matrix.os }} · node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # `npm run check` = lint (có tự kiểm độ phủ file) + node --check + toàn bộ vitest.
+      - run: npm run check
+
+  image:
+    name: image · build + smoke
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build -t morpho:ci .
+      - name: đủ file trong artifact (bắt lỗi Dockerfile copy thiếu module)
+        run: docker run --rm --entrypoint node -v "$PWD/scripts/image-module-closure.mjs:/tmp/closure.mjs:ro" morpho:ci /tmp/closure.mjs /app
+      - name: boot webapp TỪ IMAGE và kiểm các route
+        run: |
+          set -eu
+          # `.env` + markets.json tối thiểu: webapp-server fail-fast nếu thiếu cấu hình, và
+          # `config/markets.json` bị .dockerignore loại nên phải mount vào.
+          mkdir -p ci-fixture/config
+          cp config/markets.example.json ci-fixture/config/markets.json
+          cat > ci-fixture/.env <<'ENV'
+          LENDER_ADDRESS=0x1111111111111111111111111111111111111111
+          PROXY_RPC_URL=http://127.0.0.1:8545
+          WEBAPP_ALLOW_INSECURE=1
+          MARKETS_FILE=./config/markets.json
+          PUBLIC_RPC_URLS=http://127.0.0.1:1
+          ENV
+          # `--env-file` là bắt buộc: entrypoint thật của image là `docker-entrypoint.sh` (nó tự
+          # truyền `--env-file=/app/.env`); ở đây ta thay entrypoint để chỉ chạy webapp, nên phải
+          # tự truyền lại — quên là container chết ngay với "Thiếu LENDER_ADDRESS trong .env".
+          docker run -d --name morpho-ci -p 3999:3000 \
+            -v "$PWD/ci-fixture/.env:/app/.env:ro" \
+            -v "$PWD/ci-fixture/config/markets.json:/app/config/markets.json:ro" \
+            --entrypoint node morpho:ci --env-file=/app/.env /app/webapp-server.mjs
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:3999/; then break; fi
+            sleep 1
+          done
+          fail=0
+          for module in webapp-app webapp-logic webapp-render webapp-wallet webapp-state \
+                        webapp-shell webapp-overview webapp-presign-bundles webapp-presign webapp-withdraw; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3999/${module}.mjs")
+            echo "${module}.mjs -> ${code}"
+            [ "$code" = "200" ] || fail=1
+          done
+          bogus=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/webapp-nope.mjs)
+          echo "webapp-nope.mjs -> ${bogus} (mong đợi 404)"
+          [ "$bogus" = "404" ] || fail=1
+          docker logs morpho-ci | tail -24
+          docker rm -f morpho-ci
+          exit "$fail"

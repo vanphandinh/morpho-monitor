@@ -58,6 +58,10 @@ logs/
 .claude/
 .freebuff/
 
+# Thư mục tạm của job `image` trong CI (và khi chạy lại job đó ở local): .env + markets.json mount vào
+# container. Không bao giờ commit — đây chỉ là cấu hình tối thiểu để webapp khởi động được.
+ci-fixture/
+
 # ============================================================
 # Docker (image files, not config)
 # ============================================================
