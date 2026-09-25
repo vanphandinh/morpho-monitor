@@ -500,6 +500,19 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(bare).toBeGreaterThanOrEqual(1);
   });
 
+  // Audit vòng 5 (O1): test động trong `webapp-app-boot.test.mjs` chỉ chạm vài id trên đường
+  // boot rồi dừng ở bước RPC. Đây là lưới PHỦ TOÀN BỘ: mọi `getElementById("x")` phải có
+  // `id="x"` trong HTML, hoặc app phải tự chèn nó (`id="x"` có trong chính webapp-app.mjs —
+  // ví dụ `tx-verify-note` chèn vào banner rồi tra lại, có null-guard). Sai một cái ⇒
+  // `null.textContent` ⇒ TypeError chỉ hiện khi người dùng bấm đúng nút đó.
+  it("vòng 5: mọi getElementById trong app đều có id tương ứng (HTML hoặc app tự chèn)", () => {
+    const htmlIds = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+    const used = [...app.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]);
+    expect(used.length).toBeGreaterThanOrEqual(60); // chốt chống regex hỏng (đo được: 61)
+    const missing = [...new Set(used)].filter((id) => !htmlIds.has(id) && !app.includes(`id="${id}"`));
+    expect(missing).toEqual([]);
+  });
+
   it("bản sao logic đã chuyển sang module chung được dùng ở đúng call site", () => {
     // Rút tiền: validation + MAX phải đi qua hàm chung (nếu không, test trên
     // module xanh mà UI vẫn dùng bản cũ — đúng thứ A.1b muốn chặn).
