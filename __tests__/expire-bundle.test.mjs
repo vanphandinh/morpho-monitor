@@ -110,10 +110,17 @@ describe("production expiration semantics", () => {
   });
 
   it("khi không còn gì để claim, diagnostic nói rõ đây là terminal history", async () => {
+    // Round-4 quota (2026-09-25): registry CHỈ toàn terminal giờ là idle
+    // (0 RPC — ghim ở presigned-idle.test.mjs). Nhánh terminalSummary của
+    // phase 1 chỉ còn tới được khi registry CÓ việc (pending tương lai) nhưng
+    // không claim được gì ở chu kỳ này.
     const filePath = tempRegistry();
-    seed(filePath, { version: 2, bundles: { done: { nonce: 7, status: "submitted", txHash: "0x" + "c".repeat(64), withdrawals: [] } } });
-    const client = { getTransactionCount: async () => 9, sendRawTransaction: vi.fn() };
-    const result = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map(), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
+    seed(filePath, { version: 2, bundles: {
+      done: { nonce: 7, status: "submitted", txHash: "0x" + "c".repeat(64), withdrawals: [] },
+      next: pending50(9),
+    } });
+    const client = { getTransactionCount: async () => 8, sendRawTransaction: vi.fn() };
+    const result = await broadcastEligible({ client, lenderAddress: "x", filePath, snapshots: new Map([["next", snapshot]]), updateRegistry, verifyBundle: async () => ({ ok: true }), isEligible: () => true });
     expect(result.stuck).toBe(false);
     expect(result.terminalSummary).toEqual({ count: 1, consumedNonce: 7 });
     expect(result.diagnostic).toMatch(/terminal bundle\(s\) are history/);

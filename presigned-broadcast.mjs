@@ -1,5 +1,5 @@
 import { keccak256 } from "viem";
-import { parseBundleKey, marketBundles, consumedWatermark, TERMINAL_STATUSES } from "./presigned-store.mjs";
+import { parseBundleKey, marketBundles, consumedWatermark, readRegistry, TERMINAL_STATUSES } from "./presigned-store.mjs";
 import { isConfigVerifyError } from "./presign-verify.mjs";
 
 /**
@@ -56,6 +56,25 @@ export function selectBestWithdrawal(withdrawals, snapshot) {
  */
 export const SUPERSEDED_STATUS = "superseded";
 export const SUPERSEDED_REASON = "nonce consumed by another transaction — this presigned tx can never mine";
+
+/**
+ * Registry còn "việc" đáng trả phí RPC không (round-4 quota audit, 2026-09-25)?
+ *
+ * Chỉ hai trạng thái đòi hỏi I/O mạng: `pending` (có thể được claim ở nonce
+ * hiện tại) và `broadcasting` (claim durable cần reconcile). Mọi trạng thái
+ * khác (terminal/expired/invalid/history) là inert — pipeline chạy đủ cũng
+ * chẳng làm gì ngoài đọc nonce và kết luận "không có gì để làm".
+ *
+ * Pending với nonce hỏng (không parse được số) vẫn tính là CÓ VIỆC: fail
+ * closed — trạng thái lạ không được phép kích hoạt chế độ bỏ qua.
+ */
+export function registryHasWork(registry) {
+  for (const bundle of Object.values(registry?.bundles ?? {})) {
+    const status = bundle?.status;
+    if (status === "broadcasting" || status === "pending") return true;
+  }
+  return false;
+}
 
 /**
  * True when the bundle holds the nonce-wide active claim. ONLY an unmined
@@ -189,6 +208,27 @@ async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRe
 }
 
 export async function broadcastEligible({ client, lenderAddress, filePath, snapshots, updateRegistry, verifyBundle, isEligible, now = () => Date.now(), logger = console }) {
+  // ---- Phase 0: pure idle check — no RPC, no lock (round-4 quota audit) ----
+  // broadcastEligible chạy MỖI chu kỳ monitor (30s). Registry trống hoặc chỉ
+  // còn history thì toàn bộ pipeline chỉ để đọc 1 nonce rồi kết luận không có
+  // gì để làm — ~2.880 request/ngày phí phạm ở trạng thái idle. Short-circuit
+  // CHỈ kích hoạt trên trạng thái đọc được và chứng minh được là idle; file
+  // hỏng/không đọc được ⇒ chạy pipeline đủ như cũ (fail closed). Race với một
+  // bundle vừa ký (webapp) không mất an toàn: phase 1 vẫn là thẩm quyền duy
+  // nhất, bundle mới chỉ được claim ở chu kỳ kế tiếp như trước đây.
+  let idle = false;
+  try {
+    idle = !registryHasWork(readRegistry(filePath));
+  } catch {
+    idle = false; // không đọc được registry ⇒ không được coi là idle
+  }
+  if (idle) {
+    return {
+      idle: true,
+      diagnostic: "registry idle — no pending bundle and no broadcasting claim; nonce read skipped",
+    };
+  }
+
   const nonce = await client.getTransactionCount({ address: lenderAddress, blockTag: "pending" });
 
   // Audit vòng 2 (D2): vấn đề verify phát hiện trong chu kỳ này (lệch .env hoặc
