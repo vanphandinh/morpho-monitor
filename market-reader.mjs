@@ -28,20 +28,20 @@ export async function createMarketReader({
 }) {
   const tokenCache = new Map();
   const runtimes = new Map();
+  const unknownIds = [];
 
   for (const config of markets) {
     const params = await fetchParams(config.id, client, { chainId: 1 });
     // Fail fast (audit P0.3): một chữ sai trong config/markets.json trước đây biến
     // market đó thành market rỗng "hợp lệ" (liquidity 0, symbol undefined) và
     // monitor im lặng không bao giờ cảnh báo. Thà chết lúc khởi động kèm id.
+    //
+    // Audit vòng 5: KHÔNG throw ngay tại đây — quét hết danh sách trước. Với
+    // markets.json nhiều market, throw-ngay bắt người vận hành sửa một id rồi
+    // restart mới thấy id sai tiếp theo; gom lại thì một lần khởi động báo đủ.
     if (!params?.loanToken || params.loanToken.toLowerCase() === ZERO_ADDRESS) {
-      const err = new Error(
-        `❌ Market id không tồn tại on-chain (params toàn zero): ${config.id}\n` +
-        "   → Kiểm tra lại `id` trong config/markets.json (MARKETS_FILE)."
-      );
-      err.code = MARKET_PARAMS_ZERO;
-      err.marketId = config.id;
-      throw err;
+      unknownIds.push(config.id);
+      continue; // không tốn RPC đọc token của market chắc chắn sai
     }
     const tokenFor = async (address) => {
       const key = address.toLowerCase();
@@ -59,6 +59,18 @@ export async function createMarketReader({
       collateralToken,
       minLiquidityWei: parseUnits(config.minLiquidity, loanToken.decimals),
     });
+  }
+
+  if (unknownIds.length) {
+    const err = new Error(
+      `❌ ${unknownIds.length} market id không tồn tại on-chain (params toàn zero):\n` +
+      unknownIds.map((id) => `   • ${id}`).join("\n") +
+      "\n   → Kiểm tra lại `id` trong config/markets.json (MARKETS_FILE)."
+    );
+    err.code = MARKET_PARAMS_ZERO;
+    err.marketId = unknownIds[0]; // back-compat: một id đầu tiên
+    err.marketIds = unknownIds;   // đủ danh sách cho log/handler
+    throw err;
   }
 
   async function readSnapshots(ids = [...runtimes.keys()]) {

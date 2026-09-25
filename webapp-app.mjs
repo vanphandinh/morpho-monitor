@@ -815,7 +815,9 @@
           showPresignError(`Lỗi: ${msg}`);
         }
       }
-    };    // ============================================================
+    };
+
+    // ============================================================
     // PRESIGN: NONCE & GAS
     // ============================================================
 
@@ -849,7 +851,6 @@
     }
 
     window.fetchNonce = async function() {
-
       if (!currentAccount) {
         showPresignError("Vui lòng kết nối ví trước.");
         return;

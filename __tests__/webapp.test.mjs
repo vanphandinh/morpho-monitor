@@ -463,6 +463,43 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(handlerSrc).toContain("scriptSources");
   });
 
+  // Audit vòng 5: các test trên chỉ ghim TỪNG CẶP (app import file / server truyền
+  // file). Không có gì ghim bất biến BA CHIỀU: mọi `./x.mjs` mà module browser
+  // import phải (a) tồn tại, (b) có khoá trong route map của server/handler, và
+  // (c) mọi bare specifier phải có trong importmap của webapp.html. Lệch một trong
+  // ba thì browser nhận 404/SyntaxError và CẢ UI chết lặng (đồ thị import là
+  // all-or-nothing), trong khi mọi test khác — kể cả `node --check` — vẫn xanh.
+  it("vòng 5: đồ thị module browser khép kín — import ⊆ route map ⊆ importmap", () => {
+    const BROWSER_MODULES = ["webapp-app.mjs", "webapp-logic.mjs", "webapp-render.mjs", "webapp-wallet.mjs"];
+    const wiring = `${server}\n${handlerSrc}`;
+    const importMap = JSON.parse(
+      html.match(/<script\b[^>]*\btype="importmap"[^>]*>([\s\S]*?)<\/script>/)[1]
+    ).imports;
+
+    let relative = 0, bare = 0;
+    for (const name of BROWSER_MODULES) {
+      const source = readSource(name);
+      for (const [, spec] of source.matchAll(/(?:^|\s)(?:import|export)[^"']*?from\s*"([^"]+)"/g)) {
+        if (spec.startsWith("./")) {
+          relative++;
+          const file = spec.slice(2);
+          expect(BROWSER_MODULES, `${name} import ${spec} — không phải module browser đã biết`).toContain(file);
+          expect(
+            new RegExp(`"${file.replace(/\./g, "\\.")}"\\s*:`).test(wiring),
+            `${name} import ${spec} nhưng server/handler không wire "${file}" vào route map`
+          ).toBe(true);
+        } else {
+          bare++;
+          expect(Object.keys(importMap), `${name} import "${spec}" — thiếu trong importmap`).toContain(spec);
+        }
+      }
+    }
+    // Chốt chống regex hỏng: 4 module này phải thật sự import lẫn nhau + ít nhất
+    // một bare specifier (viem), đừng để test xanh vì không match được gì.
+    expect(relative).toBeGreaterThanOrEqual(3);
+    expect(bare).toBeGreaterThanOrEqual(1);
+  });
+
   it("bản sao logic đã chuyển sang module chung được dùng ở đúng call site", () => {
     // Rút tiền: validation + MAX phải đi qua hàm chung (nếu không, test trên
     // module xanh mà UI vẫn dùng bản cũ — đúng thứ A.1b muốn chặn).

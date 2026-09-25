@@ -143,6 +143,37 @@ describe("market-reader — fail fast khi market id sai (P0.3)", () => {
     const err = await reader(client, { fetchParams: async () => undefined }).catch((e) => e);
     expect(err.code).toBe(MARKET_PARAMS_ZERO);
   });
+
+  // Audit vòng 5: throw-ngay bắt người vận hành sửa MỘT id rồi restart mới thấy id
+  // sai tiếp theo. Một lần khởi động phải báo đủ danh sách.
+  it("nhiều id sai ⇒ MỘT lỗi liệt kê ĐỦ mọi id, không đọc token của id sai", async () => {
+    const client = fakeClient();
+    const fetchTokenById = vi.fn(async () => token("USDC", 6));
+    const err = await reader(client, {
+      fetchParams: async () => params(ZERO, ZERO),
+      fetchTokenById,
+    }).catch((e) => e);
+
+    expect(err.code).toBe(MARKET_PARAMS_ZERO);
+    expect(err.marketIds).toEqual([MARKET_A, MARKET_B]);
+    expect(err.marketId).toBe(MARKET_A); // back-compat: id đầu tiên
+    expect(err.message).toContain(MARKET_A);
+    expect(err.message).toContain(MARKET_B);
+    expect(err.message).toMatch(/2 market id/);
+    expect(fetchTokenById).not.toHaveBeenCalled();
+    expect(client.multicall).not.toHaveBeenCalled();
+  });
+
+  it("chỉ id SAI bị liệt kê — id đúng không lọt vào thông báo lỗi", async () => {
+    const client = fakeClient();
+    const err = await reader(client, {
+      fetchParams: async (id) => (id === MARKET_B ? params(ZERO, ZERO) : params()),
+    }).catch((e) => e);
+
+    expect(err.marketIds).toEqual([MARKET_B]);
+    expect(err.marketId).toBe(MARKET_B);
+    expect(err.message).not.toContain(MARKET_A);
+  });
 });
 
 describe("market-reader — cache metadata token", () => {
