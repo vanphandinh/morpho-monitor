@@ -183,14 +183,21 @@ function isTransportError(err) {
  * @param {string} url - RPC endpoint URL
  * @param {object} httpOptions - Options forwarded to viem's http()
  * @returns {function} transport factory compatible with createRoundRobinTransport
+ *
+ * Retry policy (round-4 quota audit): 1 attempt per URL. Redundancy comes from
+ * the 11-URL rotation plus the circuit breaker; per-URL retry only multiplies
+ * load onto the exact endpoint that is currently struggling.
  */
 function circuitHttp(url, httpOptions = {}) {
   return (config) => {
     const baseTransport = http(url, {
       timeout: 15_000,
-      retryCount: 1,        // 1 retry = 2 total attempts per URL.
-      retryDelay: 300,      // With 9 URLs in rotation, retrying the same URL
-      ...httpOptions,       // is less valuable than moving to the next one.
+      // Round-4 audit (quota, 2026-09-25): per-URL retry = 0. Trước đây retryCount
+      // = 1 khiến 1 logical call thất bại toàn URL phải trả tới 44 upstream call
+      // (2 per-URL × 11 URL × 2 lượt rotation) — đúng lúc provider rate-limit thì
+      // app tự đập thêm. Rotation 11 URL + circuit breaker (429 mở ngay) đã là dự
+      // phòng; retry cùng URL chỉ nhân lượng vào đúng endpoint đang nghẽn.
+      retryCount: 0,
     })(config);
 
     const originalRequest = baseTransport.request.bind(baseTransport);

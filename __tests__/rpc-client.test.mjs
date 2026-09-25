@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { http } from "viem"; // bị mock phía dưới — dùng để dựng kịch bản lỗi theo URL
 import {
   recordSuccess,
   recordFailure,
@@ -31,6 +32,29 @@ vi.mock("viem", async (importOriginal) => {
 });
 
 const URL = "https://ethereum-rpc.publicnode.com";
+
+/**
+ * Round-4 quota tests cần URL lỗi THEO KỊCH BẢN (mock mặc định luôn thành công).
+ * Trả về hàm restore về implementation gốc sau test.
+ * @param {Map<string, () => Promise<unknown>>} script - url → hành vi (throw = lỗi)
+ */
+const installScriptedHttp = (script) => {
+  const original = http.getMockImplementation();
+  http.mockImplementation((url) => () => ({
+    config: { url },
+    request: () => {
+      rpcCallLog.push(url);
+      const act = script.get(url);
+      if (act) return act();
+      return Promise.resolve({ id: 1, jsonrpc: "2.0", result: "0x1" });
+    },
+    value: {},
+  }));
+  return () => http.mockImplementation(original);
+};
+
+const transientTimeout = () => Promise.reject(Object.assign(new Error("request timed out"), { name: "TimeoutError" }));
+const rateLimited = () => Promise.reject(Object.assign(new Error("too many requests"), { status: 429 }));
 
 describe("circuit breaker — HALF-OPEN state tracking", () => {
   beforeEach(() => {
@@ -414,6 +438,96 @@ describe("round-robin transport", () => {
 
     // No URL should have been successfully called (mock request never reached)
     expect(rpcCallLog).toEqual([]);
+  });
+
+  // ==========================================================
+  // Round-4 audit (quota, 2026-09-25): chặn bão retry nhân lượng.
+  // Trước đây: per-URL retryCount=1 (x2) × rotation retryCount=1 (x2 lượt) ⇒
+  // 1 logical call thất bại toàn URL = tới 44 upstream call với 11 endpoint —
+  // đúng lúc provider rate-limit thì app tự đập thêm gấp 44.
+  // Hợp đồng: per-URL retry = 0 (rotation + circuit breaker là dự phòng);
+  // 429 mở circuit ngay ⇒ lượt rotation sau skip URL đó tức thì.
+  // ==========================================================
+
+  it("quota: per-URL retryCount = 0 — không cấu hình retry trên cùng một URL", async () => {
+    circuits.clear();
+    rpcCallLog.length = 0;
+
+    // Mock thay toàn bộ viem http() nên retryCount per-URL KHÔNG quan sát được
+    // qua call log — quan sát đúng chỗ nó được cấu hình: options truyền vào http().
+    const captured = [];
+    const original = http.getMockImplementation();
+    http.mockImplementation((url, opts = {}) => {
+      captured.push({ url, retryCount: opts.retryCount });
+      return () => ({
+        config: { url },
+        request: () => {
+          rpcCallLog.push(url);
+          return Promise.resolve({ id: 1, jsonrpc: "2.0", result: "0x1" });
+        },
+        value: {},
+      });
+    });
+
+    try {
+      const urls = ["https://q.example/1", "https://q.example/2"];
+      const transport = createRoundRobinTransport(urls)({});
+      await transport.request({ method: "eth_blockNumber" });
+
+      // Mọi transport con phải được cấu hình retryCount = 0. Trước fix (round-4
+      // quota audit) giá trị là 1 ⇒ 1 logical call thất bại toàn URL trả tới 44
+      // upstream call (2 per-URL × 11 URL × 2 lượt rotation).
+      const perUrl = captured.filter((c) => urls.includes(c.url));
+      expect(perUrl).toHaveLength(urls.length); // mỗi URL đúng 1 transport
+      expect(perUrl.every((c) => c.retryCount === 0)).toBe(true);
+    } finally {
+      http.mockImplementation(original);
+    }
+  });
+
+  it("quota: vẫn đủ 2 lượt xoay khi toàn bộ URL hỏng tạm thời", async () => {
+    circuits.clear();
+    rpcCallLog.length = 0;
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const urls = ["https://q.example/1", "https://q.example/2"];
+    const restore = installScriptedHttp(new Map(urls.map((u) => [u, transientTimeout])));
+    try {
+      const transport = createRoundRobinTransport(urls)({});
+
+      await expect(transport.request({ method: "eth_blockNumber" })).rejects.toBeDefined();
+
+      // 2 lượt rotation × 2 URL × 1 attempt = 4 call (per-URL retry=0)
+      expect(rpcCallLog).toEqual([...urls, ...urls]);
+    } finally {
+      restore();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("quota: 429 mở circuit ngay — lượt xoay sau skip URL bị rate-limit", async () => {
+    circuits.clear();
+    rpcCallLog.length = 0;
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const urls = ["https://q.example/1", "https://q.example/2"];
+    const restore = installScriptedHttp(new Map([[urls[0], rateLimited]]));
+    try {
+      const transport = createRoundRobinTransport(urls)({});
+
+      // Lượt 1: URL[0] trả 429, URL[1] phục vụ thành công.
+      await transport.request({ method: "eth_blockNumber" });
+      expect(rpcCallLog).toEqual([urls[0], urls[1]]);
+      // Circuit của URL[0] đã OPEN sau MỘT lần 429.
+      expect(isCircuitOpen(urls[0])).toBe(true);
+
+      // Lượt 2: URL[0] bị skip tức thì (circuit OPEN) ⇒ không tốn thêm call 429.
+      await transport.request({ method: "eth_blockNumber" });
+      expect(rpcCallLog).toEqual([urls[0], urls[1], urls[1]]);
+    } finally {
+      restore();
+      vi.restoreAllMocks();
+    }
   });
 });
 
