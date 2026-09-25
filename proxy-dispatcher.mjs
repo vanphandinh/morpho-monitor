@@ -12,9 +12,9 @@
 import { keccak256, toHex } from "viem";
 import {
   MAX_BODY_BYTES,
-  requireLenderOrInternal,
   readBodyLimited,
 } from "./shared.mjs";
+import { requireLenderOrInternal } from "./auth.mjs";
 import {
   verifyPresignedBundle,
   matchTiersToCaptured,

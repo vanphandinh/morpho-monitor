@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withFileLock, LOCK_STALE } from "../shared.mjs";
+import { withFileLock, LOCK_STALE } from "../file-lock.mjs";
 
 function tempLockPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morpho-lock-"));

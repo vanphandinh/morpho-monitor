@@ -12,7 +12,7 @@ import path from "node:path";
 import { createRequestHandler, statusForError } from "../webapp-handler.mjs";
 import { MARKET_INPUT_INVALID, MARKET_NOT_CONFIGURED } from "../market-config.mjs";
 import { ACTIVE_CLAIM_CONFLICT } from "../presigned-store.mjs";
-import { LOCK_STALE } from "../shared.mjs";
+import { LOCK_STALE } from "../file-lock.mjs";
 import { stringToHex, keccak256 } from "viem";
 
 const MARKET_A = "0x" + "a".repeat(64);

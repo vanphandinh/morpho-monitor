@@ -20,11 +20,17 @@ let tokenCache = null;
 // ============================================================
 // INTERNAL HELPERS
 // ============================================================
+//
+// Audit P1.6: các hàm dưới đây nhận `fetchImpl`/`sleepImpl`/`now` qua tham số
+// (mặc định là global) và được EXPORT để __tests__/voip.test.mjs import ĐÚNG code
+// production thay vì nhân bản nó. Trước đây test có một bản sao song song của cả
+// 5 hàm — cùng lớp lỗi mà audit A.1b đã diệt cho webapp-logic.
 
 /** Sleep for `ms` milliseconds. */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
 
 // ============================================================
 // BEARER TOKEN MANAGEMENT
@@ -39,13 +45,13 @@ function sleep(ms) {
  * @param {string} apiUrl - Base URL của VoIP API
  * @returns {Promise<string>} access_token
  */
-async function getBearerToken(secretKey, apiUrl) {
+export async function getBearerToken(secretKey, apiUrl, { fetchImpl = fetch, now = Date.now } = {}) {
   // Cache hit: token còn hạn > 60 giây → dùng lại
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 60_000) {
+  if (tokenCache && now() < tokenCache.expiresAt - 60_000) {
     return tokenCache.token;
   }
 
-  const response = await fetch(`${apiUrl}/api/v1/auth/token`, {
+  const response = await fetchImpl(`${apiUrl}/api/v1/auth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ secret_key: secretKey }),
@@ -60,7 +66,7 @@ async function getBearerToken(secretKey, apiUrl) {
   const data = await response.json();
   tokenCache = {
     token: data.access_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
+    expiresAt: now() + data.expires_in * 1000,
   };
   return tokenCache.token;
 }
@@ -68,7 +74,7 @@ async function getBearerToken(secretKey, apiUrl) {
 /**
  * Xóa token cache (dùng khi nhận 401 — token không hợp lệ).
  */
-function clearTokenCache() {
+export function clearVoipTokenCache() {
   tokenCache = null;
 }
 
@@ -88,7 +94,7 @@ function clearTokenCache() {
  * @param {string} scenario - "sudden_drain" | "liquidity_appeared"
  * @returns {string} Tin nhắn tiếng Việt có dấu
  */
-function buildVoipMessage(market, loanToken, collateralToken, position, scenario) {
+export function buildVoipMessage(market, loanToken, collateralToken, position, scenario) {
   const loanSymbol = toTtsFriendly(loanToken?.symbol);
   const collateralSymbol = toTtsFriendly(collateralToken?.symbol);
   const loanDecimals = loanToken?.decimals ?? 18;
@@ -133,8 +139,8 @@ function buildVoipMessage(market, loanToken, collateralToken, position, scenario
  * @param {string} message - Nội dung tiếng Việt (plain text)
  * @returns {Promise<{callId: string}>}
  */
-async function initiateCall(apiUrl, bearerToken, target, message) {
-  const response = await fetch(`${apiUrl}/api/v1/call`, {
+export async function initiateCall(apiUrl, bearerToken, target, message, fetchImpl = fetch) {
+  const response = await fetchImpl(`${apiUrl}/api/v1/call`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -153,7 +159,7 @@ async function initiateCall(apiUrl, bearerToken, target, message) {
     const body = await response.text();
     // Nếu 401 → token hết hạn, xóa cache để lấy token mới ở lần retry sau
     if (response.status === 401) {
-      clearTokenCache();
+      clearVoipTokenCache();
     }
     throw new Error(
       `VoIP initiateCall thất bại (${response.status}): ${body}`
@@ -177,17 +183,18 @@ async function initiateCall(apiUrl, bearerToken, target, message) {
  * @param {number} [pollIntervalMs=2000] - Khoảng cách giữa các lần poll (ms)
  * @returns {Promise<{callId: string, status: string, duration_seconds?: number, error_message?: string}>}
  */
-async function pollCallStatus(
+export async function pollCallStatus(
   apiUrl,
   bearerToken,
   callId,
   maxPollMs = 60000,
-  pollIntervalMs = 2000
+  pollIntervalMs = 2000,
+  { fetchImpl = fetch, sleepImpl = sleep, now = Date.now } = {}
 ) {
-  const startedAt = Date.now();
+  const startedAt = now();
 
   while (true) {
-    const response = await fetch(`${apiUrl}/api/v1/call/${callId}`, {
+    const response = await fetchImpl(`${apiUrl}/api/v1/call/${callId}`, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${bearerToken}`,
@@ -197,7 +204,7 @@ async function pollCallStatus(
     if (!response.ok) {
       const body = await response.text();
       if (response.status === 401) {
-        clearTokenCache();
+        clearVoipTokenCache();
       }
       throw new Error(
         `VoIP pollCallStatus thất bại (${response.status}): ${body}`
@@ -217,14 +224,14 @@ async function pollCallStatus(
     }
 
     // Kiểm tra timeout
-    if (Date.now() - startedAt >= maxPollMs) {
+    if (now() - startedAt >= maxPollMs) {
       return {
         callId: data.call_id,
         status: data.status,
       };
     }
 
-    await sleep(pollIntervalMs);
+    await sleepImpl(pollIntervalMs);
   }
 }
 
@@ -246,13 +253,16 @@ async function pollCallStatus(
  * @param {number} config.retryDelayMs
  * @returns {Promise<{sent: boolean, callId?: string, status?: string, attempts: number, error?: string}>}
  */
-async function callWithRetry({
+export async function callWithRetry({
   apiUrl,
   secretKey,
   target,
   message,
   maxRetries,
   retryDelayMs,
+  fetchImpl = fetch,
+  sleepImpl = sleep,
+  now = Date.now,
 }) {
   let lastError = null;
   let lastCallId = null;
@@ -261,14 +271,14 @@ async function callWithRetry({
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Lấy token (từ cache hoặc auth mới)
-      const token = await getBearerToken(secretKey, apiUrl);
+      const token = await getBearerToken(secretKey, apiUrl, { fetchImpl, now });
 
       // Tạo cuộc gọi
-      const { callId } = await initiateCall(apiUrl, token, target, message);
+      const { callId } = await initiateCall(apiUrl, token, target, message, fetchImpl);
       lastCallId = callId;
 
       // Poll trạng thái
-      const result = await pollCallStatus(apiUrl, token, callId);
+      const result = await pollCallStatus(apiUrl, token, callId, 60000, 2000, { fetchImpl, sleepImpl, now });
       lastStatus = result.status;
 
       if (result.status === "completed") {
@@ -291,7 +301,7 @@ async function callWithRetry({
         );
 
         if (attempt < maxRetries) {
-          await sleep(retryDelayMs);
+          await sleepImpl(retryDelayMs);
           continue; // Thử lại với cuộc gọi mới
         }
       }
@@ -312,7 +322,7 @@ async function callWithRetry({
       // Nếu là lỗi auth (401), token cache đã bị xóa trong initiateCall/pollCallStatus
       // Lần retry sau sẽ tự động lấy token mới
       if (attempt < maxRetries) {
-        await sleep(retryDelayMs);
+        await sleepImpl(retryDelayMs);
       }
     }
   }
@@ -349,10 +359,20 @@ export async function sendVoipNotification(
   loanToken,
   collateralToken,
   position,
-  scenario
+  scenario,
+  {
+    fetchImpl = fetch,
+    sleepImpl = sleep,
+    now = Date.now,
+    secretKey = VOIP_SECRET_KEY,
+    apiUrl = VOIP_API_URL,
+    target = VOIP_TARGET,
+    maxRetries = VOIP_MAX_RETRIES,
+    retryDelayMs = VOIP_RETRY_DELAY_MS,
+  } = {}
 ) {
   // Không có secret key → tắt tính năng VoIP
-  if (!VOIP_SECRET_KEY) {
+  if (!secretKey) {
     return { sent: false, attempts: 0 };
   }
 
@@ -372,11 +392,14 @@ export async function sendVoipNotification(
 
   // Gọi API với retry
   return callWithRetry({
-    apiUrl: VOIP_API_URL,
-    secretKey: VOIP_SECRET_KEY,
-    target: VOIP_TARGET,
+    apiUrl,
+    secretKey,
+    target,
     message,
-    maxRetries: VOIP_MAX_RETRIES,
-    retryDelayMs: VOIP_RETRY_DELAY_MS,
+    maxRetries,
+    retryDelayMs,
+    fetchImpl,
+    sleepImpl,
+    now,
   });
 }

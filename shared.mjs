@@ -1,5 +1,4 @@
 import { formatUnits, recoverMessageAddress } from "viem";
-import crypto from "node:crypto";
 import dns from "node:dns";
 import net from "node:net";
 
@@ -13,6 +12,11 @@ if (typeof net.setDefaultAutoSelectFamily === "function") {
 // ============================================================
 // CONFIG — tất cả đọc từ biến môi trường (file .env)
 // ============================================================
+//
+// Audit P1.4: file này trước đây là một "túi hỗn hợp" (config + auth token +
+// file lock + business rule + format). Phần auth đã tách sang `auth.mjs`, lock
+// sang `file-lock.mjs`, business rule sang `monitor-rules.mjs`. Ở lại đây chỉ
+// còn config/env, format helper và hai hàm dùng chung không thuộc ba nhóm trên.
 
 /** Read a string env var with a default fallback. */
 export const env = (key, fallback) => process.env[key] ?? fallback;
@@ -179,19 +183,6 @@ export function shortenAddress(address) {
 }
 
 /**
- * Create a viem public client with round-robin, retry, and circuit breaker.
- * Delegates to the robust client factory in rpc-client.mjs.
- *
- * Uses the round-robin transport so that requests are distributed evenly
- * across all RPC URLs. Circuit breaker per-URL automatically skips
- * unhealthy endpoints.
- */
-export async function createClient(urls = RPC_URLS) {
-  const { createRobustPublicClient } = await import("./rpc-client.mjs");
-  return createRobustPublicClient(urls);
-}
-
-/**
  * Recover the Ethereum address that signed a message.
  * Uses viem's recoverMessageAddress for standard personal_sign verification.
  * Returns the recovered address (lowercase) or null on failure.
@@ -203,107 +194,6 @@ export async function recoverSignerAddress(message, signature) {
   } catch {
     return null;
   }
-}
-
-/**
- * Create a self-verifiable session token using HMAC-SHA256.
- * Both webapp-server and proxy-rpc can verify tokens independently
- * because they share WEBAPP_PASSWORD as the HMAC secret.
- *
- * Token format: payload.hmac
- *   payload = base64url(address:expiryTimestamp:randomHex)
- *   hmac = hex(HMAC-SHA256(payload, WEBAPP_PASSWORD))
- */
-export function createSessionToken(address, expiryMs) {
-  const secret = WEBAPP_PASSWORD || "dev-mode-no-secret";
-  const random = crypto.randomBytes(16).toString("hex");
-  const expiry = Date.now() + expiryMs;
-  const payload = Buffer.from(`${address}:${expiry}:${random}`).toString("base64url");
-  const hmac = crypto.createHmac("sha256", secret).update(payload).digest("hex");
-  return `${payload}.${hmac}`;
-}
-
-/**
- * Verify a self-verifiable session token.
- * Returns { address, expiresAt } or null if invalid/expired.
- */
-/** Constant-time string compare (hex/utf8). Length mismatch → false. */
-export function safeEqualString(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-export function verifySessionToken(token) {
-  if (!token) return null;
-  const secret = WEBAPP_PASSWORD || "dev-mode-no-secret";
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-  const [payload, hmac] = parts;
-  const expectedHmac = crypto.createHmac("sha256", secret).update(payload).digest("hex");
-  if (!safeEqualString(hmac, expectedHmac)) return null;
-  try {
-    const decoded = Buffer.from(payload, "base64url").toString("utf-8");
-    const [address, expiryStr] = decoded.split(":");
-    const expiry = parseInt(expiryStr, 10);
-    if (isNaN(expiry) || Date.now() > expiry) return null;
-    return { address, expiresAt: expiry };
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================
-// AUTH HELPERS (used by both webapp-server and proxy-rpc)
-// ============================================================
-
-/**
- * Verify a Bearer token (HMAC-based, verifiable by both webapp-server and proxy-rpc).
- * Returns { address, expiresAt } or null.
- * @param {object} req - Node.js IncomingMessage
- * @param {string} [devAddress="dev"] - address returned in dev mode (no WEBAPP_PASSWORD)
- */
-export function verifyToken(req, devAddress = "dev") {
-  if (!WEBAPP_PASSWORD) return { address: devAddress, expiresAt: Infinity }; // dev mode
-  const auth = req.headers["authorization"];
-  if (!auth || !auth.startsWith("Bearer ")) return null;
-  const token = auth.slice(7);
-  return verifySessionToken(token);
-}
-
-/**
- * Check internal secret (Basic Auth with WEBAPP_PASSWORD).
- * Used for webapp-server ↔ proxy internal communication.
- */
-export function checkInternalSecret(req) {
-  if (!WEBAPP_PASSWORD) return true;
-  const auth = req.headers["authorization"];
-  if (!auth || !auth.startsWith("Basic ")) return false;
-  try {
-    const [, encoded] = auth.split(" ");
-    const [, pass] = Buffer.from(encoded, "base64").toString("utf-8").split(":");
-    return safeEqualString(pass ?? "", WEBAPP_PASSWORD);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Authorize proxy HTTP APIs (/bundle, /captured): internal Basic OR Bearer whose
- * embedded address matches lenderAddress.
- * @returns {{ ok: true, kind: "internal"|"bearer", session?: object } | { ok: false }}
- */
-export function requireLenderOrInternal(req, lenderAddress) {
-  if (!lenderAddress) return { ok: false };
-  if (checkInternalSecret(req)) return { ok: true, kind: "internal" };
-  const session = verifyToken(req, lenderAddress);
-  if (!session?.address) return { ok: false };
-  if (session.address.toLowerCase() !== lenderAddress.toLowerCase()) {
-    return { ok: false };
-  }
-  return { ok: true, kind: "bearer", session };
 }
 
 /**
@@ -336,213 +226,4 @@ export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
     });
     req.on("error", (err) => fail(err));
   });
-}
-
-/** Error code: the lock was still held after the full retry budget. */
-export const LOCK_STALE = "LOCK_STALE";
-
-/** Best-effort holder metadata written inside the lock file. */
-function readLockHolder(fs, lockPath) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Cross-process file lock for presigned.json (webapp ↔ monitor).
- *
- * Uses exclusive create (`wx`) + retry and writes `{ pid, host, createdAt }`
- * into the lock so a leftover lock (SIGKILL/OOM/`docker restart` in the middle
- * of a mutation, which skips the `finally` unlink) is diagnosable.
- *
- * Never steals a lock it did not create (fail closed): after the retry budget
- * it throws an error with code LOCK_STALE carrying the holder info, the lock
- * age and the manual recovery command. The happy path always releases the
- * lock, and the lock is released even when `fn` throws.
- */
-export async function withFileLock(lockPath, fn, { retries = 50, delayMs = 20 } = {}) {
-  const fs = await import("node:fs");
-  const os = await import("node:os");
-  for (let i = 0; i < retries; i++) {
-    let fd;
-    try {
-      fd = fs.openSync(lockPath, "wx");
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      await new Promise((r) => setTimeout(r, delayMs));
-      continue;
-    }
-    try {
-      // Holder metadata is best-effort: a failed write must not break the lock.
-      try {
-        fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), createdAt: new Date().toISOString() }));
-      } catch { /* ignore */ }
-      return await fn();
-    } finally {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-      try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
-    }
-  }
-  const holder = readLockHolder(fs, lockPath);
-  const parsedAge = holder?.createdAt ? Date.now() - Date.parse(holder.createdAt) : NaN;
-  const ageMs = Number.isFinite(parsedAge) ? parsedAge : null;
-  const err = new Error(
-    `Could not acquire lock after ${retries} attempts (~${retries * delayMs}ms): ${lockPath}\n` +
-    `  Holder: ${holder ? `pid=${holder.pid ?? "?"} host=${holder.host ?? "?"} since=${holder.createdAt ?? "?"}` : "unknown (lock file empty/unreadable)"}\n` +
-    `  Lock age: ${ageMs === null ? "unknown" : `${Math.round(ageMs / 1000)}s`}\n` +
-    `  Nếu chắc chắn không còn process nào giữ lock (SIGKILL/OOM/docker restart giữa mutation): rm '${lockPath}' rồi restart service.`
-  );
-  err.code = LOCK_STALE;
-  err.lockPath = lockPath;
-  err.holder = holder;
-  err.ageMs = ageMs;
-  throw err;
-}
-
-// ============================================================
-// MONITOR ANTI-SPAM LOGIC (pure function, independently testable)
-// ============================================================
-
-/**
- * Pure function: determine whether a notification should be sent.
- * All anti-spam rules live here so they can be unit-tested without
- * mocking any I/O.
- *
- * Unified danger-zone logic: triggers when liquidity enters the zone
- * [minLiquidityThreshold, supplyAssets × suddenDrainMultiplier] from outside.
- * Two entry directions:
- *   - "sudden_drain":     từ trên xuống (last > drainThreshold → now ≤ drainThreshold)
- *   - "liquidity_appeared": từ dưới lên (last < threshold → now ≥ threshold)
- *
- * Returns { shouldNotify: boolean, reason: string, scenario: string|null }.
- */
-
-/**
- * Compute drainThreshold = supplyAssets × multiplier.
- * Supports fractional multipliers (e.g., 1.5) via BigInt rational arithmetic.
- */
-export function computeDrainThreshold(supplyAssets, multiplier) {
-  if (supplyAssets == null || supplyAssets === 0n) return 0n;
-  // Guard: multiplier must be a positive finite number (or string that converts to one)
-  if (typeof multiplier === "string") {
-    multiplier = Number(multiplier);
-  }
-  if (multiplier == null || typeof multiplier !== "number" || !isFinite(multiplier) || multiplier <= 0) {
-    return 0n;
-  }
-  const str = String(multiplier);
-  const dot = str.indexOf(".");
-  if (dot === -1) {
-    return supplyAssets * BigInt(Number(multiplier));
-  }
-  // Fractional: 1.5 → (supplyAssets × 15) / 10
-  const decimals = str.length - dot - 1;
-  const numerator = BigInt(str.replace(".", ""));
-  const denominator = 10n ** BigInt(decimals);
-  return (supplyAssets * numerator) / denominator;
-}
-
-/**
- * Pure function: determine whether a presigned bundle should be broadcast.
- * Aligns with shouldNotify danger zone: liquidity in
- * [minLiquidityThreshold, max(drainThreshold, minLiquidityThreshold)].
- */
-export function shouldBroadcastPresigned(liquidity, drainThreshold, minLiquidityThreshold = 0n) {
-  if (liquidity == null || liquidity === 0n) return false;
-  if (drainThreshold == null) return false;
-  const min = minLiquidityThreshold ?? 0n;
-  let effectiveDrain = drainThreshold;
-  if (effectiveDrain < min) effectiveDrain = min;
-  return liquidity >= min && liquidity <= effectiveDrain;
-}
-
-/**
- * Pure function: determine whether a notification should be sent.
- */
-export function shouldNotify({
-  liquidity,
-  lastSeenLiquidity,
-  supplyAssets,
-  hasNotifiedThisCycle,
-  lastNotificationTime,
-  notificationsToday,
-  notificationDayStart,
-  minLiquidityThreshold,
-  suddenDrainMultiplier,
-  notificationCooldownMs,
-  maxNotificationsPerDay,
-}) {
-  // Guard: không có vị thế → không cần theo dõi
-  if (supplyAssets == null || supplyAssets === 0n) {
-    return { shouldNotify: false, reason: "no_position", scenario: null };
-  }
-
-  let drainThreshold = computeDrainThreshold(supplyAssets, suddenDrainMultiplier);
-  // Guard: prevent empty zone when drainThreshold < minLiquidityThreshold
-  if (drainThreshold < minLiquidityThreshold) {
-    drainThreshold = minLiquidityThreshold;
-  }
-  const inZone =
-    liquidity >= minLiquidityThreshold && liquidity <= drainThreshold;
-
-  // ================================================================
-  // Xác định scenario: liquidity đi vào vùng nguy hiểm từ đâu?
-  // ================================================================
-  let scenario = null;
-
-  if (inZone && lastSeenLiquidity != null) {
-    if (lastSeenLiquidity > drainThreshold) {
-      // Từ trên xuống: sudden drain
-      scenario = "sudden_drain";
-    } else if (lastSeenLiquidity < minLiquidityThreshold) {
-      // Từ dưới lên: liquidity mới xuất hiện trong vùng nguy hiểm
-      scenario = "liquidity_appeared";
-    }
-    // else: đã ở trong zone từ trước → không phải transition mới
-  }
-
-  // ================================================================
-  // Không có scenario nào trigger → trả về reason để hiển thị
-  // ================================================================
-  if (!scenario) {
-    let reason;
-    if (liquidity < minLiquidityThreshold) {
-      reason = "below_threshold";
-    } else if (liquidity > drainThreshold) {
-      reason = "above_drain_threshold";
-    } else {
-      // inZone = true nhưng không có transition (đã ở trong zone từ trước)
-      reason = "in_zone_no_transition";
-    }
-    return { shouldNotify: false, reason, scenario: null };
-  }
-
-  // ================================================================
-  // Shared anti-spam checks (áp dụng cho cả 2 scenario)
-  // ================================================================
-
-  // 3. Cycle check: không gửi trùng trong cùng một chu kỳ
-  if (hasNotifiedThisCycle) {
-    return { shouldNotify: false, reason: "already_notified_this_cycle", scenario };
-  }
-
-  // 4. Cooldown check
-  const now = Date.now();
-  if (now - lastNotificationTime < notificationCooldownMs) {
-    return { shouldNotify: false, reason: "cooldown", scenario };
-  }
-
-  // 5. Daily limit check (with day-roll detection)
-  const dayElapsed = now - notificationDayStart;
-  if (dayElapsed > 24 * 60 * 60 * 1000) {
-    // Day has rolled over — counters will be reset by caller,
-    // so we treat this as 0 notifications today.
-  } else if (notificationsToday >= maxNotificationsPerDay) {
-    return { shouldNotify: false, reason: "daily_limit", scenario };
-  }
-
-  return { shouldNotify: true, reason: "all_checks_passed", scenario };
 }

@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+// Audit P1.6: import ĐÚNG code production từ voip.mjs. Trước đây file này nhân bản
+// cả 5 hàm (getBearerToken/initiateCall/pollCallStatus/callWithRetry/buildVoipMessage)
+// nên test có thể xanh trong khi production đã khác — đúng lớp lỗi A.1b đã diệt cho
+// webapp-logic. Fetch được stub qua `vi.stubGlobal("fetch", ...)`; production dùng
+// global `fetch` làm default nên tự nhận stub.
 import {
-  formatTokenAmount,
-  wadToPercent,
-  formatApy,
-  toTtsFriendly,
-} from "../shared.mjs";
+  buildVoipMessage,
+  callWithRetry,
+  clearVoipTokenCache,
+  getBearerToken,
+  initiateCall,
+  pollCallStatus,
+  sendVoipNotification,
+} from "../voip.mjs";
 
 // ============================================================
 // FIXTURES
@@ -38,44 +46,6 @@ function makeMockPosition(overrides = {}) {
     supplyAssets: 1_000_000_000n, // 1000 USDC (6 decimals)
     ...overrides,
   };
-}
-
-// ============================================================
-// DUPLICATED PURE FUNCTIONS FROM voip.mjs
-// (deliberately duplicated to test string content without
-//  module-level side effects — matches project convention)
-// ============================================================
-
-function buildVoipMessage(market, loanToken, collateralToken, position, scenario) {
-  const loanSymbol = toTtsFriendly(loanToken?.symbol);
-  const collateralSymbol = toTtsFriendly(collateralToken?.symbol);
-  const loanDecimals = loanToken?.decimals ?? 18;
-  const isSuddenDrain = scenario === "sudden_drain";
-
-  const liquidityStr = formatTokenAmount(market.liquidity, loanDecimals, loanSymbol);
-  const supplyStr = formatTokenAmount(position.supplyAssets, loanDecimals, loanSymbol);
-  const utilizationStr = wadToPercent(market.utilization);
-  const apyStr = formatApy(market.supplyApy);
-
-  if (isSuddenDrain) {
-    return (
-      `Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol} & ${loanSymbol} đã giảm mạnh. ` +
-      `Thanh khoản hiện tại: ${liquidityStr}. ` +
-      `Vị thế của bạn: ${supplyStr}. ` +
-      `Tỉ lệ sử dụng: ${utilizationStr}. ` +
-      `Lãi suất năm: ${apyStr}. ` +
-      `Hãy vào trang web để rút tiền ngay.`
-    );
-  } else {
-    return (
-      `Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol} & ${loanSymbol}. ` +
-      `Thanh khoản hiện tại: ${liquidityStr}. ` +
-      `Vị thế của bạn: ${supplyStr}. ` +
-      `Tỉ lệ sử dụng: ${utilizationStr}. ` +
-      `Lãi suất năm: ${apyStr}. ` +
-      `Hãy vào trang web để rút tiền.`
-    );
-  }
 }
 
 // ============================================================
@@ -156,163 +126,6 @@ describe("buildVoipMessage", () => {
 });
 
 // ============================================================
-// DUPLICATED FETCH-DEPENDENT HELPERS FROM voip.mjs
-// ============================================================
-
-// Module-level token cache (mirrors voip.mjs)
-let tokenCache = null;
-function clearTokenCache() { tokenCache = null; }
-
-// Duplicated sleep (will be mocked in retry tests)
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function getBearerToken(secretKey, apiUrl) {
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 60_000) {
-    return tokenCache.token;
-  }
-
-  const response = await fetch(`${apiUrl}/api/v1/auth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret_key: secretKey }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`VoIP auth thất bại (${response.status}): ${await response.text()}`);
-  }
-
-  const data = await response.json();
-  tokenCache = {
-    token: data.access_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
-  };
-  return tokenCache.token;
-}
-
-async function initiateCall(apiUrl, bearerToken, target, message) {
-  const response = await fetch(`${apiUrl}/api/v1/call`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${bearerToken}`,
-    },
-    body: JSON.stringify({
-      target,
-      message,
-      repeat: 2,
-      repeat_delay: 1.0,
-      callback_url: null,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    if (response.status === 401) {
-      clearTokenCache();
-    }
-    throw new Error(`VoIP initiateCall thất bại (${response.status}): ${body}`);
-  }
-
-  const data = await response.json();
-  return { callId: data.call_id };
-}
-
-async function pollCallStatus(apiUrl, bearerToken, callId, maxPollMs = 60000, pollIntervalMs = 2000) {
-  const startedAt = Date.now();
-
-  while (true) {
-    const response = await fetch(`${apiUrl}/api/v1/call/${callId}`, {
-      method: "GET",
-      headers: { "Authorization": `Bearer ${bearerToken}` },
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      if (response.status === 401) {
-        clearTokenCache();
-      }
-      throw new Error(`VoIP pollCallStatus thất bại (${response.status}): ${body}`);
-    }
-
-    const data = await response.json();
-    const terminalStatuses = ["completed", "failed", "no_answer", "busy"];
-
-    if (terminalStatuses.includes(data.status)) {
-      return {
-        callId: data.call_id,
-        status: data.status,
-        duration_seconds: data.duration_seconds,
-        error_message: data.error_message,
-      };
-    }
-
-    if (Date.now() - startedAt >= maxPollMs) {
-      return { callId: data.call_id, status: data.status };
-    }
-
-    await sleep(pollIntervalMs);
-  }
-}
-
-async function callWithRetry({ apiUrl, secretKey, target, message, maxRetries, retryDelayMs }) {
-  let lastError = null;
-  let lastCallId = null;
-  let lastStatus = null;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const token = await getBearerToken(secretKey, apiUrl);
-      const { callId } = await initiateCall(apiUrl, token, target, message);
-      lastCallId = callId;
-      const result = await pollCallStatus(apiUrl, token, callId);
-      lastStatus = result.status;
-
-      if (result.status === "completed") {
-        return { sent: true, callId, status: "completed", attempts: attempt };
-      }
-
-      // Only retry on explicit terminal failures, NOT on poll timeout
-      if (result.status === "failed" || result.status === "no_answer" || result.status === "busy") {
-        lastError = new Error(
-          `Cuộc gọi kết thúc với trạng thái: ${result.status}` +
-            (result.error_message ? ` (${result.error_message})` : "")
-        );
-
-        if (attempt < maxRetries) {
-          await sleep(retryDelayMs);
-          continue;
-        }
-      }
-
-      // Non-terminal (poll timeout): don't create duplicate calls
-      if (result.status !== "failed" && result.status !== "no_answer" && result.status !== "busy") {
-        return {
-          sent: true,
-          callId,
-          status: result.status || "unknown",
-          attempts: attempt,
-        };
-      }
-    } catch (err) {
-      lastError = err;
-      if (attempt < maxRetries) {
-        await sleep(retryDelayMs);
-      }
-    }
-  }
-
-  return {
-    sent: false,
-    callId: lastCallId,
-    status: lastStatus,
-    attempts: maxRetries,
-    error: lastError?.message,
-  };
-}
-
-// ============================================================
 // getBearerToken TESTS
 // ============================================================
 
@@ -320,7 +133,7 @@ describe("getBearerToken", () => {
   let fetchMock;
 
   beforeEach(() => {
-    tokenCache = null;
+    clearVoipTokenCache();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -410,7 +223,7 @@ describe("initiateCall", () => {
   let fetchMock;
 
   beforeEach(() => {
-    tokenCache = null;
+    clearVoipTokenCache();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -466,19 +279,19 @@ describe("initiateCall", () => {
     ).rejects.toThrow("VoIP initiateCall thất bại (400)");
   });
 
-  it("xóa token cache khi nhận HTTP 401", async () => {
-    // Set up cache first
-    tokenCache = { token: "expired-token", expiresAt: Date.now() + 3600_000 };
+  it("xóa token cache khi nhận HTTP 401 (hành vi: auth lại ở lần gọi kế tiếp)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "tok-1", expires_in: 86400 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "tok-2", expires_in: 86400 }), { status: 200 }));
 
-    fetchMock.mockResolvedValueOnce(
-      new Response("Unauthorized", { status: 401 })
-    );
-
+    await getBearerToken("secret123", "http://api.example.com"); // nạp cache
     await expect(
-      initiateCall("http://api.example.com", "expired-token", "sip:x@sip.linphone.org", "msg")
+      initiateCall("http://api.example.com", "tok-1", "sip:x@sip.linphone.org", "msg")
     ).rejects.toThrow("VoIP initiateCall thất bại (401)");
 
-    expect(tokenCache).toBeNull(); // Cache was cleared
+    // Cache đã bị xóa ⇒ lần lấy token kế tiếp phải auth lại (token mới).
+    expect(await getBearerToken("secret123", "http://api.example.com")).toBe("tok-2");
   });
 });
 
@@ -491,7 +304,7 @@ describe("pollCallStatus", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    tokenCache = null;
+    clearVoipTokenCache();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -617,18 +430,18 @@ describe("pollCallStatus", () => {
     ).rejects.toThrow("VoIP pollCallStatus thất bại (500)");
   });
 
-  it("xóa token cache khi nhận HTTP 401", async () => {
-    tokenCache = { token: "stale", expiresAt: Date.now() + 3600_000 };
+  it("xóa token cache khi nhận HTTP 401 (auth lại lần kế tiếp)", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "tok-1", expires_in: 86400 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "tok-2", expires_in: 86400 }), { status: 200 }));
 
-    fetchMock.mockResolvedValueOnce(
-      new Response("Unauthorized", { status: 401 })
-    );
-
+    await getBearerToken("secret123", "http://api.example.com");
     await expect(
-      pollCallStatus("http://api.example.com", "stale-token", "uuid-8")
+      pollCallStatus("http://api.example.com", "tok-1", "uuid-8")
     ).rejects.toThrow("VoIP pollCallStatus thất bại (401)");
 
-    expect(tokenCache).toBeNull();
+    expect(await getBearerToken("secret123", "http://api.example.com")).toBe("tok-2");
   });
 });
 
@@ -641,7 +454,7 @@ describe("callWithRetry", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    tokenCache = null;
+    clearVoipTokenCache();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -912,7 +725,7 @@ describe("sendVoipNotification (integration mock)", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    tokenCache = null;
+    clearVoipTokenCache();
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -964,23 +777,34 @@ describe("sendVoipNotification (integration mock)", () => {
     expect(result.attempts).toBe(1);
   });
 
-  it("cắt tin nhắn xuống 500 ký tự nếu vượt quá", () => {
+  it("sendVoipNotification thật: chạy flow đầy đủ, message gửi đi ≤ 500 ký tự", async () => {
     const market = makeMockMarket();
     const loanToken = makeMockToken({ symbol: "USDC", decimals: 6 });
     const collateralToken = makeMockToken({ symbol: "WETH", decimals: 18 });
     const position = makeMockPosition();
 
-    const message = buildVoipMessage(market, loanToken, collateralToken, position, "sudden_drain");
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "tok", expires_in: 86400 }), { status: 200 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ call_id: "sn-1", status: "queued" }), { status: 202 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ call_id: "sn-1", status: "completed" }), { status: 200 }));
 
-    // Simulate the truncation logic from sendVoipNotification
-    let truncated = message;
-    if (truncated.length > 500) {
-      truncated = truncated.slice(0, 497) + "...";
-    }
+    const result = await sendVoipNotification(market, loanToken, collateralToken, position, "sudden_drain", {
+      secretKey: "test-secret",
+      apiUrl: "http://api.example.com",
+      target: "sip:test@sip.linphone.org",
+      maxRetries: 1,
+      retryDelayMs: 0,
+    });
 
-    expect(truncated.length).toBeLessThanOrEqual(500);
-    // Since our realistic message is < 500, no truncation should occur
-    expect(truncated).toBe(message);
+    expect(result).toMatchObject({ sent: true, status: "completed", attempts: 1 });
+    const callBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(callBody.message.length).toBeLessThanOrEqual(500);
+    expect(callBody.target).toBe("sip:test@sip.linphone.org");
+  });
+
+  it("sendVoipNotification thật: secretKey rỗng ⇒ tắt tính năng, 0 request", async () => {
+    const result = await sendVoipNotification(makeMockMarket(), makeMockToken(), makeMockToken(), makeMockPosition(), "sudden_drain", { secretKey: "" });
+    expect(result).toEqual({ sent: false, attempts: 0 });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("hội thoại đầy đủ: build message → gọi API → poll → retry → thành công", async () => {

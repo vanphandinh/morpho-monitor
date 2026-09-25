@@ -13,13 +13,11 @@ import {
   MAX_BODY_BYTES,
   SESSION_EXPIRY_MS,
   CHALLENGE_EXPIRY_MS,
-  LOCK_STALE,
   recoverSignerAddress,
-  createSessionToken,
-  verifyToken,
-  checkInternalSecret,
   readBodyLimited,
 } from "./shared.mjs";
+import { LOCK_STALE } from "./file-lock.mjs";
+import { createSessionToken, verifyToken, checkInternalSecret } from "./auth.mjs";
 import {
   requireConfiguredMarket,
   MARKET_INPUT_INVALID,

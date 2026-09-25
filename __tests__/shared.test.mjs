@@ -6,14 +6,9 @@ import {
   formatTokenAmount,
   formatApy,
   shortenAddress,
-  shouldNotify,
-  computeDrainThreshold,
-  shouldBroadcastPresigned,
-  createSessionToken,
-  verifySessionToken,
-  safeEqualString,
-  requireLenderOrInternal,
 } from "../shared.mjs";
+import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "../monitor-rules.mjs";
+import { createSessionToken, verifySessionToken, safeEqualString, requireLenderOrInternal } from "../auth.mjs";
 
 
 // ============================================================

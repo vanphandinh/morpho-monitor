@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import fs from "node:fs";
-import { shouldNotify, computeDrainThreshold } from "../shared.mjs";
+import { shouldNotify, computeDrainThreshold } from "../monitor-rules.mjs";
 import { shouldSendLifecycleAlert } from "../lifecycle-alert.mjs";
 
 // ============================================================

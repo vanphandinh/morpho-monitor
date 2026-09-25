@@ -1,10 +1,10 @@
 /**
- * CLI verify presigned bundle / registry v2.
+ * CLI verify presigned bundle / registry v3 (đọc được cả v2 cũ).
  *
  * H2 (audit 2026-09-23): trước đây script đọc file như một bare bundle. Chạy
  * trên `data/presigned.json` (`{ version: 2, bundles: { marketId: bundle } }`)
  * nó in "📄 Bundle rỗng" rồi exit 0 — sai lệch âm thầm. Nay:
- *   - registry v2 → verify từng market, có tổng hợp theo market, `--market <id>`
+ *   - registry v3/v2 → verify từng bundle, có tổng hợp, `--market <id>`
  *   - bare bundle → giữ nguyên hành vi cũ (back-compat)
  *   - exit 1 khi có mismatch/rỗng/không verify được
  *

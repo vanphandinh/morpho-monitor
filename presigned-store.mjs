@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { withFileLock } from "./shared.mjs";
+import { withFileLock } from "./file-lock.mjs";
 
 /**
  * Registry v3 (multi-nonce presign ladder, 2026-09-24):
