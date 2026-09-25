@@ -257,7 +257,9 @@ describe("R4 — xác minh tx best-effort không chặn UI", () => {
 
 describe("lưới hồi quy — trace đã đóng băng", () => {
   it("kịch bản hiện tại tái tạo đúng trace đã đóng băng (sinh từ cây trước P5)", () => {
-    const frozen = fs.readFileSync(FIXTURE, "utf8");
+    // Chuẩn hoá CRLF: repo bật `core.autocrlf=true`, nên trên checkout Windows file fixture ra khỏi
+    // git sẽ có `\r\n` — so nguyên chuỗi là test tự vỡ theo hệ điều hành, không phải theo hành vi.
+    const frozen = fs.readFileSync(FIXTURE, "utf8").replace(/\r\n/g, "\n");
     expect(JSON.stringify(trace, null, 2)).toBe(frozen);
   });
 
