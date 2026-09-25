@@ -336,6 +336,24 @@ export function createRpcDispatcher({
   return { handleRpc, capturedTxs, blockFallback };
 }
 
+/**
+ * Tập method tối thiểu cho một VÍ dùng proxy như node của nó (audit vòng 5, O2).
+ *
+ * Chỉ áp dụng khi bật `PROXY_ALLOW_PUBLIC_RPC=1` (opt-in) — mặc định không giới hạn gì.
+ * Đây là công tắc CHÍNH SÁCH, không phải hàng rào chống lạm dụng: hàng rào thật là
+ * `PROXY_RPC_RATE_LIMIT` (đếm request theo IP).
+ */
+export const RPC_METHOD_ALLOW_LIST = [
+  "eth_accounts", "eth_requestAccounts", "eth_chainId", "net_version",
+  "eth_blockNumber", "eth_call", "eth_estimateGas", "eth_createAccessList", "debug_traceCall",
+  "eth_gasPrice", "eth_maxPriorityFeePerGas", "eth_feeHistory",
+  "eth_getBalance", "eth_getCode", "eth_getStorageAt", "eth_getProof",
+  "eth_getBlockByNumber", "eth_getTransactionCount", "eth_getTransactionByHash",
+  "eth_getTransactionReceipt", "eth_getLogs", "eth_sendRawTransaction",
+  "eth_syncing", "net_listening", "net_peerCount",
+  "web3_clientVersion", "eth_subscribe", "eth_unsubscribe",
+];
+
 function jsonRpcError(id, code, message) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
@@ -366,6 +384,9 @@ function safeStringify(obj) {
  * @param {number} [deps.maxBodyBytes]
  * @param {object} [deps.logger]
  * @param {typeof globalThis.fetch} [deps.fetchImpl]
+ * @param {number} [deps.rpcRateLimit] - request/phút/IP cho nhánh JSON-RPC; 0 = không giới hạn
+ * @param {string[]|null} [deps.rpcMethodAllowList] - null = không giới hạn method
+ * @param {() => number} [deps.now]
  */
 export function createProxyRequestHandler({
   markets,
@@ -379,6 +400,10 @@ export function createProxyRequestHandler({
   maxBodyBytes = MAX_BODY_BYTES,
   logger = console,
   fetchImpl = fetch,
+  rpcRateLimit = 0,
+  rpcRateLimitWindowMs = 60_000,
+  rpcMethodAllowList = null,
+  now = () => Date.now(),
 }) {
   const dispatcher = createRpcDispatcher({
     markets,
@@ -393,6 +418,36 @@ export function createProxyRequestHandler({
   // Mutex: only one bundle operation at a time to prevent concurrent
   // requests from racing on the shared capturedTxs buffer.
   let bundleInProgress = false;
+
+  // ---- O2: giới hạn nhánh JSON-RPC (mặc định TẮT ⇒ hành vi y hệt trước) ----
+  const rateLimitMax = Number(rpcRateLimit) > 0 ? Number(rpcRateLimit) : 0;
+  const rateWindowMs = Number(rpcRateLimitWindowMs) > 0 ? Number(rpcRateLimitWindowMs) : 60_000;
+  const allowedMethods = Array.isArray(rpcMethodAllowList) && rpcMethodAllowList.length > 0
+    ? new Set(rpcMethodAllowList)
+    : null;
+  /** ip → { count, windowStart }. Chỉ tăng theo số IP thực sự gọi. */
+  const rateByIp = new Map();
+  const clientIp = (req) => req.socket?.remoteAddress || req.connection?.remoteAddress || "unknown";
+  /** Dọn entry cũ khi map phình ra — giữ chi phí O(1) bình thường. */
+  const sweepRateMap = (t) => {
+    if (rateByIp.size <= 1024) return;
+    for (const [ip, entry] of rateByIp) if (t - entry.windowStart >= rateWindowMs) rateByIp.delete(ip);
+  };
+  /** true nếu request này vượt ngưỡng của IP nó. */
+  const isRateLimited = (req) => {
+    if (!rateLimitMax) return false;
+    const ip = clientIp(req);
+    const t = now();
+    const entry = rateByIp.get(ip);
+    if (!entry || t - entry.windowStart >= rateWindowMs) {
+      rateByIp.set(ip, { count: 1, windowStart: t });
+      sweepRateMap(t);
+      return false;
+    }
+    entry.count += 1;
+    return entry.count > rateLimitMax;
+  };
+  const methodBlocked = (method) => allowedMethods !== null && !allowedMethods.has(method);
 
   return async (req, res) => {
     // CORS: mirror request origin (required for credentialed requests)
@@ -589,9 +644,25 @@ export function createProxyRequestHandler({
         return;
       }
 
+      // O2: chặn theo IP trước khi forward sang RPC_URLS của operator. Trả lỗi JSON-RPC
+      // (HTTP 200) để ví hiểu là lỗi RPC, không phải mạng chết — ví không đọc HTTP status
+      // của JSON-RPC, và 429 sẽ khiến nó thử lại như lỗi tạm thời.
+      if (isRateLimited(req)) {
+        logger?.warn?.(
+          `[proxy] rate limit: ${clientIp(req)} vượt ${rateLimitMax} req/${Math.round(rateWindowMs / 1000)}s — trả -32005`
+        );
+        res.writeHead(200);
+        res.end(safeStringify(jsonRpcError(Array.isArray(request) ? null : request.id, -32005,
+          `Rate limit exceeded: ${rateLimitMax} requests per ${Math.round(rateWindowMs / 1000)}s per IP (PROXY_RPC_RATE_LIMIT)`)));
+        return;
+      }
+
       // Handle batch
       if (Array.isArray(request)) {
         const responses = await Promise.all(request.map(async (r) => {
+          if (methodBlocked(r.method)) {
+            return jsonRpcError(r.id, -32601, `Method not allowed on this proxy: ${r.method} (PROXY_ALLOW_PUBLIC_RPC)`);
+          }
           try {
             const result = await dispatcher.handleRpc(r.method, r.params);
             if (result instanceof Error) {
@@ -609,6 +680,12 @@ export function createProxyRequestHandler({
       }
 
       // Single request
+      if (methodBlocked(request.method)) {
+        res.writeHead(200);
+        res.end(safeStringify(jsonRpcError(request.id, -32601,
+          `Method not allowed on this proxy: ${request.method} (PROXY_ALLOW_PUBLIC_RPC)`)));
+        return;
+      }
       try {
         const result = await dispatcher.handleRpc(request.method, request.params);
         if (result instanceof Error) {

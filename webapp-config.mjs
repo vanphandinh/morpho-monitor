@@ -7,7 +7,7 @@
  * nhận `proxyRpcUrl: undefined` rồi rơi về `http://127.0.0.1:8545` — trên VPS
  * qua HTTPS địa chỉ đó trỏ về máy của user, không phải server.
  */
-import { LENDER_ADDRESS, PROXY_RPC_URL, PUBLIC_RPC_URLS, WEBAPP_PASSWORD } from "./shared.mjs";
+import { LENDER_ADDRESS, PROXY_RPC_URL, PUBLIC_RPC_URLS, WEBAPP_PASSWORD, PROXY_RPC_RATE_LIMIT, PROXY_ALLOW_PUBLIC_RPC } from "./shared.mjs";
 import { RECOVERY_THRESHOLD_MS } from "./presigned-broadcast.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -136,6 +136,9 @@ export function assertProxyAuthConfig({
   host,
   password = WEBAPP_PASSWORD,
   allowInsecure = /^(1|true|yes)$/i.test(process.env.WEBAPP_ALLOW_INSECURE || ""),
+  // O2: có bật giới hạn nào cho nhánh JSON-RPC chưa? (đọc lúc gọi, không phải lúc import)
+  rpcRateLimit = PROXY_RPC_RATE_LIMIT,
+  allowPublicRpc = PROXY_ALLOW_PUBLIC_RPC,
 } = {}) {
   const isLoopback = !host || host === "127.0.0.1" || host === "localhost" || host === "::1";
   const publicBind = !isLoopback;
@@ -149,7 +152,11 @@ export function assertProxyAuthConfig({
         "\n   JSON-RPC (eth_call, eth_getLogs, eth_feeHistory…) KHÔNG xác thực được — ví không gửi được" +
         "\n   header Authorization — nên ai vào được port này cũng forward được sang RPC_URLS của bạn" +
         "\n   (tốn quota/API key, request mang IP của bạn). Capture thì vẫn chỉ nhận tx từ LENDER_ADDRESS." +
-        "\n   → Giới hạn bằng firewall / IP allow-list, hoặc chỉ mở port khi cần MetaMask mobile.",
+        "\n   → Giới hạn bằng firewall / IP allow-list, hoặc chỉ mở port khi cần MetaMask mobile." +
+        (rpcRateLimit > 0 || allowPublicRpc
+          ? `\n   → Đang bật:${rpcRateLimit > 0 ? ` PROXY_RPC_RATE_LIMIT=${rpcRateLimit} req/phút/IP` : ""}${allowPublicRpc ? " PROXY_ALLOW_PUBLIC_RPC=1 (chỉ method cho ví)" : ""}`
+          : "\n   → Chưa bật gì: đặt PROXY_RPC_RATE_LIMIT=<req/phút/IP> để chặn lạm dụng," +
+            "\n     và/hoặc PROXY_ALLOW_PUBLIC_RPC=1 để chỉ cho ví dùng tập method tối thiểu."),
     };
   }
   if (!publicBind) return { secure: false, warning: null, publicBind: false };

@@ -114,6 +114,13 @@ export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
 export const PROXY_PORT = envNum("PROXY_PORT", 8545);
 // Bind address for proxy — mặc định localhost. Set PROXY_HOST=0.0.0.0 cho MetaMask mobile / VPS.
 export const PROXY_HOST = env("PROXY_HOST", "127.0.0.1");
+
+// ---- Proxy JSON-RPC abuse controls (audit vòng 5, O2) ----
+// Relay JSON-RPC KHÔNG xác thực được (ví không gửi header Authorization), nên khi bind public
+// chỉ còn hai cách giới hạn: số request mỗi IP, và/hoặc tập method cho phép.
+// Mặc định 0/false = giữ nguyên hành vi cũ (không giới hạn).
+export const PROXY_RPC_RATE_LIMIT = envNum("PROXY_RPC_RATE_LIMIT", 0);
+export const PROXY_ALLOW_PUBLIC_RPC = /^(1|true|yes)$/i.test(env("PROXY_ALLOW_PUBLIC_RPC", ""));
 // Proxy URL: cùng host với webapp, port 8545
 export const PROXY_RPC_URL = (() => {
   const explicit = env("PROXY_RPC_URL", "");

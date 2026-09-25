@@ -22,10 +22,12 @@ import {
   MARKETS_FILE,
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
+  PROXY_RPC_RATE_LIMIT,
+  PROXY_ALLOW_PUBLIC_RPC,
 } from "./shared.mjs";
 import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
-import { createProxyRequestHandler, defaultBlockFallback } from "./proxy-dispatcher.mjs";
+import { createProxyRequestHandler, defaultBlockFallback, RPC_METHOD_ALLOW_LIST } from "./proxy-dispatcher.mjs";
 import { assertProxyAuthConfig } from "./webapp-config.mjs";
 
 // Install global error handlers so unhandled RPC rejections don't crash the process
@@ -38,7 +40,11 @@ const BIND_HOST = PROXY_HOST || "127.0.0.1";
 // /captured và DELETE /captured mở cho mọi người (dev mode). Fail-fast giống
 // webapp-server, trừ khi deployment chấp nhận rủi ro bằng WEBAPP_ALLOW_INSECURE=1.
 try {
-  const authMode = assertProxyAuthConfig({ host: BIND_HOST });
+  const authMode = assertProxyAuthConfig({
+    host: BIND_HOST,
+    rpcRateLimit: PROXY_RPC_RATE_LIMIT,
+    allowPublicRpc: PROXY_ALLOW_PUBLIC_RPC,
+  });
   if (authMode.warning) console.warn(authMode.warning);
 } catch (err) {
   console.error(err.message);
@@ -84,6 +90,9 @@ const handler = createProxyRequestHandler({
   blockFallback,
   webappUrl: WEBAPP_URL,
   webappPassword: WEBAPP_PASSWORD,
+  // O2: mặc định 0/null ⇒ hành vi y hệt trước khi thêm hai tuỳ chọn này.
+  rpcRateLimit: PROXY_RPC_RATE_LIMIT,
+  rpcMethodAllowList: PROXY_ALLOW_PUBLIC_RPC ? RPC_METHOD_ALLOW_LIST : null,
 });
 
 // ---- SSL/TLS setup ----
