@@ -14,7 +14,7 @@
     "proxy": "node --env-file=.env proxy-rpc.mjs",
     "dev": "concurrently -n monitor,webapp,proxy -c blue,green,yellow \"npm run monitor\" \"npm run webapp\" \"npm run proxy\"",
     "verify": "node verify-presigned.mjs",
-    "lint": "oxlint --deny no-undef --deny-warnings *.mjs __tests__ scripts",
+    "lint": "oxlint --deny no-undef --deny-warnings .",
     "check": "npm run lint && node scripts/check-syntax.mjs && vitest run",
     "test": "vitest run",
     "test:watch": "vitest"

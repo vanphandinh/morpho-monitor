@@ -107,7 +107,7 @@ export function createRequestHandler({
   const scriptSources = {
     ...(appScript ? { "webapp-app.mjs": appScript } : {}),
     ...(logicScript ? { "webapp-logic.mjs": logicScript } : {}),
-    ...(scripts ?? {}),
+    ...scripts,
   };
 
   // Per-handler state (M10): không chia sẻ giữa các test/handler khác nhau.

@@ -112,6 +112,32 @@ Giữ nguyên hợp đồng cũ (`.code = MARKET_PARAMS_ZERO`, `.marketId` = id 
 `webapp-app.mjs`: banner comment bị dán vào dòng code (`};    // =====…`) và một dòng trống thừa
 trong `window.fetchNonce`. Không ảnh hưởng hành vi, nhưng là dấu hiệu sửa máy móc — đã sửa lại.
 
+### D10 (MEDIUM — công cụ, tìm thấy khi làm P5) — cổng lint KHÔNG quét `.mjs` ở gốc
+
+`npm run lint` là `oxlint --deny no-undef --deny-warnings *.mjs __tests__ scripts`. Trên Windows,
+npm chạy script bằng shell của HĐH (cmd.exe) — shell này **không** expand `*.mjs`, nên oxlint nhận
+literal `*.mjs` và bỏ qua nó: lần chạy thật chỉ lint **38 file** (`__tests__/` + `scripts/`; 39 sau khi
+P5 thêm `__tests__/helpers/browser-modules.mjs`), tức
+**không một file `.mjs` nào ở gốc repo** — trong đó có toàn bộ production (`monitor.mjs`,
+`proxy-dispatcher.mjs`, các module browser) mà chính ghi chú trong `CLAUDE.md` nói là cổng bắt lỗi C1.
+
+Hệ quả kép: (1) mọi lần "lint xanh" trước đây trong môi trường này chỉ chứng minh được `__tests__`
++ `scripts` sạch; (2) dòng tổng kết `Found 0 warnings and 0 errors` **không** phân biệt được "quét
+rồi thấy sạch" với "không quét gì".
+
+**Đỏ-trước (đã chạy):** thêm `const zzProbe = someUndefinedName123;` vào `webapp-shell.mjs`:
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `npm run lint` (cũ) | exit **0**, `Found 0 warnings and 0 errors`, 39 file (38 trước P5) |
+| `npm run lint` sau khi đổi target thành `.` | exit **1**, `eslint(no-undef): 'someUndefinedName123' is not defined.`, 74 file |
+
+**Đã sửa:** target thành `.` (oxlint tự glob, tôn trọng `.gitignore`, cùng tập file một cách xác định),
+và sửa 2 finding mà nó phơi ra ở lần đầu quét thật: tham số chết `httpOptions` trong `circuitHttp`
+(`rpc-client.mjs` — JSDoc hứa "forwarded to viem's http()" nhưng hàm ấn định policy, và call site duy
+nhất chỉ truyền 1 tham số) và `...(scripts ?? {})` trong `webapp-handler.mjs`. **Từ nay tin exit code,
+đừng tin dòng `Found N errors`.**
+
 ---
 
 ## 4. Đã kiểm tra và KHÔNG phải lỗi (ghi để khỏi audit lại)

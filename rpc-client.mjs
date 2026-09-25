@@ -181,14 +181,13 @@ function isTransportError(err) {
  * round-robin transport to skip to the next URL.
  *
  * @param {string} url - RPC endpoint URL
- * @param {object} httpOptions - Options forwarded to viem's http()
  * @returns {function} transport factory compatible with createRoundRobinTransport
  *
  * Retry policy (round-4 quota audit): 1 attempt per URL. Redundancy comes from
  * the 11-URL rotation plus the circuit breaker; per-URL retry only multiplies
  * load onto the exact endpoint that is currently struggling.
  */
-function circuitHttp(url, httpOptions = {}) {
+function circuitHttp(url) {
   return (config) => {
     const baseTransport = http(url, {
       timeout: 15_000,
