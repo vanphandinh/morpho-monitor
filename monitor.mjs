@@ -13,6 +13,7 @@ import { broadcastEligible as runPresignedBroadcast } from "./presigned-broadcas
 import { dispatchNotifications } from "./notification-dispatch.mjs";
 import { createLifecycleAlerter, postNtfy } from "./lifecycle-alert.mjs";
 import { sendVoipNotification } from "./voip.mjs";
+import { retryStartup } from "./startup-retry.mjs";
 
 /**
  * Kind của `problems` mà broadcastEligible có thể trả (audit D2).
@@ -196,7 +197,12 @@ async function main() {
     send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
   });
 
-  const reader = await createMarketReader({ client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets });
+  // O3: RPC có thể chưa sẵn sàng lúc container vừa lên — thử lại có giới hạn (~30s). Lỗi
+  // config (MARKET_PARAMS_ZERO) KHÔNG bị thử lại: `retryStartup` ném ngay. `loadMarkets` ở
+  // trên cũng nằm ngoài retry nên thiếu/sai MARKETS_FILE vẫn chết ngay như trước.
+  const reader = await retryStartup(
+    () => createMarketReader({ client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets })
+  );
   console.log(`[monitor] ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), topic=${topic}`);
 
   const sendNtfyNotification = async (snapshot, scenario) => {
