@@ -3,8 +3,10 @@
 # Hai lý do tồn tại:
 #
 #  1. Cổng ở local không phải là cổng. D10 (vòng 5) chỉ lộ ra trên Windows: cùng một lệnh npm, shell
-#     của cmd.exe không expand `*.mjs` nên cổng lint quét 47 file thay vì 82, và vẫn xanh. Ma trận
-#     dưới đây chạy CẢ hai hệ để không có "máy tôi xanh" nào là bằng chứng duy nhất.
+#     của cmd.exe không expand `*.mjs` nên cổng lint quét 48 file (`__tests__` + `scripts`) thay vì
+#     83, bỏ trắng 35 file `.mjs` ở gốc – tức toàn bộ code production – và vẫn xanh (số đo tại vòng
+#     6: `git ls-files '*.mjs'` = 83). Ma trận dưới đây chạy CẢ hai hệ để không có "máy tôi xanh" nào
+#     là bằng chứng duy nhất.
 #  2. Image là artifact thật, mà không test nào trong repo chạm vào nó. Job `image` build rồi boot
 #     webapp TỪ TRONG image, kiểm đồ thị module có đủ file và các route trả đúng mã — bắt được lớp
 #     lỗi "Dockerfile copy thiếu module" mà mọi test trên cây nguồn đều mù.

@@ -1,6 +1,9 @@
 # Kế hoạch fix các lỗi audit còn mở — 2026-09-25 (nhánh `feat/multi-market-monitor`)
 
 > **Trạng thái: P1–P6 ĐÃ LÀM, kể cả P5 (O5) và một finding mới D10 (cổng lint không quét `.mjs` gốc).** HEAD khi lập plan: `12f12c2`.
+> **Cập nhật vòng 6:** bảng dưới đây từng ghi O1–O4 là "Mở" dù chúng đã được fix — đó là lỗi tài liệu
+> của chính vòng 5, nay đã sửa thành "Đã đóng" kèm commit. Vòng 6 (`docs/plans/2026-09-25-round6-plan-and-findings.md`)
+> lấp nốt nợ *bằng chứng* mà plan này chỉ dừng ở mức tĩnh: đường tiền nay được chạy THẬT và so từng byte.
 > Mọi con số/`file:line` dưới đây đã **chạy trên cây hiện tại**, không suy luận từ docstring hay
 > tên test. Bằng chứng thực thi + các chỗ plan nói sai so với thực tế: xem §8.
 >
@@ -14,10 +17,10 @@
 | D7 | Đồ thị module browser không có test khép kín | **Đã đóng** `12f12c2` | Test mới trong `__tests__/webapp.test.mjs`; đỏ-trước: đổi khoá route map ⇒ `1 failed \| 31 passed (32)` |
 | D8 | Fail-fast chỉ báo market id sai đầu tiên | **Đã đóng** `12f12c2` | `market-reader.mjs` gom `unknownIds` + `.marketIds`; đỏ-trước: `1 failed \| 7 passed (8)` |
 | D9 | Hai vết định dạng do P2.8 để lại | **Đã đóng** `12f12c2` | `webapp-app.mjs:818` + dòng trống trong `fetchNonce` |
-| **O1** | Không có cách chứng minh trong repo rằng `webapp-app.mjs` **evaluate được** (chỉ có HTTP 200 + test tĩnh) | **Mở** | `webapp-app.mjs:48` đọc `window.MORPHO_CONFIG` ngay top-level; 186 dòng chạm `document.`/`window.` |
-| **O2** | Relay JSON-RPC của proxy **không xác thực** khi bind public (D3 vòng 2, đã chọn phương án (a) tài liệu hoá) | **Mở** | `proxy-dispatcher.mjs:66` `handleRpc` switch; `:331` `Unhandled method → null`; tiền lệ rate-limit `webapp-handler.mjs:115-140` |
-| **O3** | Bootstrap monitor không phân biệt "config sai" (fatal) với "RPC lỗi tạm thời" (restart loop) | **Mở** | `monitor.mjs:176` `await createMarketReader(...)` → `.catch` → `process.exit(1)` |
-| **O4** | `ntfy.test.mjs` là bản sao payload **duy nhất còn lại** (nợ đã ghi trong `CLAUDE.md`) | **Mở** | `__tests__/ntfy.test.mjs:20` định nghĩa `buildNtfyPayload` trong khi payload thật nằm inline ở `monitor.mjs:169` |
+| **O1** | Không có cách chứng minh trong repo rằng `webapp-app.mjs` **evaluate được** (chỉ có HTTP 200 + test tĩnh) | **Đã đóng** `f1360bb` | `webapp-app.mjs:48` đọc `window.MORPHO_CONFIG` ngay top-level; 186 dòng chạm `document.`/`window.` |
+| **O2** | Relay JSON-RPC của proxy **không xác thực** khi bind public (D3 vòng 2, đã chọn phương án (a) tài liệu hoá) | **Đã đóng** `88c5f65` — rate-limit + allow-list có sẵn nhưng **mặc định tắt** (chờ owner chốt) | `proxy-dispatcher.mjs:66` `handleRpc` switch; `:331` `Unhandled method → null`; tiền lệ rate-limit `webapp-handler.mjs:115-140` |
+| **O3** | Bootstrap monitor không phân biệt "config sai" (fatal) với "RPC lỗi tạm thời" (restart loop) | **Đã đóng** `5e80a7e` (+ `05b8342` vá `monitor.mjs` bị bỏ sót) | `monitor.mjs:176` `await createMarketReader(...)` → `.catch` → `process.exit(1)` |
+| **O4** | `ntfy.test.mjs` là bản sao payload **duy nhất còn lại** (nợ đã ghi trong `CLAUDE.md`) | **Đã đóng** `5e9a007` | `__tests__/ntfy.test.mjs:20` định nghĩa `buildNtfyPayload` trong khi payload thật nằm inline ở `monitor.mjs:169` |
 | **O5** | `webapp-app.mjs` vẫn là file lớn nhất (1.848 dòng) | **Đã đóng** (P5, `73433b7`) | `wc -l` sau P5: `webapp-app.mjs` **393** dòng; 7 module browser, module lớn nhất `webapp-presign.mjs` **573**. File lớn nhất repo vẫn là `proxy-dispatcher.mjs` — **710** dòng, không phải `633`: con số ở cột phải đo tại `12f12c2`, còn file đó lớn lên ở P2 |
 | **O6** | Nợ "webapp.html không được lint" | **Đã moot — không cần làm** | `webapp.html` chỉ còn `<script type="importmap">` + `<script type="module" src="/webapp-app.mjs">`; **0** JS inline. `scripts/check-syntax.mjs` đã ghim bất biến này (`node --check: 68/68 (62 .mjs + webapp.html no-inline-module)`) |
 

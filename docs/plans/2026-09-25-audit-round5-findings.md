@@ -9,6 +9,13 @@ Phương pháp: mỗi kết luận — kể cả kết luận "không phải l�
 production code**; mỗi test mới phải chứng minh **đỏ-trước** (cố tình phá bất biến ⇒ test đỏ, rồi
 khôi phục). Không suy luận từ tên test, docstring, hay từ việc "suite đang xanh".
 
+> **Đính chính (vòng 6, `docs/plans/2026-09-25-round6-plan-and-findings.md`).** Ba tuyên bố trong tài
+> liệu này đã hết đúng và được sửa tại chỗ, mỗi chỗ ghi rõ "đính chính vòng 6": (a) `ntfy.test.mjs`
+> "vẫn mirror payload" — đã đóng ở `5e9a007`; (b) tiền đề "harness không giữ được tiến trình nền" nên
+> không thể kiểm thật — sai, chỉ cần một lệnh tự chứa, vòng 6 đã đo 10 module `200` + boot image Docker;
+> (c) `.freebuff/` untracked — đã vào `.gitignore` ở `a99518a`. Thêm nữa: mọi tuyên bố "lint xanh"
+> trong vòng 5 phải đọc lại thành "`__tests__` + `scripts` xanh" (D10).
+
 ---
 
 ## 1. Điểm 4 chiều (so với vòng audit gắt trước: SPEC 7 / DESIGN 6 / CORRECTNESS 7 / QUALITY 6)
@@ -16,9 +23,9 @@ khôi phục). Không suy luận từ tên test, docstring, hay từ việc "sui
 | Chiều | Trước | Sau | Vì sao |
 | --- | --- | --- | --- |
 | SPEC | 7 | **8** | Ba defect đã tái hiện được đều đóng và **có test ghim** (P0.1–P0.3); plan P0/P1/P2 hoàn tất đúng phạm vi đã duyệt. Trừ 1 điểm: `.env.example`/`markets.json` vẫn là config tay ngoài repo nên hành vi "1–9 market" chỉ được mô tả, không được thực thi. |
-| DESIGN | 6 | **8** | `shared.mjs` hết là túi hỗn hợp (config/format ≠ rule ≠ auth ≠ lock), `monitor.mjs` thành factory có DI, UI tách theo trách nhiệm, và **handler phục vụ module qua route map** nên thêm module không phải sửa handler. Trừ 2: `webapp.html` vẫn là điểm ghim duy nhất giữa HTML ↔ module (không có bundler/codegen), và `ntfy.test.mjs` vẫn mirror payload. |
+| DESIGN | 6 | **8** | `shared.mjs` hết là túi hỗn hợp (config/format ≠ rule ≠ auth ≠ lock), `monitor.mjs` thành factory có DI, UI tách theo trách nhiệm, và **handler phục vụ module qua route map** nên thêm module không phải sửa handler. Trừ 2: `webapp.html` vẫn là điểm ghim duy nhất giữa HTML ↔ module (không có bundler/codegen), và `ntfy.test.mjs` vẫn mirror payload (**điểm trừ này đã hết hiệu lực ở vòng 6: `5e9a007`**). |
 | CORRECTNESS | 7 | **8** | Thay đổi lớn (tách module + di chuyển validate ra ngoài lock) được chứng minh **tương đương hành vi** chứ không chỉ "test vẫn xanh": đối chiếu export cũ/mới, diff bỏ thụt lề, so từng chỗ gọi đã gộp. Trừ 2: vòng này vẫn tìm được một lỗ test THẬT (D7) và một vấn đề vận hành (D8) trong chính code vừa tách. |
-| QUALITY | 6 | **7** | Không còn test mirror logic production (trừ ntfy), test import đúng module thật, `npm run check` đóng cả lint + `node --check` + vitest. Trừ 3: `webapp.html`/inline vẫn không được lint, `.freebuff/` untracked, và D9 — chính vòng này để lại 2 vết định dạng. |
+| QUALITY | 6 | **7** | Không còn test mirror logic production (trừ ntfy), test import đúng module thật, `npm run check` đóng cả lint + `node --check` + vitest. Trừ 3: `webapp.html`/inline vẫn không được lint, `.freebuff/` untracked, và D9 — chính vòng này để lại 2 vết định dạng. **Hai trong ba điểm trừ đã hết hiệu lực ở vòng 6:** `webapp.html` không có JS inline nên "không được lint" là vô nghĩa, `.freebuff/` đã vào `.gitignore` (`a99518a`); nhưng vòng 6 cũng tìm ra rằng cổng lint **chưa từng quét code production ở gốc** (D10, sửa ở `4da1315` rồi `f63e1b5`) → mọi tuyên bố "lint xanh" *trong chính vòng 5* phải đọc lại là "`__tests__` + `scripts` xanh". |
 
 Gate ở cuối vòng:
 
@@ -79,7 +86,7 @@ AssertionError: webapp-app.mjs import ./webapp-render.mjs nhưng server/handler 
 
 Chạy **toàn bộ suite** với khoá sai đó: `Test Files 1 failed | 31 passed (32)` — **đúng một test đỏ, và nó là test mới**. Nghĩa là trước vòng này, cùng phép phá ấy không test nào phát hiện được.
 
-Đã sửa: thêm test trong `__tests__/webapp.test.mjs` quét **file thật** của 4 module browser, mỗi
+Đã sửa: thêm test trong `__tests__/webapp.test.mjs` quét **file thật** của 4 module browser (vòng 6: closure nay 10 module và test **suy từ đồ thị import** qua `__tests__/helpers/browser-modules.mjs` thay vì đếm cứng), mỗi
 `./x.mjs` phải (a) nằm trong danh sách module browser, (b) có khoá `"x.mjs":` trong
 `webapp-server.mjs`/`webapp-handler.mjs`, và mỗi bare specifier phải có trong `importmap`; kèm chốt
 chống-regex-hỏng (`relative ≥ 3`, `bare ≥ 1`) để test không thể xanh vì match rỗng.
@@ -167,15 +174,19 @@ nhất chỉ truyền 1 tham số) và `...(scripts ?? {})` trong `webapp-handle
 
 ## 5. Rủi ro còn lại (đọc để không tưởng là "sạch tuyệt đối")
 
-1. **Chưa xác minh bằng browser thật trong vòng này.** Harness không giữ được tiến trình nền giữa
-   các lệnh nên phiên trước chỉ curl được `200 + text/javascript` cho 4 module — thứ **không**
-   chứng minh browser resolve/execute được đồ thị. Bù lại bằng D7 (test tĩnh khép kín 3 danh sách),
-   nhưng vẫn nên F5 tay một lần trước khi coi là "đã xác minh đầu-cuối".
+1. **Chưa xác minh bằng browser thật trong vòng này.** *(Đính chính vòng 6: lý do "harness không giữ
+   được tiến trình nền" là **sai** — server chạy được bằng một lệnh tự chứa, và vòng 6 đã đo được
+   `200 + text/javascript` cho **10** module, kèm một kịch bản 19 bước chạy THẬT đường tiền. Cái
+   vẫn còn thiếu chỉ là một lần mở trong Chromium: mọi khẳng định về hành vi vẫn đang được suy ra từ
+   DOM stub, không phải từ browser.)* Bù lại bằng D7 (test tĩnh khép kín 3 danh sách), nhưng vẫn nên
+   F5 tay một lần trước khi coi là "đã xác minh đầu-cuối".
 2. **Fail-fast market id chỉ ở startup** và cũng nuốt luôn lỗi mạng của `fetchParams` (hành vi cũ,
    không đổi): một lần RPC lỗi lúc khởi động làm monitor không lên — chấp nhận được vì có restart
    policy và thông báo nằm trong log/exit code, khác hẳn lớp "im lặng" mà P0.3 đóng.
-3. `webapp.html` được kiểm cú pháp nhưng **không được lint** (oxlint chỉ quét `.mjs`); `ntfy.test.mjs`
-   vẫn mirror payload; `.freebuff/` (AI tooling) untracked và **không** được commit.
+3. `webapp.html` được kiểm cú pháp nhưng **không được lint** (oxlint chỉ quét `.mjs`) *(đính chính vòng
+   6: file này có 0 JS inline nên không có gì để lint)*; `ntfy.test.mjs` vẫn mirror payload *(đã đóng ở
+   `5e9a007`)*; `.freebuff/` (AI tooling) untracked và **không** được commit *(đã vào `.gitignore` ở
+   `a99518a`)*.
 
 ## 6. Không làm trong vòng này
 
