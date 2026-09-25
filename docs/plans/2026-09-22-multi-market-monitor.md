@@ -20,7 +20,7 @@ single-market configuration and bundle format are deliberately unsupported.
 | Real-time trigger | Five Morpho event subscriptions use an OR list of configured market IDs; events are debounced into a targeted check. |
 | Fallback | Periodic HTTP polling reads every configured market. |
 | Alert controls | Alert state and cooldown are per market; the daily notification cap is global. |
-| Pre-sign storage | One v2 registry with one bundle per market. No v1 reader/migration path exists. |
+| Pre-sign storage | Registry v3 multi-nonce ladder (one bundle per `marketId@nonce`; reads legacy v2 in-memory). No v1 reader/migration path exists. |
 | Shared nonce | A cross-process registry lock selects at most one eligible bundle across all markets. All pending/broadcasting bundles with an outdated lender nonce are expired. |
 
 ## Configuration contract
@@ -80,9 +80,9 @@ proxy and webapp reject any market not present in this allow-list.
 7. Create bundles for two markets at the same lender nonce. When both become
    eligible, confirm exactly one reaches `submitted`; the other becomes
    `expired` after nonce advancement.
-8. Inspect `data/presigned.json`: it must have `{ "version": 2, "bundles":
-   { ... } }`, restrictive permissions where supported, and never contain a
-   v1 root bundle.
+8. Inspect `data/presigned.json`: it must have `{ "version": 3, "bundles":
+   { "<marketId>@<nonce>": ... }, "consumedNonce": n }`, restrictive
+   permissions where supported, and never contain a v1 root bundle.
 9. Confirm ntfy cooldown is independent per market while the daily cap is
    shared across all markets.
 
