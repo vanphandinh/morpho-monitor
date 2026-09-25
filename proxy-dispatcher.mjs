@@ -176,13 +176,24 @@ export function createRpcDispatcher({
           // viem RpcRequestError nén chi tiết thật vào `details`/`cause` còn
           // shortMessage luôn là "RPC Request failed." — nếu log shortMessage
           // thì sim revert bình thường (thường gặp với Ambire deployless sim)
-          // bị ngộ nhận là lỗi mạng. Lộ chi tiết thật ra log và lỗi trả về ví.
+          // bị ngộ nhận là lỗi mạng. Lộ chi tiết thật ra lỗi trả về ví.
           const msg = err?.details || err?.cause?.message || err?.shortMessage || err?.message || String(err);
           const hasStateOverride = params?.[2] != null;
-          const to = (params?.[0] || {}).to || "?";
-          warn(
-            `[proxy] eth_call forwarding failed${hasStateOverride ? " (stateOverride)" : ""} → ${to}: ${msg}`
-          );
+          const to = (params?.[0] || {}).to;
+
+          // Log hygiene (phân tích log VPS 2026-09-25):
+          // - "execution reverted" là kết quả sim hợp lệ; lỗi đã passthrough
+          //   cho ví nên warn thêm chỉ là noise.
+          // - eth_call KHÔNG có `to` (deployless sim) bị nhiều provider từ chối
+          //   ("Transaction creation failed." / "Missing or invalid parameters.")
+          //   — nén thành 1 dòng gọn thay vì format đầy đủ.
+          if (to == null) {
+            warn(`[proxy] eth_call no-to (deployless sim) bị từ chối: ${msg}`);
+          } else if (!/revert/i.test(msg)) {
+            warn(
+              `[proxy] eth_call forwarding failed${hasStateOverride ? " (stateOverride)" : ""} → ${to}: ${msg}`
+            );
+          }
           // Không trả "0x" giả — Ambire hiểu nhầm là success và parse sai portfolio.
           // HTTP handler sẽ emit jsonRpcError khi nhận Error.
           return new Error(msg);

@@ -148,6 +148,49 @@ describe("createRpcDispatcher — eth_call error passthrough (regression)", () =
     expect(result).toBeInstanceOf(Error);
     expect(result.message).toBe("HTTP request failed.");
   });
+
+  // ---- Log hygiene: giảm noise sim (2026-09-26) ----
+  function makeSpyDispatcher(err) {
+    const warns = [];
+    const dispatcher = createRpcDispatcher({
+      markets: [{ id: MARKET_ID }],
+      lenderAddress: LENDER,
+      morphoBlueAddress: MORPHO,
+      client: { request: async () => { throw err; } },
+      logger: { log: () => {}, warn: (m) => warns.push(m), error: () => {} },
+    });
+    return { ...dispatcher, warns };
+  }
+
+  it("sim revert (có 'to') im lặng: lỗi passthrough cho ví, không warn", async () => {
+    const err = makeErr({ shortMessage: "RPC Request failed.", details: "execution reverted" });
+    const { handleRpc, warns } = makeSpyDispatcher(err);
+    const result = await handleRpc("eth_call", [{ to: MORPHO, data: "0x" }, "latest"]);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe("execution reverted");
+    expect(warns).toHaveLength(0); // ví đã nhận lỗi đúng — log thêm chỉ là noise
+  });
+
+  it("deployless không 'to' → đúng 1 dòng gọn, không xuống dòng", async () => {
+    const err = makeErr({ shortMessage: "Transaction creation failed.", details: "Transaction creation failed." });
+    const { handleRpc, warns } = makeSpyDispatcher(err);
+    const result = await handleRpc("eth_call", [{ data: "0x" }, "latest"]); // không có `to`
+    expect(result).toBeInstanceOf(Error);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("no-to");
+    expect(warns[0]).toContain("Transaction creation failed.");
+    expect(warns[0]).not.toContain("\n");
+  });
+
+  it("transport error có 'to' → vẫn warn đầy đủ format cũ", async () => {
+    const err = makeErr({ name: "TimeoutError", shortMessage: "The request took too long to respond.", details: "" });
+    const { handleRpc, warns } = makeSpyDispatcher(err);
+    await handleRpc("eth_call", [{ to: MORPHO, data: "0x" }, "latest", { [MORPHO]: { balance: "0x1" } }]);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("forwarding failed");
+    expect(warns[0]).toContain("(stateOverride)");
+    expect(warns[0]).toContain("The request took too long to respond.");
+  });
 });
 
 describe("createRpcDispatcher — method surface (C1 regression)", () => {
