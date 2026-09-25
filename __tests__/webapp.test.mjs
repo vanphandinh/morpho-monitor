@@ -28,6 +28,9 @@ import {
   validateWithdraw,
   stepNonce,
 } from "../webapp-logic.mjs";
+// Audit P2.8: hai bản wadToPercent/shortenAddr tồn tại vì browser không import
+// được shared.mjs; test này là lưới an toàn chống chúng lệch nhau.
+import { wadToPercent as sharedWadToPercent, shortenAddress } from "../shared.mjs";
 
 const readSource = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
@@ -443,7 +446,21 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
 
   it("server đọc + truyền module logic, handler phục vụ route của nó", () => {
     expect(server).toContain("webapp-logic.mjs");
-    expect(handlerSrc).toContain('"/webapp-logic.mjs"');
+    // P2.7: handler không còn so khớp exact-path mà phục vụ MỌI module qua route
+    // map `scriptSources` (khoá là tên file trần, không slash). Route sai ⇒ import
+    // của app trả 404 và UI chết lặng; xem webapp-app-serve.test.mjs cho hành vi HTTP.
+    expect(handlerSrc).toContain('"webapp-logic.mjs"');
+    expect(handlerSrc).toContain("scriptSources");
+  });
+
+  // Audit P2.7: server phải đọc và truyền CẢ module render/wallet qua `scripts`,
+  // nếu không thì import trong webapp-app.mjs trả 404 và UI chết lặng. Handler
+  // phục vụ chúng qua route map tổng quát (`scriptSources`), không hard-code tên.
+  it("P2.7: server đọc + truyền module render/wallet qua scripts", () => {
+    for (const name of ["webapp-render.mjs", "webapp-wallet.mjs"]) {
+      expect(server).toContain(name);
+    }
+    expect(handlerSrc).toContain("scriptSources");
   });
 
   it("bản sao logic đã chuyển sang module chung được dùng ở đúng call site", () => {
@@ -476,5 +493,22 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(app).toMatch(/setNonceStepperEnabled\(/);
     expect(app).toMatch(/window\.onNonceStep\s*=/);
     expect(app).toMatch(/stepNonce\(/);
+  });
+});
+
+// ============================================================
+// Đồng bộ với shared.mjs (audit P2.8)
+// ============================================================
+// Browser không import được shared.mjs, nên wadToPercent/shortenAddr tồn tại hai
+// bản. Test này chặn chúng lệch nhau (lệch ⇒ UI hiển thị khác monitor).
+describe("webapp-logic ↔ shared: hai bản cho cùng kết quả", () => {
+  it("wadToPercent khớp trên nhiều mẫu", () => {
+    const samples = [0n, 1n, 500_000_000_000_000_000n, 1_000_000_000_000_000_000n, 860_000_000_000_000_000n, 123_456_789_000_000_000_000n];
+    for (const wad of samples) expect(wadToPercent(wad)).toBe(sharedWadToPercent(wad));
+  });
+
+  it("shortenAddr khớp shortenAddress (kể cả giá trị rỗng)", () => {
+    const samples = [null, undefined, "", "0x1234", "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", "0x0A5e1Db3671faCcD146404925bDa5c59929f66c3"];
+    for (const addr of samples) expect(shortenAddr(addr)).toBe(shortenAddress(addr));
   });
 });

@@ -30,6 +30,8 @@ import { verifyPresignedBundle } from "./presign-verify.mjs";
 const CHALLENGE_RATE_LIMIT_WINDOW_MS = 60_000;
 const CHALLENGE_RATE_LIMIT_MAX = 10;
 const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
+/** Đường dẫn module browser phục vụ tĩnh (`/webapp-*.mjs`). */
+const BROWSER_MODULE_RE = /^\/[A-Za-z0-9_.-]+\.mjs$/;
 
 /** Map a thrown error to an HTTP status (400/404/409/503 for known codes; 500 otherwise). */
 export function statusForError(err) {
@@ -93,11 +95,20 @@ export function createRequestHandler({
   // cùng gốc: thiếu route này thì browser nhận 404 cho import và TOÀN BỘ UI chết
   // lặng (module không nạp được ⇒ không handler nào tồn tại).
   logicScript = null,
+  // P2.7: map tên-module → source cho MỌI module browser (webapp-app/logic/
+  // wallet/render...). Bootstrap nạp chúng lúc khởi động. `appScript`/`logicScript`
+  // ở trên vẫn được nhận để tương thích handler/test cũ.
+  scripts = null,
   proxyUrl = PROXY_RPC_URL.replace(/\/+$/, ""),
   proxyPassword = WEBAPP_PASSWORD,
   fetchImpl = fetch,
 } = {}) {
   const requireMarket = (marketId) => requireConfiguredMarket(markets, marketId);
+  const scriptSources = {
+    ...(appScript ? { "webapp-app.mjs": appScript } : {}),
+    ...(logicScript ? { "webapp-logic.mjs": logicScript } : {}),
+    ...(scripts ?? {}),
+  };
 
   // Per-handler state (M10): không chia sẻ giữa các test/handler khác nhau.
   const challenges = new Map(); // challenge → { address, createdAt, expiresAt }
@@ -550,10 +561,12 @@ export function createRequestHandler({
       return;
     }
 
-    // ---- Static: module app (A.1 / A.1b) ----
-    if (req.method === "GET" && (pathname === "/webapp-app.mjs" || pathname === "/webapp-logic.mjs")) {
-      const body = pathname === "/webapp-app.mjs" ? appScript : logicScript;
+    // ---- Static: browser modules (A.1 / A.1b / P2.7) ----
+    if (req.method === "GET" && BROWSER_MODULE_RE.test(pathname)) {
+      const body = scriptSources[pathname.slice(1)];
       if (!body) {
+        // Đường dẫn .mjs là module ĐÃ BIẾT mà chưa cấu hình ⇒ 404 JSON, KHÔNG rơi
+        // vào SPA fallback: trả HTML 200 sẽ khiến browser bỏ qua import hỏng lặng lẽ.
         sendJson(res, 404, { ok: false, error: "app script not configured" });
         return;
       }

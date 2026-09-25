@@ -14,6 +14,8 @@ import { createRequestHandler } from "../webapp-handler.mjs";
 const markets = [{ id: "0x" + "a".repeat(64) }];
 const APP_SOURCE = "// app\nwindow.deleteTierFromBundle = function () {};\n";
 const LOGIC_SOURCE = "// logic\nexport const wadToPercent = (wad) => wad;\n";
+const RENDER_SOURCE = "// render\nexport const esc = (v) => String(v);\n";
+const WALLET_SOURCE = "// wallet\nexport const getWalletProviderName = () => null;\n";
 
 async function listen(handler) {
   const server = http.createServer(handler);
@@ -26,6 +28,10 @@ const withApp = await listen(createRequestHandler({
   content: "<html>x</html>",
   appScript: APP_SOURCE,
   logicScript: LOGIC_SOURCE,
+  scripts: {
+    "webapp-render.mjs": RENDER_SOURCE,
+    "webapp-wallet.mjs": WALLET_SOURCE,
+  },
 }));
 const withoutApp = await listen(createRequestHandler({ markets, content: "<html>x</html>" }));
 const appOnly = await listen(createRequestHandler({ markets, content: "<html>x</html>", appScript: APP_SOURCE }));
@@ -76,6 +82,31 @@ describe("A.1b — GET /webapp-logic.mjs (module logic dùng chung)", () => {
 
   it("thiếu module logic ⇒ 404 JSON, không trả HTML 200 (browser bỏ qua import hỏng)", async () => {
     const resp = await fetch(`http://127.0.0.1:${appOnly.port}/webapp-logic.mjs`);
+    expect(resp.status).toBe(404);
+    expect(resp.headers.get("content-type")).toContain("application/json");
+  });
+});
+
+describe("P2.7 — GET module browser tách (webapp-render / webapp-wallet)", () => {
+  for (const [name, source] of [["webapp-render.mjs", RENDER_SOURCE], ["webapp-wallet.mjs", WALLET_SOURCE]]) {
+    it(`phục vụ /${name} với MIME đúng và không cache`, async () => {
+      const resp = await fetch(`http://127.0.0.1:${withApp.port}/${name}`);
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(resp.headers.get("cache-control")).toBe("no-store");
+      expect(resp.headers.get("x-content-type-options")).toBe("nosniff");
+      await expect(resp.text()).resolves.toBe(source);
+    });
+
+    it(`không cấu hình /${name} ⇒ 404 JSON, không rơi vào SPA fallback`, async () => {
+      const resp = await fetch(`http://127.0.0.1:${appOnly.port}/${name}`);
+      expect(resp.status).toBe(404);
+      expect(resp.headers.get("content-type")).toContain("application/json");
+    });
+  }
+
+  it("tên module lạ có đuôi .mjs vẫn 404 JSON (route map không đoán file)", async () => {
+    const resp = await fetch(`http://127.0.0.1:${withApp.port}/khong-co.mjs`);
     expect(resp.status).toBe(404);
     expect(resp.headers.get("content-type")).toContain("application/json");
   });

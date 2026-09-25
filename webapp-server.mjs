@@ -36,6 +36,10 @@ const WEBAPP_APP_FILE = path.join(__dirname, "webapp-app.mjs");
 // Audit A.1b: logic thuần dùng chung cho browser và test. webapp-app.mjs import
 // nó qua `./webapp-logic.mjs` nên nó cũng phải được phục vụ như file tĩnh.
 const WEBAPP_LOGIC_FILE = path.join(__dirname, "webapp-logic.mjs");
+// Audit P2.7: module browser tách tiếp từ webapp-app.mjs — app import chúng nên
+// chúng cũng phải được phục vụ như file tĩnh (xem handler `scripts`).
+const WEBAPP_RENDER_FILE = path.join(__dirname, "webapp-render.mjs");
+const WEBAPP_WALLET_FILE = path.join(__dirname, "webapp-wallet.mjs");
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
 const configuredMarkets = loadMarkets(path.join(__dirname, MARKETS_FILE));
@@ -81,6 +85,18 @@ try {
   process.exit(1);
 }
 
+// Audit P2.7: cùng lý do — thiếu file thì import trong app trả 404 ⇒ UI chết lặng.
+const readBrowserModule = (file, importedBy) => {
+  try {
+    return fs.readFileSync(file, "utf-8");
+  } catch {
+    console.error(`❌ Không tìm thấy ${file}. ${importedBy} import file này.`);
+    process.exit(1);
+  }
+};
+const renderScript = readBrowserModule(WEBAPP_RENDER_FILE, "webapp-app.mjs");
+const walletScript = readBrowserModule(WEBAPP_WALLET_FILE, "webapp-app.mjs");
+
 // Fail closed khi thiếu WEBAPP_PASSWORD (audit 2026-09-24 P1): không password
 // thì MỌI request (kể cả DELETE bundle đã ký) đều được coi là đã xác thực.
 // Dev local chủ đích tắt bằng WEBAPP_ALLOW_INSECURE=1 (kèm cảnh báo đỏ).
@@ -116,6 +132,10 @@ const handler = createRequestHandler({
   content: htmlContent,
   appScript,
   logicScript,
+  scripts: {
+    "webapp-render.mjs": renderScript,
+    "webapp-wallet.mjs": walletScript,
+  },
 });
 
 // Challenge/rate-limit state nằm trong closure của handler (M10); vòng dọn

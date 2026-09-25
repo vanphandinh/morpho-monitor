@@ -85,6 +85,24 @@ if (fs.existsSync(webappPath)) {
     fail('webapp-app.mjs phải import logic dùng chung: from "./webapp-logic.mjs"');
   }
 
+  // Audit P2.7: render helper + nhận diện ví cũng tách thành module browser dùng
+  // chung. Ghim cùng bất biến với webapp-logic.mjs: file phải tồn tại và app phải
+  // import nó, nếu không thì hoặc UI chết (404) hoặc bản sao cục bộ quay lại.
+  const browserModules = [
+    { file: "webapp-render.mjs", symbols: "esc, row, formatToken" },
+    { file: "webapp-wallet.mjs", symbols: "getWalletProviderName, getCompatibilityMessage" },
+  ];
+  const appSource = fs.existsSync(appModulePath) ? fs.readFileSync(appModulePath, "utf8") : null;
+  for (const { file, symbols } of browserModules) {
+    checked++;
+    if (!fs.existsSync(path.join(root, file))) {
+      fail(`thiếu ${file} — webapp-app.mjs import file này (route /${file})`);
+    }
+    if (appSource && !appSource.includes(`from "./${file}"`)) {
+      fail(`webapp-app.mjs phải import ${symbols} từ "./${file}"`);
+    }
+  }
+
   // importmap: JSON hợp lệ — viem resolve qua đây; JSON hỏng thì browser bỏ qua im lặng.
   const importMap = html.match(/<script\b[^>]*\btype="importmap"[^>]*>([\s\S]*?)<\/script>/);
   if (importMap) {

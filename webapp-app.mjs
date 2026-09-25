@@ -36,6 +36,11 @@
       validateWithdraw,
       stepNonce,
     } from "./webapp-logic.mjs";
+    // Audit P2.7: render helper (esc/row/formatToken) và nhận diện ví nằm ở
+    // module riêng — cùng một đoạn code chạy trong browser và trong test, route
+    // do webapp-handler.mjs phục vụ song song với /webapp-app.mjs.
+    import { esc, row, formatToken } from "./webapp-render.mjs";
+    import { getWalletProviderName, getCompatibilityMessage } from "./webapp-wallet.mjs";
 
     // ============================================================
     // CONFIG (injected by server via window.MORPHO_CONFIG)
@@ -173,7 +178,6 @@
     // wadToPercent / shortenAddr / broadcastingAgeMinutes / isClaimOverdue /
     // txVisibleOnChain nay nằm trong webapp-logic.mjs (A.1b): browser tải chính
     // module đó, và test import đúng nó — không còn hai bản có thể lệch nhau.
-    function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
     /**
      * R4 (đã chuyển sang webapp-logic.mjs): giao dịch mà ví trả về hash có thật
      * sự nằm trên chain?
@@ -506,14 +510,6 @@
       document.getElementById("max-withdraw").textContent = formatToken(maxWithdraw, loanToken);
     }
 
-    function row(label, value) {
-      return `<div class="row"><span class="label">${label}</span><span class="value">${value}</span></div>`;
-    }
-
-    function formatToken(amount, token) {
-      return `${formatUnits(amount, token.decimals)} ${token.symbol}`;
-    }
-
     // ============================================================
     // WALLET
     // ============================================================
@@ -733,31 +729,6 @@
     // ============================================================
     // PRESIGN: WALLET COMPATIBILITY
     // ============================================================
-    function getWalletProviderName() {
-      const e = window.ethereum;
-      if (!e) return null;
-      if (e.isRabby) return "rabby";
-      if (e.isAmbire) return "ambire";
-      if (e.isFrame) return "frame";
-      if (e.isCoinbaseWallet) return "coinbase";
-      if (e.isMetaMask) return "metamask";
-      if (e.isTrust) return "trust";
-      return "unknown";
-    }
-
-    function getCompatibilityMessage() {
-      const wallet = getWalletProviderName();
-      switch (wallet) {
-        case "rabby": return { ok: true, msg: "✅ Rabby được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "metamask": return { ok: true, msg: "✅ MetaMask được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "ambire": return { ok: true, msg: "✅ Ambire được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "frame": return { ok: true, msg: "✅ Frame được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "coinbase": return { ok: true, msg: "✅ Coinbase Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        case "trust": return { ok: true, msg: "✅ Trust Wallet được phát hiện. Sẵn sàng ký giao dịch qua proxy RPC." };
-        default: return { ok: true, msg: "✅ Ví đã kết nối. Sẵn sàng ký giao dịch qua proxy RPC." };
-      }
-    }
-
     function renderWalletCompatibility() {
       const banner = document.getElementById("presign-wallet-banner");
       const compat = getCompatibilityMessage();
@@ -844,12 +815,41 @@
           showPresignError(`Lỗi: ${msg}`);
         }
       }
-    };
-
-    // ============================================================
+    };    // ============================================================
     // PRESIGN: NONCE & GAS
     // ============================================================
+
+    /**
+     * Nonce hoặc gas đổi ⇒ MỌI chữ ký đã ký ở giá trị cũ vô nghĩa: reset các tier
+     * đã ký về pending, tắt nút lưu và báo người dùng ký lại. (audit P2.8: gộp 3
+     * bản sao ở fetchNonce / onNonceStep / onGasInputChange.)
+     * @returns {boolean} true nếu có chữ ký bị vô hiệu
+     */
+    function invalidateSignatures(message) {
+      let invalidated = false;
+      for (const tier of presignedTiers) {
+        if (tier.status === "signed") {
+          tier.status = "pending";
+          tier.txHash = null;
+          tier.amountWei = null;
+          invalidated = true;
+        }
+      }
+      if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
+        presignedWithdrawAll.status = "pending";
+        presignedWithdrawAll.txHash = null;
+        invalidated = true;
+      }
+      if (invalidated) {
+        document.getElementById("btn-save-server").disabled = true;
+        showPresignError(message);
+        renderTierList();
+      }
+      return invalidated;
+    }
+
     window.fetchNonce = async function() {
+
       if (!currentAccount) {
         showPresignError("Vui lòng kết nối ví trước.");
         return;
@@ -870,25 +870,7 @@
         setNonceStepperEnabled(true);
         // Nonce mới → chữ ký cũ (cùng nonce cũ) không còn hợp lệ
         if (prevNonce !== null && prevNonce !== presignedNonce) {
-          let invalidated = false;
-          for (const tier of presignedTiers) {
-            if (tier.status === "signed") {
-              tier.status = "pending";
-              tier.txHash = null;
-              tier.amountWei = null;
-              invalidated = true;
-            }
-          }
-          if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
-            presignedWithdrawAll.status = "pending";
-            presignedWithdrawAll.txHash = null;
-            invalidated = true;
-          }
-          if (invalidated) {
-            document.getElementById("btn-save-server").disabled = true;
-            showPresignError("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
-            renderTierList();
-          }
+          invalidateSignatures("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
         }
         updateSignButton();
       } catch (err) {
@@ -921,25 +903,7 @@
       presignedNonce = next;
       document.getElementById("presign-nonce").textContent = presignedNonce;
       // Nonce mới → chữ ký cũ (ký ở nonce cũ) không còn hợp lệ.
-      let invalidated = false;
-      for (const tier of presignedTiers) {
-        if (tier.status === "signed") {
-          tier.status = "pending";
-          tier.txHash = null;
-          tier.amountWei = null;
-          invalidated = true;
-        }
-      }
-      if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
-        presignedWithdrawAll.status = "pending";
-        presignedWithdrawAll.txHash = null;
-        invalidated = true;
-      }
-      if (invalidated) {
-        document.getElementById("btn-save-server").disabled = true;
-        showPresignError("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
-        renderTierList();
-      }
+      invalidateSignatures("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
       updateNonceStepperButtons();
       updateSignButton();
     };
@@ -1004,29 +968,7 @@
         presignedGas.maxPriorityFeePerGas = null;
       }
       // Reset signed state if gas changed (cần ký lại)
-      let gasChanged = false;
-      if (presignedTiers.some(t => t.status === "signed")) {
-        // Reset all signed tiers back to pending
-        for (const tier of presignedTiers) {
-          if (tier.status === "signed") {
-            tier.status = "pending";
-            tier.txHash = null;
-            tier.amountWei = null;
-          }
-        }
-        document.getElementById("btn-save-server").disabled = true;
-        gasChanged = true;
-      }
-      if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
-        presignedWithdrawAll.status = "pending";
-        presignedWithdrawAll.txHash = null;
-        document.getElementById("btn-save-server").disabled = true;
-        gasChanged = true;
-      }
-      if (gasChanged) {
-        showPresignError("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
-        renderTierList();
-      }
+      invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
       updateSignButton();
     }
     window.onGasInputChange = onGasInputChange;

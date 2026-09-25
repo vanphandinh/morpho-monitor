@@ -24,6 +24,9 @@ const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
 // về MARKUP (element id) vẫn đọc từ HTML. Kiểm tra trên HTML sau khi tách file sẽ
 // trở thành "vô nghĩa nhưng vẫn xanh" — đúng lớp lỗ hổng A.1 muốn đóng.
 const app = fs.readFileSync(path.join(__dirname, "..", "webapp-app.mjs"), "utf8");
+// Audit P2.7: nhận diện ví tách sang webapp-wallet.mjs — kiểm hợp đồng trên file
+// đó thay vì tìm trong webapp-app.mjs (nơi nó không còn tồn tại).
+const wallet = fs.readFileSync(path.join(__dirname, "..", "webapp-wallet.mjs"), "utf8");
 
 const MARKET = { id: "0x" + "a".repeat(64), minLiquidity: "100", suddenDrainMultiplier: 2 };
 const LENDER = "0x" + "b".repeat(40);
@@ -211,19 +214,22 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
 
   it("banner compat theo thương hiệu ví như main, mọi ví đều ok: true", () => {
     // Cấu trúc switch giống main; Ambire có case riêng thay vì default.
-    expect(app).toMatch(/case "rabby": return \{ ok: true,/);
-    expect(app).toMatch(/case "metamask": return \{ ok: true,/);
-    expect(app).toMatch(/case "ambire": return \{ ok: true,/);
-    expect(app).toMatch(/case "frame": return \{ ok: true,/);
-    expect(app).toMatch(/case "coinbase": return \{ ok: true,/);
-    expect(app).toMatch(/case "trust": return \{ ok: true,/);
-    expect(app).toMatch(/default: return \{ ok: true,/);
+    // P2.7: code này nay nằm ở webapp-wallet.mjs (webapp-app.mjs import nó).
+    expect(wallet).toMatch(/case "rabby": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "metamask": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "ambire": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "frame": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "coinbase": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "trust": return \{ ok: true,/);
+    expect(wallet).toMatch(/default: return \{ ok: true,/);
     // Không còn nhánh chặn nào trong banner.
-    expect(app).not.toMatch(/ok: false/);
+    expect(wallet).not.toMatch(/ok: false/);
+    // Và app không còn định nghĩa lại (nếu có, bản tách đã bị bỏ qua).
+    expect(app).not.toMatch(/function getCompatibilityMessage/);
   });
 
   it("nhận diện Ambire qua provider flag (chỉ để hiển thị)", () => {
-    expect(app).toMatch(/if \(e\.isAmbire\) return "ambire";/);
+    expect(wallet).toMatch(/if \(e\.isAmbire\) return "ambire";/);
   });
 
   it("ký gọi thẳng sendTransaction, không gate phía trước", () => {
