@@ -131,14 +131,24 @@ chỉ vào name/inputs.
 | SPEC | 8 | **8** | Không thêm tính năng; vòng này trả nợ *bằng chứng* cho tính năng đã có. Giữ nguyên vì `markets.json`/`.env` vẫn là config tay ngoài repo. |
 | DESIGN | 8 | **8** | Harness theo mô hình "kịch bản cố định + adapter giả" và `refactor-diff` là công cụ tái dùng, nhưng chưa có gì thay đổi thiết kế production. |
 | CORRECTNESS | 8 | **9** | Lần đầu tiên đường tiền có bằng chứng **hành vi**: 5 lời gọi `eth_sendTransaction` được giải mã và so từng tham số, 2 body bundle, 1 URL DELETE, cộng phép so trung thành 0-khác-biệt giữa cây trước/sau P5. Trừ 1: D12 còn mở và đường simulate phụ thuộc ABI output. |
-| QUALITY | 7 | **9** | Cổng lint tự chứng minh độ phủ (không còn "xanh vì không quét gì"), CI chạy cả Windows (nơi D10 lộ ra), artifact image được kiểm, và tài liệu vòng 5 hết tự mâu thuẫn. Trừ 1: chưa từng mở webapp trong Chromium thật, `refactor-diff`/`webapp-trace` chỉ chạy tay, và YAML được kiểm bằng parser chứ không phải `actionlint`. |
+| QUALITY | 7 | **9** | Cổng lint tự chứng minh độ phủ (không còn "xanh vì không quét gì"), CI chạy cả Windows (nơi D10 lộ ra), artifact image được kiểm, và tài liệu vòng 5 hết tự mâu thuẫn. Trừ 1: ~~chưa từng mở webapp trong Chromium thật~~ **đã mở và khớp 100% với kết luận stub** (xem §6.1), `refactor-diff`/`webapp-trace` chỉ chạy tay, và YAML được kiểm bằng parser chứ không phải `actionlint`. |
 
 ## 6. Rủi ro còn lại (đọc để không tưởng là "sạch tuyệt đối")
 
-1. **Vẫn chưa mở trong browser thật.** Mọi khẳng định về hành vi đều từ DOM stub — stub chạy đúng
-   code production và đúng import graph, nhưng *không* chứng minh Chromium resolve `importmap`, chạy
-   viem trong browser, hay ví thật nối vào. Đây là món nợ lớn nhất còn lại, và giờ nó **đã có thể làm
-   được** (server chạy bằng một lệnh tự chứa) chứ không còn bị chặn kỹ thuật.
+1. **ĐÃ XÁC MINH TRONG CHROMIUM THẬT (2026-09-25, sau pha D12).** Server thật (`node --env-file=.env
+   webapp-server.mjs` + `WEBAPP_ALLOW_INSECURE=1`, dev local) mở trong Chromium qua Preview:
+   importmap resolve, cả 10 module được fetch `200 text/javascript` rồi evaluate; 19/19 handler
+   `window.*` probe là hàm sống (khớp hợp đồng 31 handler mà stub khẳng định); dữ liệu **mainnet
+   thật** render: dCOMP/USDC, LLTV 62.50%, Total Supply 14.811.099 USDC, vị thế lender
+   440.927,69 USDC; bấm nút thật: **Lấy Nonce** chạy đúng chốt chặn "Vui lòng kết nối ví trước",
+   **Tự Động Gas** đi hết đường RPC thật ⇒ ô nhập nhận maxFee `0.995392056` / priority
+   `0.000111316` Gwei (giá thị trường thật), **Kết Nối Ví** đúng nhánh tương thích "Vui lòng cài đặt
+   MetaMask…" (Chromium test không có ví), **Thêm Mạng Proxy Vào Ví** cùng nhánh, stepper khoá khi
+   chưa có nonce, Ký Tất Cả/Lưu khoá đúng trạng thái. RPC fallback chạy đúng tài liệu: `1rpc.io`
+   chết DNS → `meowrpc` 200 rồi 429 → `publicnode` 200 ổn định. **Không có khác biệt nào so với
+   kết luận từ DOM stub** — lỗi duy nhất của lần chạy là của *tôi*, không phải của app: quên
+   `--env-file=.env` lần đầu (đúng lớp lỗi mà smoke CI đã bắt ở P5). Phần còn lại của món nợ này:
+   ký/lưu/broadcast thật cần MetaMask + proxy + funder, thuộc phạm vi E2E tay của owner.
 2. **CI chưa từng chạy thật.** Workflow chỉ hoạt động khi repo được push lên một remote có GitHub
    Actions; máy này chưa có remote. Điều đã chứng minh là **từng bước** của nó chạy đúng ở local (kể
    cả `docker build` + boot từ image). YAML được kiểm bằng parser, không phải `actionlint`.
@@ -149,8 +159,9 @@ chỉ vào name/inputs.
    nhưng **mặc định tắt** (lựa chọn có chủ ý: không đổi hành vi đang chạy). Nếu bind proxy ra public
    mà không đặt biến, nhánh JSON-RPC vẫn không xác thực và không giới hạn.
 5. **Lỗ hổng có chủ ý trong lưới test:** lưới id tĩnh chấp nhận id **tự chèn**, nên typo trong chính
-   chuỗi inject vẫn lọt; hợp đồng `on*` chỉ chứng minh handler **tồn tại**, không chứng minh **chạy
-   đúng** (P3 đã thu hẹp khoảng này nhưng chỉ cho các bước nằm trong kịch bản).
+   chuỗi inject vẫn lọt; hợp đồng `on*` chỉ chứng minh handler **tồn tại** — buổi chạy Chromium thật
+   đã tăng thêm một lớp (handler thật sự chạy khi bấm), nhưng chỉ cho các nút được bấm; phần còn
+   lại vẫn là suy luận.
 6. **Số trong message của `75e573c` lệch:** nó ghi cổng lint cũ quét "47 file thay vì 82"; số đo lại
    ở vòng 6 là **48** (`__tests__` + `scripts`) và tổng **83** file `.mjs` đang được git theo dõi
    (`git ls-files '*.mjs'`). Sai ở message, không sai ở code — không sửa được nếu không viết lại lịch sử.
