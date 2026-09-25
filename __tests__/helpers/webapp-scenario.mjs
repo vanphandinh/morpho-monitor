@@ -42,9 +42,14 @@ function observe(app) {
     errorBanner: app.text("error-banner"),
     txResult: app.html("tx-result"),
     // id tự chèn (`tx-verify-note`): chỉ đọc được vì harness materialize id trong innerHTML.
+    // Cần CẢ hai: nhánh "đã thấy" ghi `textContent`, nhánh cảnh báo ghi `innerHTML` — đọc thiếu một
+    // trong hai là trace im lặng bỏ qua đúng cái cần kiểm (R4).
     txVerifyNote: app.text("tx-verify-note"),
+    txVerifyNoteHtml: app.html("tx-verify-note"),
     withdrawAmount: app.value("withdraw-amount"),
     maxWithdraw: app.text("max-withdraw"),
+    gasMaxFee: app.value("presign-gas-maxfee"),
+    gasPriority: app.value("presign-gas-priority"),
     nonceDecDisabled: app.env.elements.get("btn-nonce-dec")?.disabled ?? null,
     signAllDisabled: app.env.elements.get("btn-sign-all")?.disabled ?? null,
   };
@@ -109,6 +114,10 @@ export async function runWebappScenario({
     await step("add-tier-250", async () => {
       app.window.addTier();
       app.window.updateTierAmount(1, "250");
+      // Thêm một mốc để TRỐNG: nó phải bị bỏ qua khi ký (không tiêu một tx, không vào bundle),
+      // nhưng vẫn hiện trong danh sách. Đây là bất biến của `signAllTiers` — không có mốc này thì
+      // một mốc rỗng lọt vào bundle sẽ thành "rút 0" và proxy từ chối cả rung.
+      app.window.addTier();
     });
 
     // 4. Ký: mỗi tier một `eth_sendTransaction` (calldata rút tiền).

@@ -1,0 +1,483 @@
+{
+  "entry": "C:\\Users\\VanPhanDinh\\Desktop\\morpho\\webapp-app.mjs",
+  "steps": [
+    {
+      "name": "boot",
+      "calls": [
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x2c3c9157aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x313ce567\",\"to\":\"0x2222222222222222222222222222222222222222\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x313ce567\",\"to\":\"0x3333333333333333333333333333333333333333\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x5c60e39aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x93c52062aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000001111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x95d89b41\",\"to\":\"0x2222222222222222222222222222222222222222\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x95d89b41\",\"to\":\"0x3333333333333333333333333333333333333333\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_chainId\",\"params\":[]}"
+      ],
+      "obs": {
+        "nonce": "",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "connect-wallet",
+      "calls": [
+        "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_requestAccounts\",\"params\":[]}"
+      ],
+      "obs": {
+        "nonce": "",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "sign-in",
+      "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/challenge\",\"body\":null,\"authorization\":null}",
+        "{\"kind\":\"api\",\"method\":\"POST\",\"url\":\"/api/auth\",\"body\":{\"address\":\"0x1111111111111111111111111111111111111111\",\"signature\":\"0xababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\",\"challenge\":\"0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\"},\"authorization\":null}",
+        "{\"kind\":\"provider\",\"method\":\"personal_sign\",\"params\":[\"0x4d6f7270686f206d6f6e69746f723a2078c3a163207468e1bbb1632076c3ad\",\"0x1111111111111111111111111111111111111111\"]}"
+      ],
+      "obs": {
+        "nonce": "",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "tab-presign",
+      "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":null,\"authorization\":\"Bearer test-token\"}"
+      ],
+      "obs": {
+        "nonce": "",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "fetch-nonce",
+      "calls": [
+        "{\"kind\":\"rpc\",\"method\":\"eth_getTransactionCount\",\"params\":[\"0x1111111111111111111111111111111111111111\",\"pending\"]}"
+      ],
+      "obs": {
+        "nonce": "11",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": true,
+        "signAllDisabled": true
+      }
+    },
+    {
+      "name": "nonce-step-down-at-floor",
+      "calls": [],
+      "obs": {
+        "nonce": "11",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": true,
+        "signAllDisabled": true
+      }
+    },
+    {
+      "name": "nonce-step-up",
+      "calls": [],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "",
+        "gasPriority": "",
+        "nonceDecDisabled": false,
+        "signAllDisabled": true
+      }
+    },
+    {
+      "name": "auto-fill-gas",
+      "calls": [
+        "{\"kind\":\"rpc\",\"method\":\"eth_getBlockByNumber\",\"params\":[\"latest\",false]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_maxPriorityFeePerGas\",\"params\":[]}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "0",
+        "tierList": "<p style=\"color:var(--text-dim);font-size:0.85rem\">Chưa có mốc nào. Nhấn nút \"Thêm Mốc\" để thêm mới.</p>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": true
+      }
+    },
+    {
+      "name": "add-tier-100",
+      "calls": [],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "0",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "add-tier-250",
+      "calls": [],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "sign-all-tiers",
+      "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_sendTransaction\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad600000000000000000000000000000000000000000000000000000000000005f5e100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"gas\":\"0x30d40\",\"maxFeePerGas\":\"0xee6b2800\",\"maxPriorityFeePerGas\":\"0x77359400\",\"nonce\":\"0xc\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"value\":\"0x0\"}]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_sendTransaction\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad60000000000000000000000000000000000000000000000000000000000000ee6b280000000000000000000000000000000000000000000000000000000000000000000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"gas\":\"0x30d40\",\"maxFeePerGas\":\"0xee6b2800\",\"maxPriorityFeePerGas\":\"0x77359400\",\"nonce\":\"0xc\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"value\":\"0x0\"}]}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "save-to-server-tiers",
+      "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"POST\",\"url\":\"/api/bundle\",\"body\":{\"tiers\":[{\"amount\":\"100\",\"amountWei\":\"100000000\",\"amountFormatted\":\"100 USDC\",\"label\":\"100 USDC\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000002\"},{\"amount\":\"250\",\"amountWei\":\"250000000\",\"amountFormatted\":\"250 USDC\",\"label\":\"250 USDC\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000003\"}],\"morphoBlueAddress\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"marketId\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lenderAddress\":\"0x1111111111111111111111111111111111111111\",\"nonce\":12,\"gas\":\"200000\",\"maxFeePerGas\":\"4000000000\",\"maxPriorityFeePerGas\":\"2000000000\",\"loanToken\":{\"symbol\":\"USDC\",\"decimals\":6}},\"authorization\":\"Bearer test-token\"}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã lưu 2 giao dịch lên server!<br>Proxy đã capture signed tx + gửi bundle đến server.<br>Monitor sẽ tự động broadcast khi có thanh khoản.</div>",
+        "withdrawAllStatus": "",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "sign-withdraw-all",
+      "calls": [
+        "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_sendTransaction\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001dcd650000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"gas\":\"0x30d40\",\"maxFeePerGas\":\"0xee6b2800\",\"maxPriorityFeePerGas\":\"0x77359400\",\"nonce\":\"0xc\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"value\":\"0x0\"}]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x93c52062aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000001111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner error\">❌ Gas đã thay đổi. Vui lòng ký lại các giao dịch.</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "save-to-server-all-shares",
+      "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"POST\",\"url\":\"/api/bundle\",\"body\":{\"tiers\":[{\"type\":\"all-shares\",\"sharesWei\":\"500000000\",\"amountWei\":\"0\",\"amountFormatted\":\"Toàn bộ shares\",\"label\":\"Rút toàn bộ shares\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000004\"}],\"morphoBlueAddress\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"marketId\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lenderAddress\":\"0x1111111111111111111111111111111111111111\",\"nonce\":12,\"gas\":\"200000\",\"maxFeePerGas\":\"4000000000\",\"maxPriorityFeePerGas\":\"2000000000\",\"loanToken\":{\"symbol\":\"USDC\",\"decimals\":6}},\"authorization\":\"Bearer test-token\"}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã lưu 1 giao dịch lên server!<br>Proxy đã capture signed tx + gửi bundle đến server.<br>Monitor sẽ tự động broadcast khi có thanh khoản.</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "delete-tier",
+      "calls": [
+        "{\"kind\":\"api\",\"method\":\"DELETE\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&nonce=11&tier=0\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":null,\"authorization\":\"Bearer test-token\"}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "tab-withdraw",
+      "calls": [],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "set-max",
+      "calls": [
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x5c60e39aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x93c52062aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000001111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "",
+        "txVerifyNote": null,
+        "txVerifyNoteHtml": null,
+        "withdrawAmount": "500",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "withdraw-amount",
+      "calls": [
+        "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_sendTransaction\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad60000000000000000000000000000000000000000000000000000000000001dcd6500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"}]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad60000000000000000000000000000000000000000000000000000000000001dcd6500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_getTransactionByHash\",\"params\":[\"0x0000000000000000000000000000000000000000000000000000000000000005\"]}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "<div class=\"banner success\">✅ Giao dịch đã gửi thành công!<br><br><strong>Tx Hash:</strong> <a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000005\" target=\"_blank\">0x0000...0005</a><br><a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000005\" target=\"_blank\">📊 Xem trên Etherscan →</a><div id=\"tx-verify-note\" class=\"tx-verify-note\">⏳ Đang xác minh giao dịch trên RPC công khai…</div></div>",
+        "txVerifyNote": "✅ Đã thấy giao dịch trên RPC công khai.",
+        "txVerifyNoteHtml": "",
+        "withdrawAmount": "500",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    },
+    {
+      "name": "withdraw-all",
+      "calls": [
+        "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
+        "{\"kind\":\"provider\",\"method\":\"eth_sendTransaction\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001dcd650000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"}]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001dcd650000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x93c52062aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000001111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
+        "{\"kind\":\"rpc\",\"method\":\"eth_getTransactionByHash\",\"params\":[\"0x0000000000000000000000000000000000000000000000000000000000000006\"]}"
+      ],
+      "obs": {
+        "nonce": "12",
+        "tierCount": "2",
+        "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
+        "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
+        "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "errorBanner": "",
+        "txResult": "<div class=\"banner success\">✅ Giao dịch đã gửi thành công!<br><br><strong>Tx Hash:</strong> <a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000006\" target=\"_blank\">0x0000...0006</a><br><a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000006\" target=\"_blank\">📊 Xem trên Etherscan →</a><div id=\"tx-verify-note\" class=\"tx-verify-note\">⏳ Đang xác minh giao dịch trên RPC công khai…</div></div>",
+        "txVerifyNote": "✅ Đã thấy giao dịch trên RPC công khai.",
+        "txVerifyNoteHtml": "",
+        "withdrawAmount": "500",
+        "maxWithdraw": "500 USDC",
+        "gasMaxFee": "4",
+        "gasPriority": "2",
+        "nonceDecDisabled": false,
+        "signAllDisabled": false
+      }
+    }
+  ]
+}

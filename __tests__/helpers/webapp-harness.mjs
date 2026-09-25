@@ -88,6 +88,9 @@ const SELECTORS = {
 /** Hash giả tất định: cùng chỉ số ⇒ cùng hash, khác chỉ số ⇒ khác hash. */
 export const fakeHash = (n) => "0x" + (n + 1).toString(16).padStart(64, "0");
 
+/** Địa chỉ Morpho Blue — cùng hằng số với production (`webapp-state.mjs`). */
+export const MORPHO_BLUE_ADDRESS = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
+
 export const DEFAULT_MARKET_ID = "0x" + "a".repeat(64);
 export const DEFAULT_LENDER = "0x" + "1".repeat(40);
 export const DEFAULT_LOAN_TOKEN = "0x" + "2".repeat(40);
@@ -103,6 +106,29 @@ export function webappConfig(overrides = {}) {
     // không tất định giữa hai lần chạy. Đây là lý do phải ép còn một.
     rpcUrls: ["http://127.0.0.1:1"],
     ...overrides,
+  };
+}
+
+/**
+ * Giải mã calldata `withdraw()` của Morpho thành các tham số có tên.
+ *
+ * Dùng cho CẢ hai chiều: test khẳng định tham số mà app thật gửi đi, và đó là artifact quan trọng
+ * nhất của đường tiền — một đảo thứ tự `assets`/`shares` ở đây là mất tiền thật.
+ */
+export function decodeWithdrawCalldata(data) {
+  const decoded = decodeFunctionData({ abi: MORPHO_WITHDRAW, data });
+  const [params, assets, shares, onBehalf, receiver] = decoded.args;
+  return {
+    // `decodeFunctionData` trả tuple dưới dạng object có tên field (không phải mảng).
+    loanToken: params.loanToken,
+    collateralToken: params.collateralToken,
+    oracle: params.oracle,
+    irm: params.irm,
+    lltv: params.lltv,
+    assets,
+    shares,
+    onBehalf,
+    receiver,
   };
 }
 
