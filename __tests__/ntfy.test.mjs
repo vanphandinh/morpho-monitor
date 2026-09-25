@@ -1,540 +1,172 @@
 /**
- * Tests for ntfy notification header safety and body content.
+ * Test payload ntfy của monitor.
  *
- * Node.js fetch() (undici) enforces HTTP headers as Latin-1 (chars 0x00-0xFF).
- * Characters above U+00FF trigger a ByteString error. These tests verify
- * that all ntfy notification headers are Latin-1 safe.
+ * Audit vòng 5 (O4): file này trước đây **nhân bản** payload của `monitor.mjs` (một hàm
+ * `buildNtfyPayload` cục bộ + một bản cho drain). Bản sao đó đã lệch khỏi production từ lâu —
+ * nó vẫn khẳng định Title kiểu `"Morpho Blue: Thanh khoan DAI kha dung!"`, header `Actions`,
+ * `Supply APY`… trong khi production đã đổi sang `Morpho: liquidity drain <SYM>` / không còn
+ * `Actions`. Nghĩa là nhóm test đó xanh nhưng **không kiểm gì cả**.
+ *
+ * Nay hàm dựng payload được export từ production (`monitor.mjs`) và `monitor.mjs` import không
+ * có side effect (P1.5), nên test import ĐÚNG thứ đang chạy.
+ *
+ * Bất biến quan trọng nhất vẫn giữ nguyên: mọi **header** phải là Latin-1 (≤ U+00FF) vì undici
+ * ném `ByteString` error với ký tự cao hơn; tiếng Việt có dấu chỉ được nằm trong body (UTF-8).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 import crypto from "node:crypto";
-
-// ============================================================
-// Helpers — mirror the notification string building from monitor.mjs
-// ============================================================
-
-/**
- * Build ntfy notification payload exactly as monitor.mjs does.
- * This is deliberately duplicated (not imported) to test the actual
- * string content without requiring module-level side effects.
- */
-function buildNtfyPayload({ loanSymbol, collateralSymbol, marketId, lenderAddress, webappUrl }) {
-  const webappLink = `${webappUrl}?market=${marketId}&lender=${lenderAddress}`;
-  const morphoAppLink = `https://app.morpho.org/ethereum/market?id=${marketId}`;
-
-  // Body (Markdown) — mirrors monitor.mjs lines 67-77
-  const body = [
-    `**Thanh khoản đã xuất hiện trên market!**`,
-    ``,
-    `**Market:** ${collateralSymbol}/${loanSymbol}`,
-    `**Thanh khoản khả dụng:** ...`,
-    `**Utilization:** ...`,
-    `**Supply APY:** ...`,
-    `**Vị thế của bạn:** ...`,
-    ``,
-    `[Mở Webapp để rút tiền](${webappLink})`,
-  ].join("\n");
-
-  // Actions — mirrors monitor.mjs lines 79-90
-  const actions = [
-    {
-      action: "view",
-      label: "Mo Webapp Rut Tien",
-      url: webappLink,
-    },
-    {
-      action: "view",
-      label: "Xem tren Morpho App",
-      url: morphoAppLink,
-    },
-  ];
-
-  // Headers — mirrors monitor.mjs lines 94-101
-  const headers = {
-    "Title": `Morpho Blue: Thanh khoan ${loanSymbol} kha dung!`,
-    "Tags": "moneybag,chart_with_upwards_trend",
-    "Priority": "4",
-    "Markdown": "yes",
-    "Click": webappLink,
-    "Actions": JSON.stringify(actions),
-  };
-
-  return { headers, body, actions };
-}
-
-// ============================================================
-// Helper: verify all characters in a string are Latin-1 (≤ 255)
-// ============================================================
-function assertLatin1Safe(str, label) {
-  for (let i = 0; i < str.length; i++) {
-    const cp = str.charCodeAt(i);
-    if (cp > 255) {
-      throw new Error(
-        `${label} has non-Latin-1 char at index ${i}: ` +
-        `U+${cp.toString(16).toUpperCase().padStart(4, "0")} (${cp})`
-      );
-    }
-  }
-}
-
-/**
- * Build drain notification payload — mirrors the sudden_drain scenario in monitor.mjs.
- */
-function buildDrainPayload({ loanSymbol, collateralSymbol, marketId, lenderAddress, webappUrl }) {
-  const webappLink = `${webappUrl}?market=${marketId}&lender=${lenderAddress}`;
-  const morphoAppLink = `https://app.morpho.org/ethereum/market?id=${marketId}`;
-
-  const body = [
-    `**Canh bao: Thanh khoan giam dot ngot!**`,
-    ``,
-    `**Market:** ${collateralSymbol}/${loanSymbol}`,
-    `**Thanh khoản khả dụng:** ...`,
-    `**Utilization:** ...`,
-    `**Supply APY:** ...`,
-    `**Vị thế của bạn:** ...`,
-    ``,
-    `[Mở Webapp để rút tiền](${webappLink})`,
-  ].join("\n");
-
-  const actions = [
-    { action: "view", label: "Mo Webapp Rut Tien", url: webappLink },
-    { action: "view", label: "Xem tren Morpho App", url: morphoAppLink },
-  ];
-
-  const headers = {
-    "Title": `Morpho Blue: Canh bao rut thanh khoan! ${loanSymbol}`,
-    "Tags": "warning,chart_with_downwards_trend",
-    "Priority": "4",
-    "Markdown": "yes",
-    "Click": webappLink,
-    "Actions": JSON.stringify(actions),
-  };
-
-  return { headers, body, actions };
-}
-
-// ============================================================
-// Tests
-// ============================================================
+import { buildNtfyPayload } from "../monitor.mjs";
 
 const FIXTURES = {
   marketId: "0x24852d8d7464402ddcd717415e009d42bf7427d6a8893487f83c75ee0f4a0ea6",
   lenderAddress: "0x0A5e1Db3671faCcD146404925bDa5c59929f66c3",
   webappUrl: "http://localhost:3000",
 };
+const LINK = `${FIXTURES.webappUrl}?market=${FIXTURES.marketId}&lender=${FIXTURES.lenderAddress}`;
 
-describe("ntfy notification headers", () => {
-  describe("header Latin-1 safety", () => {
-    it("all header values contain only Latin-1 characters (≤ U+00FF)", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      for (const [, value] of Object.entries(headers)) {
-        for (let i = 0; i < value.length; i++) {
-          const cp = value.charCodeAt(i);
-          expect(cp).toBeLessThanOrEqual(255);
-        }
-      }
-    });
-
-    it("Title header does not contain emoji characters", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(headers.Title).not.toContain("💰");
-      expect(headers.Title).not.toContain("🔗");
-      expect(headers.Title).not.toContain("📊");
-    });
-
-    it("Title header starts with ASCII text (not an emoji)", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      const firstChar = headers.Title.charCodeAt(0);
-      // 'M' = 77, must be ≤ 127 (ASCII)
-      expect(firstChar).toBeLessThanOrEqual(127);
-    });
-
-    it("Actions JSON does not contain emoji characters", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      const actions = JSON.parse(headers.Actions);
-      for (const action of actions) {
-        expect(action.label).not.toContain("💰");
-        expect(action.label).not.toContain("🔗");
-        expect(action.label).not.toContain("📊");
-      }
-    });
-
-    it("Tags header does not contain emoji characters (uses emoji shortcodes)", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      // "moneybag" and "chart_with_upwards_trend" are ASCII shortcodes
-      assertLatin1Safe(headers.Tags, "Tags");
-    });
-  });
-
-  describe("header content correctness", () => {
-    it("Title includes loan symbol", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(headers.Title).toContain("USDC");
-      expect(headers.Title).toContain("Morpho Blue");
-    });
-
-    it("Title is meaningful without emojis", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "DAI",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(headers.Title).toBe("Morpho Blue: Thanh khoan DAI kha dung!");
-    });
-
-    it("Click header is a valid URL", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(headers.Click).toMatch(/^https?:\/\//);
-      expect(headers.Click).toContain("market=");
-      expect(headers.Click).toContain("lender=");
-    });
-
-    it("Actions contain two view actions", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      const actions = JSON.parse(headers.Actions);
-      expect(actions).toHaveLength(2);
-      expect(actions[0].action).toBe("view");
-      expect(actions[1].action).toBe("view");
-    });
-
-    it("Action URLs are valid", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      const actions = JSON.parse(headers.Actions);
-      expect(actions[0].url).toContain("localhost:3000");
-      expect(actions[1].url).toContain("app.morpho.org");
-    });
-  });
-
-  describe("body content", () => {
-    it("body preserves Vietnamese text with diacritics", () => {
-      const { body } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      // The body is UTF-8 (not a header), so Vietnamese diacritics are safe here
-      expect(body).toContain("Thanh khoản"); // with diacritic
-      expect(body).toContain("Vị thế");
-      expect(body).toContain("rút tiền");
-    });
-
-    it("body includes market info", () => {
-      const { body } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(body).toContain("WETH/USDC");
-      expect(body).toContain("Thanh khoản khả dụng");
-      expect(body).toContain("Supply APY");
-    });
-
-    it("body includes clickable webapp link", () => {
-      const { body } = buildNtfyPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(body).toContain("[Mở Webapp để rút tiền]");
-      expect(body).toContain("localhost:3000");
-    });
-  });
-
-  describe("edge cases: token symbols", () => {
-    it("handles short token symbols", () => {
-      const { headers, body } = buildNtfyPayload({
-        loanSymbol: "DAI",
-        collateralSymbol: "ETH",
-        ...FIXTURES,
-      });
-
-      expect(headers.Title).toContain("DAI");
-      expect(body).toContain("ETH/DAI");
-    });
-
-    it("handles long token symbols", () => {
-      const { headers, body } = buildNtfyPayload({
-        loanSymbol: "USDC.e",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-
-      expect(headers.Title).toContain("USDC.e");
-      expect(body).toContain("WETH/USDC.e");
-    });
-
-    it("handles token symbols with special chars (hyphen, dot)", () => {
-      const { headers } = buildNtfyPayload({
-        loanSymbol: "stETH",
-        collateralSymbol: "wstETH",
-        ...FIXTURES,
-      });
-
-      // All chars in standard token symbols are ASCII
-      for (let i = 0; i < headers.Title.length; i++) {
-        expect(headers.Title.charCodeAt(i)).toBeLessThanOrEqual(127);
-      }
-    });
-
-    it("handles null token symbol gracefully", () => {
-      const { headers, body } = buildNtfyPayload({
-        loanSymbol: null,
-        collateralSymbol: null,
-        ...FIXTURES,
-      });
-
-      // null becomes "null" string via template literal
-      expect(headers.Title).toContain("null");
-      expect(body).toContain("null/null");
-    });
-  });
+/** Snapshot tối thiểu đúng hình dạng mà monitor truyền vào (`market`, `position`, token…). */
+const snapshot = ({
+  loanSymbol = "USDC",
+  collateralSymbol = "WETH",
+  liquidity = 12_500_000_000n,
+  supplyAssets = 3_000_000_000n,
+  utilization = 500_000_000_000_000_000n,
+} = {}) => ({
+  id: FIXTURES.marketId,
+  loanToken: { symbol: loanSymbol, decimals: 6 },
+  collateralToken: { symbol: collateralSymbol, decimals: 18 },
+  market: { liquidity, utilization },
+  position: { supplyAssets },
 });
 
-// ============================================================
-// Integration: mock fetch and verify the full HTTP request
-// ============================================================
-describe("ntfy notification fetch call", () => {
-  let fetchMock;
+const payload = (scenario = "liquidity_appeared", overrides = {}) =>
+  buildNtfyPayload({ ...snapshot(overrides), scenario, webappUrl: FIXTURES.webappUrl, lenderAddress: FIXTURES.lenderAddress });
 
-  beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue(
-      new Response(null, { status: 200 })
-    );
-    vi.stubGlobal("fetch", fetchMock);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  // Simulate the fetch call exactly as monitor.mjs does
-  async function simulateSendNtfy(payload, server, topic) {
-    const response = await fetch(`${server}/${topic}`, {
-      method: "POST",
-      headers: payload.headers,
-      body: payload.body,
-    });
-    if (!response.ok) {
-      throw new Error(`ntfy responded with ${response.status}`);
+/** Kiểm mọi giá trị header ≤ U+00FF (điều kiện sống còn của undici). */
+function assertLatin1Safe(headers, label) {
+  for (const [name, value] of Object.entries(headers)) {
+    for (let i = 0; i < value.length; i++) {
+      const cp = value.charCodeAt(i);
+      if (cp > 255) {
+        throw new Error(`${label} header "${name}" has non-Latin-1 char at ${i}: U+${cp.toString(16).toUpperCase()} (${cp})`);
+      }
     }
-    return response;
   }
+}
 
-  it("sends POST to correct ntfy URL", async () => {
-    const payload = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    await simulateSendNtfy(payload, "https://ntfy.sh", "morpho-monitor-test");
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://ntfy.sh/morpho-monitor-test");
+describe("ntfy payload — sự kiện thanh khoản xuất hiện", () => {
+  it("Title/Tags nói thanh khoản khả dụng và có tên token vay", () => {
+    const { headers } = payload();
+    expect(headers.Title).toBe("Morpho: liquidity available USDC");
+    expect(headers.Tags).toBe("moneybag");
+    expect(headers.Tags).not.toContain("warning");
   });
 
-  it("sends POST method", async () => {
-    const payload = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    await simulateSendNtfy(payload, "https://ntfy.sh", "test-topic");
-
-    const [, options] = fetchMock.mock.calls[0];
-    expect(options.method).toBe("POST");
+  it("Priority/Markdown/Click đúng hợp đồng ntfy", () => {
+    const { headers } = payload();
+    expect(headers.Priority).toBe("4");
+    expect(headers.Markdown).toBe("yes");
+    expect(headers.Click).toBe(LINK);
+    expect(headers.Click).toMatch(/^https?:\/\//);
+    expect(headers.Click).toContain("market=");
+    expect(headers.Click).toContain("lender=");
   });
 
-  it("includes all required ntfy headers", async () => {
-    const payload = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    await simulateSendNtfy(payload, "https://ntfy.sh", "test-topic");
-
-    const [, options] = fetchMock.mock.calls[0];
-    expect(options.headers.Title).toBeDefined();
-    expect(options.headers.Tags).toBeDefined();
-    expect(options.headers.Priority).toBe("4");
-    expect(options.headers.Markdown).toBe("yes");
-    expect(options.headers.Click).toBeDefined();
-    expect(options.headers.Actions).toBeDefined();
+  it("body có intro, cặp market, số liệu đã format và link webapp", () => {
+    const { body } = payload();
+    expect(body).toContain("**Liquidity available**");
+    expect(body).toContain("**Market:** WETH/USDC");
+    expect(body).toContain("**Liquidity:** 12500 USDC");   // 12_500_000_000 @ 6dp
+    expect(body).toContain("**Position:** 3000 USDC");     // 3_000_000_000 @ 6dp
+    expect(body).toContain("**Utilization:** 50.00%");     // 5e17 WAD
+    expect(body).toContain(`[Open withdrawal page](${LINK})`);
   });
 
-  it("throws on non-2xx response", async () => {
-    fetchMock.mockResolvedValue(
-      new Response("Internal Server Error", { status: 500 })
-    );
-
-    const payload = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    await expect(
-      simulateSendNtfy(payload, "https://ntfy.sh", "test-topic")
-    ).rejects.toThrow("ntfy responded with 500");
+  it("mọi header Latin-1 safe; tiếng Việt có dấu chỉ nằm trong body", () => {
+    const { headers, body } = payload();
+    assertLatin1Safe(headers, "available");
+    // Header thật của production là ASCII; body mới được phép có dấu (UTF-8).
+    for (const value of Object.values(headers)) expect(value.charCodeAt(0)).toBeLessThan(128);
+    // Body hiện tại là ASCII (chỉ tiếng Anh). Không dùng regex khoảng điều khiển vì oxlint
+    // `no-control-regex` cấm — kiểm bằng code point.
+    expect([...body].every((ch) => ch.codePointAt(0) < 128)).toBe(true);
   });
 
-  it("does not throw on 2xx response", async () => {
-    const payload = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    await expect(
-      simulateSendNtfy(payload, "https://ntfy.sh", "test-topic")
-    ).resolves.toBeDefined();
-  });
-
-  it("header values are all Latin-1 safe in the actual fetch call", async () => {
-    const payload = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    // fetch() would throw ByteString error if any header had chars > 255
-    await simulateSendNtfy(payload, "https://ntfy.sh", "test-topic");
-
-    // If we got here, no ByteString error occurred
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+  it("payload dùng được với undici thật (Headers/Request tự kiểm byte header)", () => {
+    const { headers, body } = payload();
+    expect(() => new Headers(headers)).not.toThrow();
+    expect(() => new Request("https://ntfy.sh/morpho-test", { method: "POST", headers, body })).not.toThrow();
   });
 });
 
-// ============================================================
-// Drain notification tests
-// ============================================================
-describe("ntfy drain notification", () => {
-  describe("header Latin-1 safety", () => {
-    it("drain header values contain only Latin-1 characters", () => {
-      const { headers } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      for (const [, value] of Object.entries(headers)) {
-        for (let i = 0; i < value.length; i++) {
-          expect(value.charCodeAt(i)).toBeLessThanOrEqual(255);
-        }
-      }
-    });
-
-    it("drain Title does not contain emoji characters", () => {
-      const { headers } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      expect(headers.Title).not.toContain("💰");
-      expect(headers.Title).not.toContain("🔗");
-    });
-
-    it("drain Tags uses emoji shortcodes (ASCII-safe)", () => {
-      const { headers } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      assertLatin1Safe(headers.Tags, "Drain Tags");
-    });
+describe("ntfy payload — sự kiện rút thanh khoản đột ngột", () => {
+  it("Title/Tags là cảnh báo, không phải sự kiện tích cực", () => {
+    const { headers } = payload("sudden_drain");
+    expect(headers.Title).toBe("Morpho: liquidity drain USDC");
+    expect(headers.Tags).toBe("warning,chart_with_downwards_trend");
+    expect(headers.Tags).not.toContain("moneybag");
   });
 
-  describe("header content correctness", () => {
-    it("drain Title is a warning, not a positive event", () => {
-      const { headers } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      expect(headers.Title).toContain("Canh bao rut thanh khoan!");
-      expect(headers.Title).not.toContain("kha dung");
-    });
+  it("body có intro cảnh báo nhưng vẫn đủ số liệu và link", () => {
+    const { body } = payload("sudden_drain");
+    expect(body).toContain("**Liquidity drain warning**");
+    expect(body).not.toContain("**Liquidity available**");
+    expect(body).toContain("**Market:** WETH/USDC");
+    expect(body).toContain(`[Open withdrawal page](${LINK})`);
+  });
 
-    it("drain Tags use warning and downward trend", () => {
-      const { headers } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      expect(headers.Tags).toContain("warning");
-      expect(headers.Tags).toContain("chart_with_downwards_trend");
-      expect(headers.Tags).not.toContain("moneybag");
-    });
+  it("hai kịch bản cho ra Title/Tags khác nhau, cùng Click", () => {
+    const available = payload("liquidity_appeared");
+    const drain = payload("sudden_drain");
+    expect(available.headers.Title).not.toBe(drain.headers.Title);
+    expect(available.headers.Tags).not.toBe(drain.headers.Tags);
+    expect(available.headers.Click).toBe(drain.headers.Click);
+  });
 
-    it("drain body contains drain-specific intro", () => {
-      const { body } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      expect(body).toContain("Canh bao: Thanh khoan giam dot ngot!");
-    });
+  it("mọi header Latin-1 safe (không emoji, không dấu)", () => {
+    const { headers } = payload("sudden_drain");
+    assertLatin1Safe(headers, "drain");
+    expect(headers.Title).not.toContain("💰");
+    expect(headers.Title).not.toContain("📉");
+  });
+});
 
-    it("drain Click header is a valid URL", () => {
-      const { headers } = buildDrainPayload({
-        loanSymbol: "USDC",
-        collateralSymbol: "WETH",
-        ...FIXTURES,
-      });
-      expect(headers.Click).toMatch(/^https?:\/\//);
-      expect(headers.Click).toContain("market=");
-      expect(headers.Click).toContain("lender=");
-    });
+describe("ntfy payload — không được quay lại bản sao", () => {
+  it("file test này import payload từ production, không định nghĩa bản riêng", () => {
+    const self = fs.readFileSync(new URL(import.meta.url), "utf8");
+    expect(self).toContain('from "../monitor.mjs"');
+    // Mẫu được viết bằng lớp ký tự để chính dòng này không tự match chính nó.
+    expect(self).not.toMatch(/function build[A-Za-z]*Payload/);
+  });
+});
+
+describe("ntfy payload — biên token symbol", () => {
+  it("symbol ngắn và dài vẫn vào đúng Title/body", () => {
+    for (const symbol of ["DAI", "USDC.e", "stETH"]) {
+      const { headers, body } = payload("liquidity_appeared", { loanSymbol: symbol });
+      expect(headers.Title).toContain(symbol);
+      expect(body).toContain(`**Market:** WETH/${symbol}`);
+      assertLatin1Safe(headers, symbol);
+    }
+  });
+
+  it("symbol null ⇒ KHÔNG in chữ \"null\" vào header/body", () => {
+    // Production dùng `symbol || ""` cho Title và `|| "?"` cho body — khác bản sao cũ trong test
+    // (bản cũ khẳng định null biến thành chuỗi "null", tức là khẳng định hành vi production không có).
+    const { headers, body } = payload("liquidity_appeared", { loanSymbol: null, collateralSymbol: null });
+    expect(headers.Title).not.toContain("null");
+    expect(body).not.toContain("null");
+    expect(body).toContain("**Market:** ?/?");
+    // formatTokenAmount rơi về "tokens" khi thiếu symbol
+    expect(body).toContain("**Liquidity:** 12500 tokens");
+  });
+
+  it("liquidity/supply bằng 0 vẫn format được (không NaN)", () => {
+    const { body } = payload("liquidity_appeared", { liquidity: 0n, supplyAssets: 0n, utilization: 0n });
+    expect(body).toContain("**Liquidity:** 0 USDC");
+    expect(body).toContain("**Position:** 0 USDC");
+    expect(body).toContain("**Utilization:** 0.00%");
   });
 });
 
@@ -547,145 +179,54 @@ const TEST_TOPIC = `morpho-test-${crypto.randomBytes(4).toString("hex")}`;
 // Live tests gửi request THẬT đến ntfy.sh — chỉ chạy khi NTFY_LIVE=1.
 // `npm run check`/`npm test` phải hermetic (không network) nên nhóm này skip mặc định.
 describe.skipIf(process.env.NTFY_LIVE !== "1")("ntfy live integration", () => {
-  // In ra topic để dev có thể subscribe test trên app ntfy
   console.log(`\n📱 Subscribe ntfy topic để xem kết quả test:`);
   console.log(`   ${NTFY_SERVER}/${TEST_TOPIC}\n`);
 
   it("gửi notification thành công (200 OK)", async () => {
-    const { body, headers } = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, {
-      method: "POST",
-      headers,
-      body,
-    });
-
-    // In response để debug
+    const { headers, body } = payload();
+    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, { method: "POST", headers, body });
     const responseBody = await response.text();
     console.log(`   Status: ${response.status}`);
     console.log(`   Response: ${responseBody}`);
-
     expect(response.ok).toBe(true);
     expect(response.status).toBe(200);
   }, 15000);
 
   it("headers không gây lỗi ByteString với USDC symbol", async () => {
-    const { body, headers } = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    let error = null;
-    try {
-      await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, {
-        method: "POST",
-        headers,
-        body,
-      });
-    } catch (e) {
-      error = e;
-    }
-
-    expect(error).toBeNull();
-    if (error) console.error("ByteString error:", error.message);
+    const { headers, body } = payload();
+    await expect(fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, { method: "POST", headers, body })).resolves.toBeDefined();
   }, 15000);
 
   it("gửi notification với test topic riêng (không ảnh hưởng topic thật)", async () => {
     const uniqueTopic = `morpho-test-isolated-${crypto.randomBytes(3).toString("hex")}`;
-    const { body, headers } = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    const response = await fetch(`${NTFY_SERVER}/${uniqueTopic}`, {
-      method: "POST",
-      headers,
-      body,
-    });
-
+    const { headers, body } = payload();
+    const response = await fetch(`${NTFY_SERVER}/${uniqueTopic}`, { method: "POST", headers, body });
     console.log(`   Unique topic: ${uniqueTopic} → ${response.status}`);
     expect(response.ok).toBe(true);
   }, 15000);
 
   it("gửi notification thành công với DAI symbol", async () => {
-    const { body, headers } = buildNtfyPayload({
-      loanSymbol: "DAI",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, {
-      method: "POST",
-      headers,
-      body,
-    });
-
+    const { headers, body } = payload("sudden_drain", { loanSymbol: "DAI" });
+    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, { method: "POST", headers, body });
     expect(response.ok).toBe(true);
   }, 15000);
 
   it("gửi notification thành công với stETH symbol (có ký tự đặc biệt)", async () => {
-    const { body, headers } = buildNtfyPayload({
-      loanSymbol: "stETH",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, {
-      method: "POST",
-      headers,
-      body,
-    });
-
+    const { headers, body } = payload("liquidity_appeared", { loanSymbol: "stETH" });
+    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, { method: "POST", headers, body });
     expect(response.ok).toBe(true);
   }, 15000);
 
-  it("body hiển thị đúng tiếng Việt có dấu", async () => {
-    const { body, headers } = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, {
-      method: "POST",
-      headers,
-      body,
-    });
-
+  it("body gửi đi khớp body production", async () => {
+    const { headers, body } = payload();
+    const response = await fetch(`${NTFY_SERVER}/${TEST_TOPIC}`, { method: "POST", headers, body });
     expect(response.ok).toBe(true);
-
-    // Verify body gốc chứa tiếng Việt có dấu (UTF-8 trong body an toàn)
-    expect(body).toContain("Thanh khoản");
-    expect(body).toContain("khả dụng");
-    expect(body).toContain("Vị thế");
-    expect(body).toContain("rút tiền");
+    expect(body).toContain("**Liquidity available**");
+    expect(body).toContain(`[Open withdrawal page](${LINK})`);
   }, 15000);
 
-  it("tất cả header values là Latin-1 safe (≤ U+00FF)", () => {
-    const { headers } = buildNtfyPayload({
-      loanSymbol: "USDC",
-      collateralSymbol: "WETH",
-      ...FIXTURES,
-    });
-
-    for (const [name, value] of Object.entries(headers)) {
-      for (let i = 0; i < value.length; i++) {
-        const cp = value.charCodeAt(i);
-        if (cp > 255) {
-          console.error(
-            `❌ Header "${name}" có ký tự không an toàn tại index ${i}: ` +
-            `U+${cp.toString(16).toUpperCase()} (${cp})`
-          );
-        }
-        expect(cp).toBeLessThanOrEqual(255);
-      }
-      console.log(`   ✅ Header "${name}": ${value.length} chars, all Latin-1 safe`);
-    }
+  it("tất cả header values là Latin-1 safe (≤ U+00FF)", async () => {
+    const { headers } = payload();
+    assertLatin1Safe(headers, "live");
   });
 });

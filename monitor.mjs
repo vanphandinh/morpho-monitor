@@ -23,6 +23,43 @@ import { sendVoipNotification } from "./voip.mjs";
 const LIFECYCLE_PROBLEM_KINDS = new Set(["config", "invalid"]);
 
 /**
+ * Payload ntfy cho một chu kỳ cảnh báo (audit vòng 5, O4).
+ *
+ * Trước đây khối này nằm inline trong `main()` nên `__tests__/ntfy.test.mjs` phải **nhân bản**
+ * nó để test — và bản sao đó đã lệch khỏi production từ lâu (test vẫn xanh trong khi payload
+ * thật khác). Nay payload là hàm thuần được export: test import đúng thứ production chạy.
+ *
+ * Bất biến quan trọng nhất: **mọi giá trị header phải là Latin-1 (≤ U+00FF)**, vì undici ném
+ * `ByteString` error nếu header có ký tự cao hơn — tên token và Title đều đi vào header.
+ * Tiếng Việt có dấu chỉ được nằm trong BODY (UTF-8).
+ *
+ * @returns {{ headers: Record<string,string>, body: string }}
+ */
+export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, market, position, webappUrl, lenderAddress }) {
+  const link = `${webappUrl}?market=${id}&lender=${lenderAddress}`;
+  const drained = scenario === "sudden_drain";
+  return {
+    headers: {
+      Title: drained ? `Morpho: liquidity drain ${loanToken.symbol || ""}` : `Morpho: liquidity available ${loanToken.symbol || ""}`,
+      Tags: drained ? "warning,chart_with_downwards_trend" : "moneybag",
+      Priority: "4",
+      Markdown: "yes",
+      Click: link,
+    },
+    body: [
+      `**${drained ? "Liquidity drain warning" : "Liquidity available"}**`,
+      "",
+      `**Market:** ${collateralToken.symbol || "?"}/${loanToken.symbol || "?"}`,
+      `**Liquidity:** ${formatTokenAmount(market.liquidity, loanToken.decimals, loanToken.symbol)}`,
+      `**Position:** ${formatTokenAmount(position.supplyAssets, loanToken.decimals, loanToken.symbol)}`,
+      `**Utilization:** ${wadToPercent(market.utilization)}`,
+      "",
+      `[Open withdrawal page](${link})`,
+    ].join("\n"),
+  };
+}
+
+/**
  * Orchestration của monitor — mọi I/O đi qua tham số (audit P1.5).
  *
  * Trước đây phần này chạy ngay ở module-level (`loadMarkets`, `setInterval`,
@@ -164,9 +201,11 @@ async function main() {
 
   const sendNtfyNotification = async (snapshot, scenario) => {
     const { market, position, loanToken, collateralToken, id } = snapshot;
-    const link = `${WEBAPP_URL}?market=${id}&lender=${LENDER_ADDRESS}`;
-    const drained = scenario === "sudden_drain";
-    const response = await fetch(`${NTFY_SERVER}/${topic}`, { method: "POST", headers: { Title: drained ? `Morpho: liquidity drain ${loanToken.symbol || ""}` : `Morpho: liquidity available ${loanToken.symbol || ""}`, Tags: drained ? "warning,chart_with_downwards_trend" : "moneybag", Priority: "4", Markdown: "yes", Click: link }, body: [`**${drained ? "Liquidity drain warning" : "Liquidity available"}**`, "", `**Market:** ${collateralToken.symbol || "?"}/${loanToken.symbol || "?"}`, `**Liquidity:** ${formatTokenAmount(market.liquidity, loanToken.decimals, loanToken.symbol)}`, `**Position:** ${formatTokenAmount(position.supplyAssets, loanToken.decimals, loanToken.symbol)}`, `**Utilization:** ${wadToPercent(market.utilization)}`, "", `[Open withdrawal page](${link})`].join("\n") });
+    const { headers, body } = buildNtfyPayload({
+      scenario, id, loanToken, collateralToken, market, position,
+      webappUrl: WEBAPP_URL, lenderAddress: LENDER_ADDRESS,
+    });
+    const response = await fetch(`${NTFY_SERVER}/${topic}`, { method: "POST", headers, body });
     if (!response.ok) throw new Error(`ntfy responded ${response.status}`);
   };
 
