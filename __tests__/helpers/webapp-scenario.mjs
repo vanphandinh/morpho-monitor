@@ -17,8 +17,20 @@
  * nếu không, ảnh chụp phụ thuộc thời điểm và trace sẽ chập chờn.
  */
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createFakeApi, createFakeProvider, createFakeRpc, fakeHash, loadWebapp, webappConfig } from "./webapp-harness.mjs";
 import { browserSources } from "./browser-modules.mjs";
+
+/**
+ * Gốc repo — dùng để biến `entry` thành đường dẫn TƯƠNG ĐỐI trong trace.
+ *
+ * Lý do (vòng 6, P6): trace được ĐÓNG BĂNG thành fixture rồi so **nguyên chuỗi**, nên một đường
+ * dẫn tuyệt đối trong đó (`C:\Users\…`) là file chỉ đúng trên đúng một máy — test sẽ đỏ trên CI
+ * Linux dù hành vi không đổi. Nhãn tương đối vẫn phân biệt được hai cây (`webapp-app.mjs` vs
+ * `.freebuff/ab-05b8342/webapp-app.mjs`) nên `scripts/refactor-diff.mjs` không bị ảnh hưởng.
+ */
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const entryLabel = (entry) => path.relative(REPO_ROOT, entry).split(path.sep).join("/");
 
 /** Để mọi promise đã-bắn (không await) của một bước kịp hoàn tất. */
 async function flush() {
@@ -145,7 +157,7 @@ export async function runWebappScenario({
     await step("withdraw-amount", () => app.window.withdrawAmount());
     await step("withdraw-all", () => app.window.withdrawAll());
 
-    return { entry, steps };
+    return { entry: entryLabel(entry), steps };
   } finally {
     app.restore();
   }

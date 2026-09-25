@@ -1,5 +1,5 @@
 {
-  "entry": "C:\\Users\\VanPhanDinh\\Desktop\\morpho\\webapp-app.mjs",
+  "entry": "webapp-app.mjs",
   "steps": [
     {
       "name": "boot",

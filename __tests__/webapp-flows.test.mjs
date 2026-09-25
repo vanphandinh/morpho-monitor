@@ -268,4 +268,15 @@ describe("lưới hồi quy — trace đã đóng băng", () => {
     expect(frozen.steps).toHaveLength(19);
     expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(46);
   });
+
+  it("nhãn cây là đường dẫn TƯƠNG ĐỐI — fixture không ghim đường dẫn của một máy", () => {
+    // Đỏ-trước (vòng 6, P6): khi `entry` còn là đường dẫn tuyệt đối, fixture chứa
+    // `C:\Users\…\morpho\webapp-app.mjs` — test so nguyên chuỗi nên nó đỏ trên CI Linux dù hành vi
+    // y hệt. Đây là lỗi đã lọt qua P3 và chỉ lộ khi soạn tài liệu; nó cũng chính là lớp lỗi mà job
+    // CI ở P5 tồn tại để bắt.
+    const frozen = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
+    expect(frozen.entry).toBe("webapp-app.mjs");
+    expect(trace.entry).toBe("webapp-app.mjs");
+    expect(frozen.entry).not.toMatch(/^([A-Za-z]:|[\\/])/);
+  });
 });
