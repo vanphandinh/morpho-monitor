@@ -152,3 +152,28 @@ export function validateWithdraw({ assets, supplyAssets, liquidity }) {
   if (assets > liquidity) return { valid: false, reason: "over_liquidity" };
   return { valid: true, reason: null };
 }
+
+/**
+ * Bước nonce của stepper presign (2026-09-25): người dùng chỉnh nonce bằng nút
+ * tăng/giảm thay vì nhập tay, và KHÔNG BAO GIỜ được xuống dưới nonce on-chain.
+ *
+ * Sàn = nonce on-chain lúc bấm "Lấy Nonce". Giảm tại sàn ⇒ kẹp về sàn (nút [−]
+ * ở UI cũng disabled tại đó — hàm này là lưới an toàn độc lập với UI). Tăng
+ * không giới hạn trên: rung ở nonce tương lai là hợp lệ — chữ ký chỉ mine khi
+ * đến lượt nonce của nó, và monitor chỉ claim rung đúng nonce pending hiện tại.
+ *
+ * Bất kỳ đầu vào thiếu (base/sàn null) ⇒ null: chưa có sàn thì không có chuyện
+ * chỉnh nonce. base < sàn (state cũ sau khi ví đổi tài khoản) ⇒ tính từ sàn.
+ *
+ * @param {number|null} current - nonce đang hiển thị (null = chưa có)
+ * @param {number|null} onChainFloor - nonce on-chain (null = chưa fetch)
+ * @param {number} [delta=0] - bước nguyên bất kỳ (UI chỉ gửi ±1)
+ * @returns {number|null}
+ */
+export function stepNonce(current, onChainFloor, delta = 0) {
+  if (current === null || onChainFloor === null) return null;
+  if (!Number.isInteger(delta)) return current;
+  const base = current < onChainFloor ? onChainFloor : current;
+  const next = base + delta;
+  return next < onChainFloor ? onChainFloor : next;
+}

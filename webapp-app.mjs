@@ -34,6 +34,7 @@
       computeUtilization,
       computeMaxWithdraw,
       validateWithdraw,
+      stepNonce,
     } from "./webapp-logic.mjs";
 
     // ============================================================
@@ -155,6 +156,9 @@
     // Presign state
     let currentTab = "withdraw";
     let presignedNonce = null;
+    // Stepper nonce (2026-09-25): sàn = nonce on-chain lần fetch gần nhất.
+    // Chỉnh nonce (±) chỉ được phép sau khi đã có sàn này.
+    let onChainPendingNonce = null;
     let presignedTiers = [];       // { amount: string, amountWei: string, signedTx: string, status: 'pending'|'signing'|'signed'|'error' }
     let presignedWithdrawAll = null; // { sharesWei: string, txHash: string, status: 'pending'|'signing'|'signed'|'error' }
     let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
@@ -626,6 +630,10 @@
       document.getElementById("btn-sign-all").disabled = true;
       document.getElementById("btn-fetch-nonce").disabled = true;
       document.getElementById("btn-auto-gas").disabled = true;
+      // Stepper: mất sàn (nonce on-chain có thể đã đổi khi vắng mặt) ⇒ khoá,
+      // bắt bấm "Lấy Nonce" lại sau khi kết nối lại.
+      onChainPendingNonce = null;
+      setNonceStepperEnabled(false);
       // Clear auth
       clearSession();
       updateAuthUI();
@@ -856,6 +864,10 @@
         });
         document.getElementById("presign-nonce").textContent = presignedNonce;
         document.getElementById("btn-fetch-nonce").textContent = "✅ Đã lấy Nonce";
+        // Stepper: có sàn rồi ⇒ cho chỉnh nonce bằng ± (không bao giờ xuống
+        // dưới sàn — xem stepNonce trong webapp-logic.mjs).
+        onChainPendingNonce = presignedNonce;
+        setNonceStepperEnabled(true);
         // Nonce mới → chữ ký cũ (cùng nonce cũ) không còn hợp lệ
         if (prevNonce !== null && prevNonce !== presignedNonce) {
           let invalidated = false;
@@ -884,6 +896,52 @@
         document.getElementById("btn-fetch-nonce").disabled = false;
         document.getElementById("btn-fetch-nonce").textContent = "🔢 Lấy Nonce";
       }
+    };
+
+    // ============================================================
+    // PRESIGN: NONCE STEPPER (2026-09-25)
+    // Nút ± thay cho nhập tay. Sàn = nonce on-chain; [−] khoá khi đang đứng
+    // đúng sàn (stepNonce kẹp sàn độc lập với UI — 2 lớp). Đổi nonce sau khi
+    // đã ký ⇒ chữ ký cũ vô nghĩa, invalidate đúng cơ chế của fetchNonce.
+    // ============================================================
+    function setNonceStepperEnabled(enabled) {
+      document.getElementById("btn-nonce-dec").disabled = !enabled;
+      document.getElementById("btn-nonce-inc").disabled = !enabled;
+      updateNonceStepperButtons();
+    }
+
+    function updateNonceStepperButtons() {
+      if (onChainPendingNonce === null || presignedNonce === null) return;
+      document.getElementById("btn-nonce-dec").disabled = presignedNonce <= onChainPendingNonce;
+    }
+
+    window.onNonceStep = function (delta) {
+      const next = stepNonce(presignedNonce, onChainPendingNonce, delta);
+      if (next === null || next === presignedNonce) return;
+      presignedNonce = next;
+      document.getElementById("presign-nonce").textContent = presignedNonce;
+      // Nonce mới → chữ ký cũ (ký ở nonce cũ) không còn hợp lệ.
+      let invalidated = false;
+      for (const tier of presignedTiers) {
+        if (tier.status === "signed") {
+          tier.status = "pending";
+          tier.txHash = null;
+          tier.amountWei = null;
+          invalidated = true;
+        }
+      }
+      if (presignedWithdrawAll && presignedWithdrawAll.status === "signed") {
+        presignedWithdrawAll.status = "pending";
+        presignedWithdrawAll.txHash = null;
+        invalidated = true;
+      }
+      if (invalidated) {
+        document.getElementById("btn-save-server").disabled = true;
+        showPresignError("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
+        renderTierList();
+      }
+      updateNonceStepperButtons();
+      updateSignButton();
     };
 
     window.autoFillGas = async function() {

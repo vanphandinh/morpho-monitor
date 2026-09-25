@@ -26,6 +26,7 @@ import {
   computeUtilization,
   computeMaxWithdraw,
   validateWithdraw,
+  stepNonce,
 } from "../webapp-logic.mjs";
 
 const readSource = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
@@ -243,6 +244,42 @@ describe("webapp: validateWithdraw()", () => {
   });
 });
 
+describe("webapp: stepNonce() — stepper nonce presign, sàn là nonce on-chain (2026-09-25)", () => {
+  it("tăng (+1) tự do — rung tương lai là hợp lệ", () => {
+    expect(stepNonce(7, 7, 1)).toBe(8);
+    expect(stepNonce(7, 7, 3)).toBe(10);
+  });
+
+  it("giảm (-1) tại sàn ⇒ kẹp về sàn, không bao giờ xuống dưới on-chain", () => {
+    expect(stepNonce(7, 7, -1)).toBe(7);
+    expect(stepNonce(7, 7, -5)).toBe(7);
+  });
+
+  it("giảm ở trên sàn ⇒ lùi đúng 1 bậc", () => {
+    expect(stepNonce(9, 7, -1)).toBe(8);
+    expect(stepNonce(8, 7, -1)).toBe(7); // chạm sàn rồi dừng
+  });
+
+  it("base null (chưa lấy nonce) ⇒ null — stepper không được chỉnh khi chưa có sàn", () => {
+    expect(stepNonce(null, 7, 1)).toBe(null);
+  });
+
+  it("sàn null (chưa fetch on-chain) ⇒ null — fail closed", () => {
+    expect(stepNonce(7, null, 1)).toBe(null);
+    expect(stepNonce(7, null, -1)).toBe(null);
+  });
+
+  it("không nhận delta lạ (0 hoặc thiếu) ⇒ giữ nguyên giá trị", () => {
+    expect(stepNonce(7, 7, 0)).toBe(7);
+    expect(stepNonce(7, 7)).toBe(7);
+  });
+
+  it("base dưới sàn (ví đổi tài khoản, state cũ) ⇒ trả đúng sàn", () => {
+    expect(stepNonce(5, 9, 1)).toBe(10);
+    expect(stepNonce(5, 9, -1)).toBe(9);
+  });
+});
+
 describe("claim age hiển thị cho claim đang broadcasting (R1)", () => {
   const now = Date.parse("2026-09-24T12:00:00.000Z");
   const ago = (ms) => new Date(now - ms).toISOString();
@@ -392,11 +429,11 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(logic).not.toMatch(/\bdocument\b|\bwindow\b|localStorage|navigator/);
   });
 
-  it("webapp-app.mjs import logic từ module chung, KHÔNG còn bản sao cục bộ", () => {
+  it("A.1b: webapp-app.mjs import logic từ module chung, KHÔNG còn bản sao cục bộ", () => {
     for (const name of [
       "wadToPercent", "shortenAddr", "broadcastingAgeMinutes", "isClaimOverdue",
       "txVisibleOnChain", "computeSupplyAssets", "computeBorrowAssets", "computeLiquidity",
-      "computeUtilization", "computeMaxWithdraw", "validateWithdraw",
+      "computeUtilization", "computeMaxWithdraw", "validateWithdraw", "stepNonce",
     ]) {
       expect(app).toMatch(new RegExp(`^\\s*${name},?$`, "m"));           // có trong khối import
       expect(app).not.toMatch(new RegExp(`function ${name}\\b`));        // không định nghĩa lại
@@ -418,5 +455,26 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(app).toContain("computeBorrowAssets(");
     expect(app).toContain("computeLiquidity(");
     expect(app).toContain("computeUtilization(");
+  });
+
+  // Stepper nonce presign (2026-09-25): người dùng yêu cầu nút tăng/giảm thay
+  // vì nhập tay, và KHÔNG BAO GIỜ xuống dưới nonce on-chain.
+  it("presign nonce là stepper [−][N][+]: 2 nút, không có ô nhập tay", () => {
+    expect(html).toContain('id="btn-nonce-dec"');
+    expect(html).toContain('id="btn-nonce-inc"');
+    expect(html).toMatch(/onclick="onNonceStep\(-1\)"/);
+    expect(html).toMatch(/onclick="onNonceStep\(1\)"/);
+    // Không nhập tay: #presign-nonce vẫn là phần tử hiển thị, không phải input.
+    expect(html).not.toMatch(/<input[^>]*id="presign-nonce"/);
+  });
+
+  it("stepper chỉ hoạt động sau khi có sàn on-chain và dùng stepNonce từ module chung", () => {
+    // Nút disabled mặc định trong HTML.
+    expect(html).toMatch(/id="btn-nonce-dec"[^>]*disabled/);
+    expect(html).toMatch(/id="btn-nonce-inc"[^>]*disabled/);
+    // App: enable sau khi fetch, kẹp sàn qua hàm thuần chung.
+    expect(app).toMatch(/setNonceStepperEnabled\(/);
+    expect(app).toMatch(/window\.onNonceStep\s*=/);
+    expect(app).toMatch(/stepNonce\(/);
   });
 });
