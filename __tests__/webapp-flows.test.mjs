@@ -17,8 +17,9 @@
  *
  * Cộng thêm một lưới hồi quy: trace đã **đóng băng** trong `__tests__/fixtures/webapp-flows-trace.json`.
  * Fixture đó sinh ra từ chính kịch bản này, và ở P2 đã được chứng minh là y hệt trace của cây TRƯỚC
- * khi tách module (`npm run diff:refactor -- --base 05b8342` ⇒ 0 khác biệt). Nên nó vừa là lưới
- * chống đổi hành vi ngoài ý muốn, vừa là bản ghi của refactor đã được kiểm chứng.
+ * khi tách module (`npm run diff:refactor` — mặc định so với `ee43de6`, đỉnh của lịch sử trước khi
+ * tách module đã được gộp lại qua rebase dọn lịch sử — ⇒ 0 khác biệt so với cây một file).
+ * Nên nó vừa là lưới chống đổi hành vi ngoài ý muốn, vừa là bản ghi của refactor đã được kiểm chứng.
  *
  * Chạy lại fixture (chỉ khi ĐÃ CỐ Ý đổi hành vi):
  *   node scripts/webapp-trace.mjs --out __tests__/fixtures/webapp-flows-trace.json
@@ -200,7 +201,7 @@ describe("đường tiền — lưu bundle lên server", () => {
     // `onGasInputChange()`, và hàm này chỉ `invalidateSignatures()` khi gas THỰC SỰ đổi — nên ký
     // all-shares không còn tự xoá chữ ký các mốc vừa ký kèm báo "Gas đã thay đổi" dù gas không đổi.
     // Hành vi CŨ (đã đỏ-trước: áp guard lên code cũ ⇒ đúng 3 test đỏ) được ghi trong message commit
-    // 6f6da6c và trong fixture trace cũ.
+    // 21300cb và trong fixture trace cũ.
     expect(stepNamed("sign-withdraw-all").obs.presignResult).not.toContain("Gas đã thay đổi");
     const signed = stepNamed("sign-withdraw-all").obs.tierList.match(/✅/g) ?? [];
     expect(signed).toHaveLength(2);

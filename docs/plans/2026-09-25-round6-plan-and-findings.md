@@ -1,6 +1,6 @@
 # Vòng 6 — Harness hành vi đường tiền + CI (2026-09-25, nhánh `feat/multi-market-monitor`)
 
-Repo: `morpho-monitor`. Điểm xuất phát: `4da1315` (hết vòng 5). Index GitNexus lúc đó **chậm 17 commit**,
+Repo: `morpho-monitor`. Điểm xuất phát: `d1102ae` (hết vòng 5). Index GitNexus lúc đó **chậm 17 commit**,
 nên P0 của vòng này là refresh index trước khi đụng vào bất cứ thứ gì cần `impact`/`detect_changes`.
 
 Vì sao có vòng này: P5 (vòng 5) đã **di chuyển 1.848 dòng** — trong đó là toàn bộ đường tiền (nonce,
@@ -20,18 +20,18 @@ test/cổng đỏ, rồi phục hồi), và test mới phải import **productio
 | Pha | Commit | Nội dung | Đỏ-trước (chạy thật) |
 | --- | --- | --- | --- |
 | P0 | *(không commit)* | `node .gitnexus/run.cjs analyze --index-only` ⇒ **1.219 node / 3.195 cạnh / 106 luồng** | — |
-| P1 | `d8f1643` | `__tests__/helpers/dom-stub.mjs` — stub browser giả dùng chung cho boot test, harness lái luồng, và `refactor-diff`; thêm `installBrowserEnv`/`restore` (không rò state giữa hai lượt chạy trong cùng tiến trình) và `innerHTML` **materialize** `id="…"` | `id="error-banner"` → `error-banner-zz` trong `webapp.html` ⇒ **2/3 test đỏ** (`TypeError: Cannot set properties of null…` + `[ 'error-banner' ] to deeply equal []`) |
-| P2 | `6f6da6c` | `helpers/webapp-harness.mjs` (RPC giả trả lời bằng chính viem, ví EIP-1193 giả, REST giả) + `helpers/webapp-scenario.mjs` (19 bước) + `scripts/refactor-diff.mjs` (`npm run diff:refactor`) | 4 probe, mỗi cái chỉ đích danh trường khác: `gas` (0x30d40→0x33450), `marketId` mất trong body, nhãn tier trong DOM, và đảo `assets`/`shares` trong calldata |
-| P3 | `683e491` + `658c952` | `__tests__/webapp-flows.test.mjs` (19 test, thêm 1 ở P6 ⇒ 20) + `__tests__/fixtures/webapp-flows-trace.json` (19 bước · 46 lời gọi) | 6 probe; đáng chú ý: bỏ filter `validTiers` (lớp ngoài) ⇒ test **vẫn xanh** — ghi thẳng rằng lớp chặn thật là `continue` *bên trong* vòng ký |
-| P4 | `f63e1b5` | `scripts/lint.mjs` — đọc số file oxlint **báo đã quét** rồi đối chiếu `git ls-files`. Thiếu file ⇒ đỏ; không parse được ⇒ đỏ (fail closed) | Cắm `const zzProbeD10 = someUndefinedName123` vào module production ở gốc: lệnh cũ (literal `*.mjs` không expand) ⇒ **exit 0**; cổng mới ⇒ **exit 1** |
-| P5 | `75e573c` | `.github/workflows/ci.yml` (matrix ubuntu/windows × Node 20/22 + job image Docker) + `scripts/image-module-closure.mjs` + `.gitignore: ci-fixture/` | Build image rồi `rm /app/webapp-withdraw.mjs` ⇒ `❌ artifact /app THIẾU 1 file … webapp-withdraw.mjs`, exit 1 |
+| P1 | `56eed69` | `__tests__/helpers/dom-stub.mjs` — stub browser giả dùng chung cho boot test, harness lái luồng, và `refactor-diff`; thêm `installBrowserEnv`/`restore` (không rò state giữa hai lượt chạy trong cùng tiến trình) và `innerHTML` **materialize** `id="…"` | `id="error-banner"` → `error-banner-zz` trong `webapp.html` ⇒ **2/3 test đỏ** (`TypeError: Cannot set properties of null…` + `[ 'error-banner' ] to deeply equal []`) |
+| P2 | `21300cb` | `helpers/webapp-harness.mjs` (RPC giả trả lời bằng chính viem, ví EIP-1193 giả, REST giả) + `helpers/webapp-scenario.mjs` (19 bước) + `scripts/refactor-diff.mjs` (`npm run diff:refactor`) | 4 probe, mỗi cái chỉ đích danh trường khác: `gas` (0x30d40→0x33450), `marketId` mất trong body, nhãn tier trong DOM, và đảo `assets`/`shares` trong calldata |
+| P3 | `0d6e71d` + `d69c60e` | `__tests__/webapp-flows.test.mjs` (19 test, thêm 1 ở P6 ⇒ 20) + `__tests__/fixtures/webapp-flows-trace.json` (19 bước · 46 lời gọi) | 6 probe; đáng chú ý: bỏ filter `validTiers` (lớp ngoài) ⇒ test **vẫn xanh** — ghi thẳng rằng lớp chặn thật là `continue` *bên trong* vòng ký |
+| P4 | `f1fa863` | `scripts/lint.mjs` — đọc số file oxlint **báo đã quét** rồi đối chiếu `git ls-files`. Thiếu file ⇒ đỏ; không parse được ⇒ đỏ (fail closed) | Cắm `const zzProbeD10 = someUndefinedName123` vào module production ở gốc: lệnh cũ (literal `*.mjs` không expand) ⇒ **exit 0**; cổng mới ⇒ **exit 1** |
+| P5 | `e110a9b` | `.github/workflows/ci.yml` (matrix ubuntu/windows × Node 20/22 + job image Docker) + `scripts/image-module-closure.mjs` + `.gitignore: ci-fixture/` | Build image rồi `rm /app/webapp-withdraw.mjs` ⇒ `❌ artifact /app THIẾU 1 file … webapp-withdraw.mjs`, exit 1 |
 | P6 | *commit này* | Dọn doc mâu thuẫn + ghi lại vòng này + **D11** (xem §4) + CLAUDE.md | Xem §4: đổi `entry` về đường dẫn tuyệt đối ⇒ test mới đỏ |
 
 ## 2. Kết quả trung tâm — việc tách P5 không đổi hành vi (bằng chứng cơ học)
 
 ```text
-$ npm run diff:refactor -- --base 05b8342
-Cây cũ  : 05b8342
+$ npm run diff:refactor -- --base ee43de6
+Cây cũ  : ee43de6
 Cây mới : HEAD (webapp-app.mjs)
   cũ : 19 bước · 46 lời gọi (eth_sendTransaction=5, POST /api/bundle=2, DELETE /api/presign=1)
   mới: 19 bước · 46 lời gọi (eth_sendTransaction=5, POST /api/bundle=2, DELETE /api/presign=1)
@@ -88,7 +88,7 @@ vi y hệt. Đây đúng là lớp lỗi mà job CI ở P5 tồn tại để b�
 ra khi soạn tài liệu vòng này.
 
 Sửa: `webapp-scenario.mjs` trả `entry` **tương đối gốc repo** (`path.relative` + `/`), nhãn vẫn phân
-biệt được hai cây (`webapp-app.mjs` vs `.freebuff/ab-05b8342/webapp-app.mjs`) nên `refactor-diff`
+biệt được hai cây (`webapp-app.mjs` vs `.freebuff/ab-ee43de6/webapp-app.mjs`) nên `refactor-diff`
 không đổi kết quả. Ghim bằng một test mới trong `webapp-flows.test.mjs`, đỏ-trước chạy thật:
 
 ```text
@@ -150,11 +150,20 @@ chỉ vào name/inputs.
    `--env-file=.env` lần đầu (đúng lớp lỗi mà smoke CI đã bắt ở P5). Phần còn lại của món nợ này:
    ký/lưu/broadcast thật cần MetaMask + proxy + funder, thuộc phạm vi E2E tay của owner.
 2. **CI chưa từng chạy thật.** Workflow chỉ hoạt động khi repo được push lên một remote có GitHub
-   Actions; máy này chưa có remote. Điều đã chứng minh là **từng bước** của nó chạy đúng ở local (kể
-   cả `docker build` + boot từ image). YAML được kiểm bằng parser, không phải `actionlint`.
-3. **Một commit đỏ ở giữa lịch sử:** `5e80a7e` thiếu `monitor.mjs` (vá bằng `05b8342`) ⇒ `git bisect`
-   qua khoảng đó sẽ gặp cây không chạy được. Sửa được nhưng phải rebase — **không tự làm** trong
-   checkout đang chia sẻ với agent/IDE khác.
+   Actions. *(Đính chính: remote `origin` GitHub **có tồn tại** — tuyên bố "chưa có remote" ở đây là
+   sai; đúng là **các commit của vòng 6 chưa từng được push**, nên CI vẫn chưa từng chạy cho chúng.)*
+   Điều đã chứng minh là **từng bước** của nó chạy đúng ở local (kể cả `docker build` + boot từ image).
+   YAML được kiểm bằng parser, không phải `actionlint`. Lần chạy thật đầu tiên sẽ là khi push nhánh
+   tạo PR.
+3. ~~**Một commit đỏ ở giữa lịch sử**~~ **ĐÃ GIẢI QUYẾT (rebase 2026-09-25, trước khi tạo PR).** Commit
+   đỏ cũ và commit vá của nó (2 SHA riêng biệt trong lịch sử trước rebase) đã được **gộp thành một
+   commit xanh `ee43de6`** kèm ghi chú REPAIR trong message. Kiểm chứng: `monitor.mjs` của commit gộp
+   khớp từng byte với cây sau khi vá, và **cả 16 commit trong dải viết lại đều xanh từng cái một**
+   (`npm run check` chạy tại mỗi commit, không bỏ sót). `git bisect` qua dải này không còn gặp cây
+   không chạy được. Lịch sử trước rebase còn nguyên ở nhánh **local** `backup/pre-rebase-20260925`
+   (không push; xoá sau khi PR được merge). Tham chiếu SHA trong tài liệu, `CLAUDE.md` và mặc định
+   `--base` của `refactor-diff` đã được đồng bộ sang SHA mới (33 chỗ, kiểm bằng grep độc lập = 0 SHA
+   cũ còn sót).
 4. **Quyết định vận hành còn treo:** `PROXY_RPC_RATE_LIMIT` / `PROXY_ALLOW_PUBLIC_RPC` đã code xong
    nhưng **mặc định tắt** (lựa chọn có chủ ý: không đổi hành vi đang chạy). Nếu bind proxy ra public
    mà không đặt biến, nhánh JSON-RPC vẫn không xác thực và không giới hạn.
@@ -162,7 +171,7 @@ chỉ vào name/inputs.
    chuỗi inject vẫn lọt; hợp đồng `on*` chỉ chứng minh handler **tồn tại** — buổi chạy Chromium thật
    đã tăng thêm một lớp (handler thật sự chạy khi bấm), nhưng chỉ cho các nút được bấm; phần còn
    lại vẫn là suy luận.
-6. **Số trong message của `75e573c` lệch:** nó ghi cổng lint cũ quét "47 file thay vì 82"; số đo lại
+6. **Số trong message của `e110a9b` lệch:** nó ghi cổng lint cũ quét "47 file thay vì 82"; số đo lại
    ở vòng 6 là **48** (`__tests__` + `scripts`) và tổng **83** file `.mjs` đang được git theo dõi
    (`git ls-files '*.mjs'`). Sai ở message, không sai ở code — không sửa được nếu không viết lại lịch sử.
 
@@ -183,7 +192,7 @@ chỉ vào name/inputs.
    được cache theo URL, nên lượt chạy thứ hai trong cùng tiến trình không evaluate lại
    `webapp-state.mjs` và kết quả vô nghĩa. Đó là lý do sinh ra `scripts/webapp-trace.mjs`.
 3. **Tôi đã coi "test xanh" là đủ cho fixture trace — sai hai lần:** lần một vì so nguyên chuỗi trên
-   checkout CRLF (`658c952`), lần hai vì ghim đường dẫn tuyệt đối (D11). Cả hai là lỗi *portability*,
+   checkout CRLF (`d69c60e`), lần hai vì ghim đường dẫn tuyệt đối (D11). Cả hai là lỗi *portability*,
    tức đúng loại lỗi mà chính pha CI của vòng này sinh ra để bắt; vòng này chỉ bắt được vì tôi soạn
    tài liệu.
 4. **`npm ci` với lockfile hiện tại phải được chạy thật trước khi tin job CI** — nó exit 0 (92 package,

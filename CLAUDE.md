@@ -29,7 +29,7 @@ npm run lint         # scripts/lint.mjs: oxlint --deny no-undef --deny-warnings 
 npm run check        # lint + node --check (.mjs + script nội tuyến của webapp.html) + vitest run
 
 # Tools chạy tay (không nằm trong `check`)
-npm run diff:refactor -- --base 05b8342   # so HÀNH VI đường tiền giữa cây cũ và HEAD (cần lịch sử git)
+npm run diff:refactor -- --base ee43de6   # so HÀNH VI đường tiền giữa cây cũ và HEAD (cần lịch sử git)
 node scripts/webapp-trace.mjs            # in trace kịch bản đường tiền của cây hiện tại ra stdout (JSON)
 
 # Tests

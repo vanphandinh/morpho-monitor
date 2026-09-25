@@ -2,7 +2,7 @@
 /**
  * So hành vi đường tiền giữa HAI cây code bằng cùng một kịch bản (vòng 6, P2).
  *
- *   node scripts/refactor-diff.mjs --base 05b8342
+ *   node scripts/refactor-diff.mjs --base ee43de6
  *
  * Vì sao cần: sau khi tách `webapp-app.mjs` thành 7 module (P5), bằng chứng cũ chỉ ở mức văn bản
  * ("mọi dòng gốc đều có mặt") hoặc mức tĩnh (chuỗi trong source). Cách duy nhất để biết việc tách
@@ -25,7 +25,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = "webapp-app.mjs";
 
 function parseArgs(argv) {
-  const args = { base: "05b8342", run: null, keep: false, show: false };
+  const args = { base: "ee43de6", run: null, keep: false, show: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--run") args.run = argv[i += 1];

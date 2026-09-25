@@ -13,7 +13,7 @@ khôi phục). Không suy luận từ tên test, docstring, hay từ việc "sui
 > liệu này đã hết đúng và được sửa tại chỗ, mỗi chỗ ghi rõ "đính chính vòng 6": (a) `ntfy.test.mjs`
 > "vẫn mirror payload" — đã đóng ở `5e9a007`; (b) tiền đề "harness không giữ được tiến trình nền" nên
 > không thể kiểm thật — sai, chỉ cần một lệnh tự chứa, vòng 6 đã đo 10 module `200` + boot image Docker;
-> (c) `.freebuff/` untracked — đã vào `.gitignore` ở `a99518a`. Thêm nữa: mọi tuyên bố "lint xanh"
+> (c) `.freebuff/` untracked — đã vào `.gitignore` ở `201ecd1`. Thêm nữa: mọi tuyên bố "lint xanh"
 > trong vòng 5 phải đọc lại thành "`__tests__` + `scripts` xanh" (D10).
 
 ---
@@ -25,7 +25,7 @@ khôi phục). Không suy luận từ tên test, docstring, hay từ việc "sui
 | SPEC | 7 | **8** | Ba defect đã tái hiện được đều đóng và **có test ghim** (P0.1–P0.3); plan P0/P1/P2 hoàn tất đúng phạm vi đã duyệt. Trừ 1 điểm: `.env.example`/`markets.json` vẫn là config tay ngoài repo nên hành vi "1–9 market" chỉ được mô tả, không được thực thi. |
 | DESIGN | 6 | **8** | `shared.mjs` hết là túi hỗn hợp (config/format ≠ rule ≠ auth ≠ lock), `monitor.mjs` thành factory có DI, UI tách theo trách nhiệm, và **handler phục vụ module qua route map** nên thêm module không phải sửa handler. Trừ 2: `webapp.html` vẫn là điểm ghim duy nhất giữa HTML ↔ module (không có bundler/codegen), và `ntfy.test.mjs` vẫn mirror payload (**điểm trừ này đã hết hiệu lực ở vòng 6: `5e9a007`**). |
 | CORRECTNESS | 7 | **8** | Thay đổi lớn (tách module + di chuyển validate ra ngoài lock) được chứng minh **tương đương hành vi** chứ không chỉ "test vẫn xanh": đối chiếu export cũ/mới, diff bỏ thụt lề, so từng chỗ gọi đã gộp. Trừ 2: vòng này vẫn tìm được một lỗ test THẬT (D7) và một vấn đề vận hành (D8) trong chính code vừa tách. |
-| QUALITY | 6 | **7** | Không còn test mirror logic production (trừ ntfy), test import đúng module thật, `npm run check` đóng cả lint + `node --check` + vitest. Trừ 3: `webapp.html`/inline vẫn không được lint, `.freebuff/` untracked, và D9 — chính vòng này để lại 2 vết định dạng. **Hai trong ba điểm trừ đã hết hiệu lực ở vòng 6:** `webapp.html` không có JS inline nên "không được lint" là vô nghĩa, `.freebuff/` đã vào `.gitignore` (`a99518a`); nhưng vòng 6 cũng tìm ra rằng cổng lint **chưa từng quét code production ở gốc** (D10, sửa ở `4da1315` rồi `f63e1b5`) → mọi tuyên bố "lint xanh" *trong chính vòng 5* phải đọc lại là "`__tests__` + `scripts` xanh". |
+| QUALITY | 6 | **7** | Không còn test mirror logic production (trừ ntfy), test import đúng module thật, `npm run check` đóng cả lint + `node --check` + vitest. Trừ 3: `webapp.html`/inline vẫn không được lint, `.freebuff/` untracked, và D9 — chính vòng này để lại 2 vết định dạng. **Hai trong ba điểm trừ đã hết hiệu lực ở vòng 6:** `webapp.html` không có JS inline nên "không được lint" là vô nghĩa, `.freebuff/` đã vào `.gitignore` (`201ecd1`); nhưng vòng 6 cũng tìm ra rằng cổng lint **chưa từng quét code production ở gốc** (D10, sửa ở `d1102ae` rồi `f1fa863`) → mọi tuyên bố "lint xanh" *trong chính vòng 5* phải đọc lại là "`__tests__` + `scripts` xanh". |
 
 Gate ở cuối vòng:
 
@@ -186,7 +186,7 @@ nhất chỉ truyền 1 tham số) và `...(scripts ?? {})` trong `webapp-handle
 3. `webapp.html` được kiểm cú pháp nhưng **không được lint** (oxlint chỉ quét `.mjs`) *(đính chính vòng
    6: file này có 0 JS inline nên không có gì để lint)*; `ntfy.test.mjs` vẫn mirror payload *(đã đóng ở
    `5e9a007`)*; `.freebuff/` (AI tooling) untracked và **không** được commit *(đã vào `.gitignore` ở
-   `a99518a`)*.
+   `201ecd1`)*.
 
 ## 6. Không làm trong vòng này
 
