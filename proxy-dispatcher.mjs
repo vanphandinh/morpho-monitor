@@ -173,7 +173,11 @@ export function createRpcDispatcher({
           // provider (e.g. Ankr) can still succeed on another.
           return await client.request({ method: "eth_call", params });
         } catch (err) {
-          const msg = err?.shortMessage || err?.message || String(err);
+          // viem RpcRequestError nén chi tiết thật vào `details`/`cause` còn
+          // shortMessage luôn là "RPC Request failed." — nếu log shortMessage
+          // thì sim revert bình thường (thường gặp với Ambire deployless sim)
+          // bị ngộ nhận là lỗi mạng. Lộ chi tiết thật ra log và lỗi trả về ví.
+          const msg = err?.details || err?.cause?.message || err?.shortMessage || err?.message || String(err);
           const hasStateOverride = params?.[2] != null;
           const to = (params?.[0] || {}).to || "?";
           warn(

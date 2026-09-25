@@ -105,6 +105,51 @@ describe("createRpcDispatcher — capture gate", () => {
   });
 });
 
+describe("createRpcDispatcher — eth_call error passthrough (regression)", () => {
+  // Lỗi thật bắt trên 2026-09-26: viem RpcRequestError có shortMessage
+  // "RPC Request failed." và details/cause = "execution reverted". Dispatcher
+  // cũ log/trả shortMessage ⇒ log VPS hiện "RPC Request failed." cho những gì
+  // thực chất là sim revert (hành vi bình thường) — mất toàn bộ tín hiệu chẩn đoán.
+  function makeErr(props) {
+    return Object.assign(new Error(props.message ?? props.shortMessage), props);
+  }
+
+  function makeDispatcherWithErr(err) {
+    return createRpcDispatcher({
+      markets: [{ id: MARKET_ID }],
+      lenderAddress: LENDER,
+      morphoBlueAddress: MORPHO,
+      client: { request: async () => { throw err; } },
+      logger: silentLogger,
+    });
+  }
+
+  it("revert upstream được lộ đúng chi tiết 'execution reverted', không che bằng shortMessage", async () => {
+    const err = makeErr({ shortMessage: "RPC Request failed.", details: "execution reverted" });
+    const { handleRpc } = makeDispatcherWithErr(err);
+    const result = await handleRpc("eth_call", [{ to: MORPHO, data: "0x" }, "latest"]);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe("execution reverted");
+    expect(result.message).not.toContain("RPC Request failed.");
+  });
+
+  it("timeout (không có details) vẫn giữ thông điệp timeout", async () => {
+    const err = makeErr({ name: "TimeoutError", shortMessage: "The request took too long to respond.", details: "" });
+    const { handleRpc } = makeDispatcherWithErr(err);
+    const result = await handleRpc("eth_call", [{ to: MORPHO, data: "0x" }, "latest"]);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe("The request took too long to respond.");
+  });
+
+  it("lỗi thường (chỉ message) được giữ nguyên", async () => {
+    const err = makeErr({ shortMessage: "HTTP request failed.", message: "HTTP request failed.", status: 500 });
+    const { handleRpc } = makeDispatcherWithErr(err);
+    const result = await handleRpc("eth_call", [{ to: MORPHO, data: "0x" }, "latest"]);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe("HTTP request failed.");
+  });
+});
+
 describe("createRpcDispatcher — method surface (C1 regression)", () => {
   it("(c) các method mock chạy sạch, không còn ReferenceError", async () => {
     const { handleRpc } = makeDispatcher();

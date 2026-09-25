@@ -34,5 +34,27 @@ services:
       - ./.env:/app/.env:ro
       - ./scripts:/app/scripts:ro
 
+  # ── Diagnostic: replay burst eth_call kiểu Ambire (profile "debug") ──
+  # Chạy: docker compose --profile debug run --rm probe-burst
+  # Mô phỏng 48+8 eth_call đồng thời/nhiều đợt QUA transport thật (round-robin
+  # + retry + circuit breaker). RED khi tái hiện transport fail / circuit OPEN.
+  probe-burst:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/replay-eth-call-burst.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
+
+  # ── Diagnostic: tìm ngưỡng kích thước eth_call bị provider chặn (profile "debug") ──
+  # Chạy: docker compose --profile debug run --rm probe-payload-limit
+  probe-payload-limit:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/probe-payload-limit.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
+
 volumes:
   presigned_data:
