@@ -83,3 +83,37 @@ hỗn hợp (có pending tương lai); registry chỉ toàn terminal giờ là i
    được sai số assertion trong lúc xác thực.
 3. **Pin hành vi cũ phải được diễn giải lại khi chủ đích thay đổi** (commit 3:
    registry chỉ-toàn-terminal chuyển từ "terminalSummary" sang "idle 0-RPC").
+
+## Phụ lục — probe public RPC cho browser (cùng ngày, theo yêu cầu user)
+
+Default `PUBLIC_RPC_URLS` được mở từ 1 endpoint (publicnode) lên **6 endpoint
+key-less đã probe thật** từ máy triển khai (POST JSON-RPC, header Origin giả lập
+browser, timeout 8s). Tiêu chí: `eth_chainId` = 0x1, head block trả về, CORS mở
+cho browser (browser gọi trực tiếp — không CORS thì vô dụng dù endpoint khỏe).
+
+| Endpoint | Latency đo được | CORS | Ghi chú |
+|---|---|---|---|
+| `https://ethereum-rpc.publicnode.com` | 110–562ms | `*` | giữ vị trí 1 |
+| `https://eth.drpc.org` | 100–490ms | `*` | nhanh nhất vòng probe |
+| `https://eth-mainnet.public.blastapi.io` | 281–453ms | reflect origin | |
+| `https://gateway.tenderly.co/public/mainnet` | 421–474ms | `*` | |
+| `https://1rpc.io/eth` | 449–769ms | `*` | head chậm hơn 1 block ở 1 lần đo |
+| `https://eth.meowrpc.com` | 466–527ms | `*` | |
+
+**Loại, kèm bằng chứng probe:**
+
+| Endpoint | Kết quả |
+|---|---|
+| `https://rpc.ankr.com/eth` (key-less) | HTTP 200 nhưng `-32000 "Unauthorized: You must authenticate your request with an API key"` — **ankr đã bỏ free key-less**; khớp 2 URL ankr chết (401) trong `.env`. ĐÃ REMOVE khỏi fallback của webapp-app.mjs và cấm trong test. |
+| `https://cloudflare-eth.com` | `-32046 Cannot fulfill request` |
+| `https://eth.llamarpc.com` | HTTP 525 (SSL handshake fail) |
+| `https://ethereum.blockpi.network/v1/rpc/public` | HTTP 521 |
+| `https://rpc.builder0x69.io` | DNS chết (EAI_AGAIN) |
+| `https://api.zan.top/node/v1/eth/mainnet/public` | HTTP 403 |
+| `https://rpc.particle.network/ethereum` | HTTP 404 |
+
+Ghi chú: mặc định 1-endpoint của mục 1 (quyết định user cùng ngày) được user
+mở rộng thành 6 endpoint này — vẫn nguyên tắc key-less, guard
+`urlLooksCredentialed` không đổi và pin rằng cả 6 đều vượt guard. Public free
+RPC có thể đổi chính sách bất kỳ lúc nào (ankr là ví dụ mới nhất); rotation 6
+URL thì chết 1 không ảnh hưởng browser. Override bằng `PUBLIC_RPC_URLS` khi cần.

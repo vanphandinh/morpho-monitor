@@ -12,10 +12,25 @@
  * 3. Output KHÔNG BAO GIỜ chứa URL khớp mẫu credential, kể cả khi override.
  */
 import { describe, expect, it } from "vitest";
-import { buildWebappConfig } from "../webapp-config.mjs";
+import { buildWebappConfig, urlLooksCredentialed } from "../webapp-config.mjs";
 
 const MARKET = { id: "0x" + "a".repeat(64), minLiquidity: "100", suddenDrainMultiplier: 2 };
 const LENDER = "0x" + "b".repeat(40);
+
+/**
+ * 6 public RPC key-less đã PROBE THẬT 2026-09-25 (POST JSON-RPC từ máy thật):
+ * chainId=0x1, head block trả về, CORS mở cho browser, latency 100–770ms.
+ * Thứ tự = thứ tự rotation của browser. Chi tiết probe + lý do loại các
+ * endpoint khác: docs/plans/2026-09-25-round4-quota-rpc.md (phụ lục).
+ */
+const EXPECTED_DEFAULT_PUBLIC_URLS = [
+  "https://ethereum-rpc.publicnode.com",
+  "https://eth.drpc.org",
+  "https://eth-mainnet.public.blastapi.io",
+  "https://gateway.tenderly.co/public/mainnet",
+  "https://1rpc.io/eth",
+  "https://eth.meowrpc.com",
+];
 
 /** Mẫu URL mang credential thật (chỉ định dạng, không phải key thật). */
 const WITH_CREDENTIALS = [
@@ -43,13 +58,19 @@ function looksCredentialed(url) {
 }
 
 describe("buildWebappConfig — webapp chỉ nhận RPC key-less (round-4 quota)", () => {
-  it("default: inject đúng 1 endpoint key-less publicnode, không đọc RPC_URLS", () => {
+  it("default: inject đúng 6 endpoint key-less đã probe (2026-09-25), không đọc RPC_URLS", () => {
     const config = buildWebappConfig({
       markets: [MARKET],
       lenderAddress: LENDER,
       proxyRpcUrl: "https://vps.example.com:8545",
     });
-    expect(config.rpcUrls).toEqual(["https://ethereum-rpc.publicnode.com"]);
+    expect(config.rpcUrls).toEqual(EXPECTED_DEFAULT_PUBLIC_URLS);
+  });
+
+  it("default: cả 6 endpoint đều vượt guard credential (key-less thật)", () => {
+    for (const url of EXPECTED_DEFAULT_PUBLIC_URLS) {
+      expect(urlLooksCredentialed(url)).toBe(false);
+    }
   });
 
   it("override publicRpcUrls được tôn trọng", () => {

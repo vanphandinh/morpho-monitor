@@ -114,7 +114,13 @@ describe("webapp.html hygiene (M2)", () => {
   it("dùng CFG.rpcUrls do server inject, với fallback keyless", () => {
     expect(app).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
     expect(app).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
-    expect(app).toMatch(/https:\/\/rpc\.ankr\.com\/eth"/); // endpoint công khai, không key
+    // Round-4 phụ lục (2026-09-25): ankr key-less ĐÃ CHẾT — trả -32000
+    // "Unauthorized: You must authenticate with an API key". Giữ nó trong
+    // fallback là lỗi cấu hình, phải pin KHÔNG CÒN.
+    expect(app).not.toMatch(/rpc\.ankr\.com\/eth/);
+    // 2 endpoint thay thế đã probe thật (CORS mở, chainId=0x1).
+    expect(app).toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
+    expect(app).toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
   });
 });
 

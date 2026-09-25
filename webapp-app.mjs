@@ -52,17 +52,21 @@
 
     const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
 
-    // M2: KHÔNG hardcode URL kèm API key trong file được phục vụ công khai.
-    // Danh sách thật do server inject qua window.MORPHO_CONFIG.rpcUrls
-    // (derive từ RPC_URLS trong shared.mjs — xem webapp-config.mjs).
-    // Fallback dưới đây là các endpoint công khai KHÔNG kèm key.
+    // M2 + Round-4 phụ lục (2026-09-25): KHÔNG hardcode URL kèm API key trong
+    // file được phục vụ công khai. Danh sách thật do server inject qua
+    // window.MORPHO_CONFIG.rpcUrls (derive từ PUBLIC_RPC_URLS — 6 endpoint
+    // key-less đã probe thật; xem webapp-config.mjs). Fallback dưới đây chỉ
+    // chạy khi server không inject config, và KHÔNG chứa endpoint ankr
+    // key-less — đã chết (ankr bắt buộc API key, probe 2026-09-25).
     const RPC_URLS = (Array.isArray(CFG.rpcUrls) && CFG.rpcUrls.length > 0)
       ? CFG.rpcUrls
       : [
         "https://ethereum-rpc.publicnode.com",
-        "https://eth.llamarpc.com",
-        "https://rpc.ankr.com/eth",
         "https://eth.drpc.org",
+        "https://eth-mainnet.public.blastapi.io",
+        "https://gateway.tenderly.co/public/mainnet",
+        "https://1rpc.io/eth",
+        "https://eth.meowrpc.com",
       ];
 
     // Minimal ABI for Morpho Blue
