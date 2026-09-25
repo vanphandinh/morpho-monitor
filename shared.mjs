@@ -40,6 +40,16 @@ export const RPC_URLS = env("RPC_URLS",
   "https://ethereum-rpc.publicnode.com"
 ).split(",").map(u => u.trim()).filter(Boolean);
 
+// ---- RPC công khai cho browser (webapp) ----
+// Round-4 audit (quota, 2026-09-25): RPC_URLS toàn endpoint kèm API key, mà
+// webapp public (docker publish :3000) inject config này vào window.MORPHO_CONFIG
+// ⇒ mỗi visitor bóc lịch được toàn bộ key. Browser KHÔNG BAO GIỜ nhận RPC_URLS:
+// mặc định là endpoint key-less duy nhất (publicnode), override bằng
+// PUBLIC_RPC_URLS khi muốn nhiều fallback cho browser.
+export const PUBLIC_RPC_URLS = env("PUBLIC_RPC_URLS",
+  "https://ethereum-rpc.publicnode.com"
+).split(",").map(u => u.trim()).filter(Boolean);
+
 // ---- WebSocket RPC (real-time event trigger, tùy chọn) ----
 // WSS endpoints để nhận events real-time từ Morpho Blue.
 // Để trống để chạy HTTP-only mode. Phân cách bằng dấu phẩy.

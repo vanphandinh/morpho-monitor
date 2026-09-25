@@ -34,7 +34,9 @@ describe("buildWebappConfig (A3)", () => {
       markets: [MARKET],
       lenderAddress: LENDER,
       proxyRpcUrl: "https://vps.example.com:8545",
-      rpcUrls: ["https://rpc.example.com", "  "],
+      // Round-4 quota (2026-09-25): browser chỉ nhận RPC key-less — dep đổi tên
+      // thành `publicRpcUrls`; `rpcUrls` của server (có key) không còn là input.
+      publicRpcUrls: ["https://rpc.example.com", "  "],
     });
     expect(config.markets).toEqual([MARKET]);
     expect(config.lenderAddress).toBe(LENDER);
@@ -55,9 +57,21 @@ describe("buildWebappConfig (A3)", () => {
     expect(() => buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, proxyRpcUrl: "" })).toThrow(/PROXY_RPC_URL/);
   });
 
-  it("từ chối markets rỗng và RPC_URLS rỗng", () => {
+  it("từ chối markets rỗng và RPC key-less rỗng", () => {
     expect(() => buildWebappConfig({ markets: [], lenderAddress: LENDER })).toThrow(/markets\.json/);
-    expect(() => buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, rpcUrls: [] })).toThrow(/RPC_URLS/);
+    expect(() => buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, publicRpcUrls: [] })).toThrow(/PUBLIC_RPC_URLS/);
+  });
+
+  // Round-4 quota (2026-09-25): URL kèm credential bị chặn fail closed.
+  it("từ chối URL mang API key trong path/query (không inject ra public)", () => {
+    const credentialed = [
+      "https://eth-mainnet.g.alchemy.com/v2/" + "f".repeat(32),
+      "https://rpc.ankr.com/eth/" + "0".repeat(64),
+      "https://eth.api.onfinality.io/rpc?apikey=secret",
+    ];
+    expect(() =>
+      buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, publicRpcUrls: credentialed })
+    ).toThrow(/credential/);
   });
 });
 
@@ -67,6 +81,8 @@ describe("injectWebappConfig (A3)", () => {
       markets: [MARKET],
       lenderAddress: LENDER,
       proxyRpcUrl: "https://evil.example.com/</script><script>alert(1)</script>",
+      // injectWebappConfig là injector mù (JSON hoá nguyên config object) —
+      // khoá `rpcUrls` ở đây là khoá trong PAYLOAD, không phải deps builder.
       rpcUrls: ["https://rpc.example.com"],
     });
     expect(out).toContain("window.MORPHO_CONFIG=");

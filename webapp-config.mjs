@@ -7,7 +7,7 @@
  * nhận `proxyRpcUrl: undefined` rồi rơi về `http://127.0.0.1:8545` — trên VPS
  * qua HTTPS địa chỉ đó trỏ về máy của user, không phải server.
  */
-import { LENDER_ADDRESS, PROXY_RPC_URL, RPC_URLS, WEBAPP_PASSWORD } from "./shared.mjs";
+import { LENDER_ADDRESS, PROXY_RPC_URL, PUBLIC_RPC_URLS, WEBAPP_PASSWORD } from "./shared.mjs";
 import { RECOVERY_THRESHOLD_MS } from "./presigned-broadcast.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -20,13 +20,16 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
  * @param {Array<{id: string, minLiquidity: string, suddenDrainMultiplier: number}>} deps.markets
  * @param {string} [deps.lenderAddress]
  * @param {string} [deps.proxyRpcUrl]
- * @param {string[]} [deps.rpcUrls]
+ * @param {string[]} [deps.publicRpcUrls] - RPC key-less cho browser (PUBLIC_RPC_URLS).
+ *   Round-4 audit (quota, 2026-09-25): KHÔNG BAO GIỜ inject RPC_URLS của server —
+ *   toàn bộ endpoint đó mang API key, mà webapp public (docker :3000) serve config
+ *   này cho bất kỳ visitor nào. URL khớp mẫu credential bị chặn fail closed.
  */
 export function buildWebappConfig({
   markets,
   lenderAddress = LENDER_ADDRESS,
   proxyRpcUrl = PROXY_RPC_URL,
-  rpcUrls = RPC_URLS,
+  publicRpcUrls = PUBLIC_RPC_URLS,
 } = {}) {
   if (!Array.isArray(markets) || markets.length === 0) {
     throw new Error("❌ Không có market nào được cấu hình — kiểm tra config/markets.json (MARKETS_FILE).");
@@ -48,17 +51,52 @@ export function buildWebappConfig({
     );
   }
 
-  const urls = Array.isArray(rpcUrls) ? rpcUrls.filter((u) => typeof u === "string" && u.trim()) : [];
+  const urls = Array.isArray(publicRpcUrls) ? publicRpcUrls.filter((u) => typeof u === "string" && u.trim()) : [];
   if (urls.length === 0) {
     throw new Error(
-      "❌ RPC_URLS đang trống — browser cần ít nhất 1 HTTP RPC endpoint.\n" +
-      "   → Set RPC_URLS=https://... trong .env (danh sách phân cách bằng dấu phẩy)."
+      "❌ PUBLIC_RPC_URLS đang trống — browser cần ít nhất 1 HTTP RPC endpoint key-less.\n" +
+      "   → Set PUBLIC_RPC_URLS=https://... trong .env (danh sách phân cách bằng dấu phẩy).\n" +
+      "   → KHÔNG dùng RPC_URLS cho browser: danh sách đó mang API key của server."
+    );
+  }
+  // Fail closed: một URL kèm credential lộ qua webapp public là mất key. Chặn
+  // lúc cấu hình thay vì tin vào việc operator nhớ dọn .env.
+  const credentialed = urls.filter((u) => urlLooksCredentialed(u));
+  if (credentialed.length > 0) {
+    throw new Error(
+      `❌ PUBLIC_RPC_URLS chứa ${credentialed.length} URL mang API key/credential — webapp public sẽ bóc lịch key.\n` +
+      `   → Bỏ các URL sau khỏi PUBLIC_RPC_URLS: ${credentialed.map(maskCredential).join(", ")}\n` +
+      "   → RPC_URLS (có key) chỉ dành cho server-side (monitor/proxy), không cho browser."
     );
   }
 
   // claimRecoveryMs: ngưỡng "claim đã quá hạn recovery" (presigned-broadcast.mjs)
   // để browser hiển thị tuổi claim đang broadcasting mà không copy hằng số (R1).
   return { markets, lenderAddress: lender, proxyRpcUrl: proxyUrl, rpcUrls: urls, claimRecoveryMs: RECOVERY_THRESHOLD_MS };
+}
+
+/**
+ * URL có mang credential (API key trong path/query) không? Sample matcher cho
+ * các provider đang dùng trong deployment này + mọi query `apikey=`. Quy tắc
+ * chung: query key ⇒ credential; path hex dài ≥32 ký tự sau hostname provider
+ * ⇒ credential. URL lạ (không khớp mẫu nào) được coi là an toàn — guard này
+ * chặn thao tác DỮ LIỆU đã biết, không phải whitelist provider.
+ */
+export function urlLooksCredentialed(url) {
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  if (["apikey", "api_key", "key"].some((p) => u.searchParams.has(p))) return true;
+  const path = u.pathname;
+  if (u.hostname.endsWith("alchemy.com") && /\/v2\/[0-9a-zA-Z_-]+$/.test(path)) return true;
+  if (u.hostname.endsWith("drpc.live") && /\/ethereum\/[0-9a-zA-Z_-]+$/.test(path)) return true;
+  if (u.hostname.endsWith("chainstack.com") && /\/[0-9a-fA-F]{32,}$/.test(path)) return true;
+  if (u.hostname.endsWith("ankr.com") && /^\/eth\/[0-9a-fA-F]{32,}$/.test(path)) return true;
+  return false;
+}
+
+/** Che phần credential khi in URL vào error message (không lặp lại leak trong log). */
+function maskCredential(url) {
+  return url.replace(/[0-9a-zA-Z_-]{16,}/g, (m) => (m.includes(".") ? m : `<masked:${m.length}>`)).replace(/([?&](?:apikey|api_key|key)=)[^&]+/gi, "$1<masked>");
 }
 
 /**
