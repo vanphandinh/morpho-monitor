@@ -21,5 +21,18 @@ services:
       #   SSL_KEY_PATH=/certs/live/your-domain.com/privkey.pem
       - /etc/letsencrypt:/certs/:ro
 
+  # ── Diagnostic: probe RPC_URLS từ đúng môi trường Docker (profile "debug") ──
+  # Chạy: docker compose run --rm probe
+  # RED (exit 1) khi ≥1 endpoint eth_call thất bại — feedback loop cho lỗi
+  # "[proxy] eth_call forwarding failed" (xem scripts/probe-rpc-endpoints.mjs).
+  # Script được MOUNT (không bake vào image) → image cũ vẫn chạy bản probe mới.
+  probe:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/probe-rpc-endpoints.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
+
 volumes:
   presigned_data:
