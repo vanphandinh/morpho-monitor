@@ -76,6 +76,9 @@ function observe(app) {
  * @param {object} [options.api] Fixture đè cho REST giả (xem `createFakeApi`).
  * @param {object} [options.provider] Tuỳ chọn cho ví giả.
  * @param {boolean} [options.confirmResult] `confirm()` trả về gì (mặc định true: đồng ý xoá/rút).
+ * @param {string|null} [options.gasEditAfterSign] Nếu đặt (VD "150"): sau khi lưu bundle nhiều tier,
+ *   người dùng SỬA ô gas-max-fee rồi việc thay đổi này bắn `onGasInputChange()` — ca DƯƠNG của
+ *   D12: gas THỰC SỰ đổi ⇒ chữ ký vừa ký phải bị vô hiệu. Mặc định null ⇒ trace chính không đổi.
  */
 export async function runWebappScenario({
   entry = path.resolve(process.cwd(), "webapp-app.mjs"),
@@ -83,6 +86,7 @@ export async function runWebappScenario({
   api: apiFixtures = {},
   provider: providerOptions = {},
   confirmResult = true,
+  gasEditAfterSign = null,
 } = {}) {
   const rpc = createFakeRpc({ pendingNonce: "0xb", ...rpcFixtures });
   const api = createFakeApi({ ...apiFixtures });
@@ -138,13 +142,21 @@ export async function runWebappScenario({
     // 5. Lưu bundle dạng NHIỀU TIER.
     await step("save-to-server-tiers", () => app.window.saveToServer());
 
+    // 5b. (tuỳ chọn, ca dương D12) Người dùng sửa gas SAU KHI đã ký ⇒ onGasInputChange phải
+    //     invalidate. Chỉ chạy khi phía gọi yêu cầu — trace chính giữ nguyên 19 bước.
+    if (gasEditAfterSign !== null) {
+      await step("gas-edit", () => {
+        app.env.elements.get("presign-gas-maxfee").value = gasEditAfterSign;
+        app.window.onGasInputChange();
+      });
+    }
+
     // 6. Ký rút toàn bộ shares rồi lưu lại — bundle dạng ALL-SHARES (`type: "all-shares"`),
     //    một nhánh khác hẳn của `buildPresignedBundle`.
     //
-    //    GHI NHẬN HÀNH VI (không phải lỗi của harness): `signWithdrawAll` gọi `onGasInputChange()`
-    //    để đọc lại gas, và hàm đó gọi `invalidateSignatures()` vô điều kiện — nên các tier vừa ký
-    //    bị reset về `pending` kèm báo "Gas đã thay đổi" dù gas không đổi. Trace dưới đây ghim
-    //    đúng hành vi đó, nên nếu ai sửa nó thì diff sẽ lộ ra ngay.
+    //    GHI NHẬN LỊCH SỬ (đã sửa D12): trước vòng này `signWithdrawAll` gọi `onGasInputChange()`,
+    //    hàm đó invalidate VÔ ĐIỀU KIỆN — nên ký all-shares xoá luôn chữ ký các tier vừa ký. Nay
+    //    `signWithdrawAll` chỉ ĐỌC gas (`readGasInputs()`) và invalidate chỉ chạy khi gas THỰC SỰ đổi.
     await step("sign-withdraw-all", () => app.window.signWithdrawAll());
     await step("save-to-server-all-shares", () => app.window.saveToServer());
 

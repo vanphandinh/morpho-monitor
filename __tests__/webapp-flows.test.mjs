@@ -182,21 +182,42 @@ describe("đường tiền — lưu bundle lên server", () => {
 
   it("bundle 'rút toàn bộ shares' dùng nhánh all-shares (amountWei = 0, sharesWei thật)", () => {
     const body = bundleBodies(stepNamed("save-to-server-all-shares"))[0];
-    expect(body.tiers).toHaveLength(1);
-    expect(body.tiers[0].type).toBe("all-shares");
-    expect(body.tiers[0].sharesWei).toBe("500000000");
-    expect(body.tiers[0].amountWei).toBe("0");
-    expect(body.tiers[0].txHash).toBe(fakeHash(3));
+    // D12 đã sửa: `signWithdrawAll` không còn vô hiệu các mốc đã ký, nên rung 2 tier + all-shares
+    // cùng sống sót vào bundle — 3 entry, không phải 1.
+    expect(body.tiers).toHaveLength(3);
+    const allShares = body.tiers.find((tier) => tier.type === "all-shares");
+    expect(allShares).toBeTruthy();
+    expect(allShares.sharesWei).toBe("500000000");
+    expect(allShares.amountWei).toBe("0");
+    expect(allShares.txHash).toBe(fakeHash(3));
+    const tierEntries = body.tiers.filter((tier) => tier.type === undefined);
+    expect(tierEntries.map((tier) => tier.amount)).toEqual(["100", "250"]);
+    expect(tierEntries.map((tier) => tier.txHash)).toEqual([fakeHash(1), fakeHash(2)]);
   });
 
-  it("GHI NHẬN hành vi: ký rút-toàn-bộ-shares VÔ HIỆU chữ ký các mốc đã ký trước đó", () => {
-    // `signWithdrawAll()` gọi `onGasInputChange()` để đọc lại gas, và hàm đó gọi
-    // `invalidateSignatures()` vô điều kiện — nên các mốc vừa ký bị reset về `pending` kèm thông báo
-    // "Gas đã thay đổi" dù gas không đổi. Đây là hành vi HIỆN TẠI (đã tồn tại trước vòng 6, giống hệt
-    // ở cây trước P5 — xem `npm run diff:refactor -- --base 05b8342`).
-    // Test ghim lại để nếu ai sửa thì đó là thay đổi có ý thức, kèm sửa test này.
-    expect(stepNamed("sign-withdraw-all").obs.presignResult).toContain("Gas đã thay đổi");
-    expect(stepNamed("sign-withdraw-all").obs.tierList.match(/✅/g) ?? []).toHaveLength(0);
+  it("D12: ký rút-toàn-bộ-shares GIỮ NGUYÊN chữ ký các mốc đã ký trước đó (gas không đổi)", () => {
+    // Sửa D12 (vòng 6): `signWithdrawAll()` gọi `readGasInputs()` (chỉ ĐỌC) thay vì
+    // `onGasInputChange()`, và hàm này chỉ `invalidateSignatures()` khi gas THỰC SỰ đổi — nên ký
+    // all-shares không còn tự xoá chữ ký các mốc vừa ký kèm báo "Gas đã thay đổi" dù gas không đổi.
+    // Hành vi CŨ (đã đỏ-trước: áp guard lên code cũ ⇒ đúng 3 test đỏ) được ghi trong message commit
+    // 6f6da6c và trong fixture trace cũ.
+    expect(stepNamed("sign-withdraw-all").obs.presignResult).not.toContain("Gas đã thay đổi");
+    const signed = stepNamed("sign-withdraw-all").obs.tierList.match(/✅/g) ?? [];
+    expect(signed).toHaveLength(2);
+  });
+
+  it("D12: gas THỰC SỰ đổi thì chữ ký vẫn bị vô hiệu (không tắt bảo vệ)", () => {
+    // Ca DƯƠNG: một tiến trình con với `gasEditAfterSign` — sau khi đã ký 2 mốc, người dùng sửa ô
+    // gas-max-fee và việc thay đổi này bắn `onGasInputChange()`; gas mới khác gas cũ ⇒ phải
+    // invalidate, báo "Gas đã thay đổi" và chữ ký các mốc về ⬜. Chạy qua tuỳ chọn kịch bản vì
+    // trace chính không có bước sửa gas (autoFillGas ghi thẳng presignedGas rồi mới ghi ra ô nhập,
+    // nên onchange của user là đường duy nhất tới nhánh này — chi tiết dễ mất khi refactor).
+    const edited = runTrace(["--overrides", JSON.stringify({ gasEditAfterSign: "150" })]);
+    const step = edited.steps.find((entry) => entry.name === "gas-edit");
+    expect(step, "trace phụ phải có bước gas-edit").toBeTruthy();
+    expect(step.obs.presignResult).toContain("Gas đã thay đổi");
+    expect(step.obs.tierList.match(/✅/g) ?? []).toHaveLength(0);
+    expect(step.obs.signAllDisabled).toBe(false);
   });
 
   it("DELETE tier gửi kèm market + nonce + tier (thiếu nonce ⇒ server sửa nhầm rung)", () => {
@@ -256,7 +277,11 @@ describe("R4 — xác minh tx best-effort không chặn UI", () => {
 });
 
 describe("lưới hồi quy — trace đã đóng băng", () => {
-  it("kịch bản hiện tại tái tạo đúng trace đã đóng băng (sinh từ cây trước P5)", () => {
+  it("kịch bản hiện tại tái tạo đúng trace đã đóng băng (đóng băng lại sau khi sửa D12)", () => {
+    // Fixture sinh lần đầu từ cây TRƯỚC P5 (0 khác biệt qua `npm run diff:refactor`), rồi được ĐÓNG
+    // BĂNG LẠI sau khi sửa D12 có chủ ý — khác biệt duy nhất so với bản trước là bước
+    // `sign-withdraw-all` (không còn "Gas đã thay đổi") và bước `save-to-server-all-shares`
+    // (lưu 3 entry thay vì 1). Vẫn 19 bước · 46 lời gọi ra dây.
     // Chuẩn hoá CRLF: repo bật `core.autocrlf=true`, nên trên checkout Windows file fixture ra khỏi
     // git sẽ có `\r\n` — so nguyên chuỗi là test tự vỡ theo hệ điều hành, không phải theo hành vi.
     const frozen = fs.readFileSync(FIXTURE, "utf8").replace(/\r\n/g, "\n");

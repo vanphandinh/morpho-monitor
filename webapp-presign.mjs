@@ -179,6 +179,9 @@ export function readGasInputs() {
 export function onGasInputChange() {
   const maxFeeVal = parseFloat(document.getElementById("presign-gas-maxfee").value);
   const priorityVal = parseFloat(document.getElementById("presign-gas-priority").value);
+  // So TRƯỚC khi gán: so giá trị mới với giá trị ĐANG GIỮ. So SAU khi gán là so giá trị mới với
+  // chính nó ⇒ luôn false ⇒ bảo vệ vô hiệu (lỗi đã đỏ-trước trong quá trình sửa D12).
+  const gasChanged = gasValuesChanged(maxFeeVal, priorityVal);
   if (!isNaN(maxFeeVal) && maxFeeVal > 0) {
     presignedGas.maxFeePerGas = parseUnits(String(maxFeeVal), 9);
   } else {
@@ -189,9 +192,36 @@ export function onGasInputChange() {
   } else {
     presignedGas.maxPriorityFeePerGas = null;
   }
-  // Reset signed state if gas changed (cần ký lại)
-  invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
+  // Reset signed state CHỈ khi gas thực sự đổi (D12: trước đây invalidate vô điều kiện, nên
+  // `signWithdrawAll()` — gọi hàm này chỉ để đọc lại gas — tự xoá chữ ký vừa ký dù gas không đổi).
+  if (gasChanged) {
+    invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
+  }
   updateSignButton();
+}
+
+/**
+ * So giá trị gas trong ô nhập với giá trị ĐANG GIỮ trong `presignedGas` (cùng đơn vị wei, gwei).
+ * `onGasInputChange` chỉ gọi `invalidateSignatures()` khi HÀM này trả true — sửa D12 (vòng 6):
+ * trước đây invalidate là vô điều kiện, nên `signWithdrawAll()` (gọi `onGasInputChange()` chỉ để
+ * đọc lại gas) tự xoá chữ ký các mốc vừa ký kèm báo "Gas đã thay đổi" dù gas không đổi.
+ *
+ * Ba trạng thái phải phân biệt được cho TỪNG ô: null (chưa có) ↔ có-giá-trị (khác giá trị cũ) ↔
+ * có-giá-trị (bằng giá trị cũ). "Ô nhập rỗng/0" và "null" là khác nhau: 0 được parse thành 0n khi
+ * có giá trị cũ — chỉ null mới là "chưa thiết lập".
+ */
+function gasValuesChanged(maxFeeVal, priorityVal) {
+  if (presignedGas.maxFeePerGas === null && maxFeeVal > 0) return true;
+  if (presignedGas.maxFeePerGas !== null && !(maxFeeVal > 0)) return true;
+  if (presignedGas.maxFeePerGas !== null && maxFeeVal > 0) {
+    if (presignedGas.maxFeePerGas !== parseUnits(String(maxFeeVal), 9)) return true;
+  }
+  if (presignedGas.maxPriorityFeePerGas === null && priorityVal > 0) return true;
+  if (presignedGas.maxPriorityFeePerGas !== null && !(priorityVal > 0)) return true;
+  if (presignedGas.maxPriorityFeePerGas !== null && priorityVal > 0) {
+    if (presignedGas.maxPriorityFeePerGas !== parseUnits(String(priorityVal), 9)) return true;
+  }
+  return false;
 }
 
 function updateSignButton() {
@@ -284,8 +314,9 @@ export async function signAllTiers() {
     showPresignError("Vui lòng lấy nonce trước.");
     return;
   }
-  // Read gas from input fields (user có thể đã chỉnh sửa)
-  onGasInputChange();
+  // Read gas from input fields (user có thể đã chỉnh sửa) — chỉ ĐỌC, không invalidate
+  // (D12: gọi `onGasInputChange()` ở đây từng xoá chữ ký các mốc vừa ký dù gas không đổi).
+  readGasInputs();
   if (!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
     showPresignError("Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
