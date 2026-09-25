@@ -153,7 +153,7 @@ export async function fetchExistingBundle() {
         const remove = rungEditable
           ? `<button class="btn-outline btn-remove" title="Xóa tier này khỏi rung nonce ${esc(r.nonce)}" onclick="deleteTierFromBundle(${Number(r.nonce)}, ${tierIdx})">✕</button>`
           : `<span title="Rung đang được broadcast — không sửa được" style="color:var(--text-dim)">🔒</span>`;
-        return `<div class="row"><span class="label">${esc(label)}</span><span class="value">${esc(display)}</span>${remove}</div>`;
+        return `<div class="row bundle-tier-row"><span class="label">${esc(label)}</span><span class="value">${esc(display)}</span>${remove}</div>`;
       }).join("") || '<p style="color:var(--text-dim);font-size:0.85rem">Không có tier nào</p>';
       return `<div style="margin:6px 0;padding:6px 8px;border:1px solid var(--border);border-radius:6px">` +
         `<div class="row"><span class="label">Nonce:</span><span class="value nonce-display">${r.nonce ?? "—"}</span>` +
