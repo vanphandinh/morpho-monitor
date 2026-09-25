@@ -10,6 +10,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import { esc, row, formatToken } from "../webapp-render.mjs";
 import { getWalletProviderName, getCompatibilityMessage } from "../webapp-wallet.mjs";
+// Audit P5: closure module browser (suy từ đồ thị import) — dùng chung với webapp.test.mjs.
+import { browserModuleNames, readBrowserSource, webappSource } from "./helpers/browser-modules.mjs";
 import { formatTokenAmount } from "../shared.mjs";
 
 const readSource = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
@@ -80,18 +82,27 @@ describe("webapp-wallet.mjs: nhận diện ví (brand-only)", () => {
 });
 
 describe("P2.7 — webapp-app.mjs dùng module chung, không còn bản sao cục bộ", () => {
-  const app = readSource("webapp-app.mjs");
   const render = readSource("webapp-render.mjs");
   const wallet = readSource("webapp-wallet.mjs");
 
-  it("import cả hai module", () => {
-    expect(app).toContain('from "./webapp-render.mjs"');
-    expect(app).toContain('from "./webapp-wallet.mjs"');
+  it("cả hai module đều được dùng thật trong đồ thị browser", () => {
+    // Audit P5: từ khi app tách thành nhiều module, việc "ai import" không còn là
+    // chuyện của riêng webapp-app.mjs — bất biến cần giữ là hai module này KHÔNG
+    // phải dead code: có ít nhất một module browser import chúng.
+    const webapp = webappSource();
+    expect(webapp).toContain('from "./webapp-render.mjs"');
+    expect(webapp).toContain('from "./webapp-wallet.mjs"');
   });
 
-  it("không định nghĩa lại các hàm đã tách", () => {
+  it("không module browser nào định nghĩa lại các hàm đã tách", () => {
+    // Chỉ webapp-render.mjs / webapp-wallet.mjs được định nghĩa chúng; mọi module
+    // khác phải import (P5: kiểm trên CẢ closure, không chỉ webapp-app.mjs).
     for (const name of ["esc", "row", "formatToken", "getWalletProviderName", "getCompatibilityMessage"]) {
-      expect(app).not.toMatch(new RegExp(`function ${name}\\b`));
+      for (const file of browserModuleNames().filter((n) => n !== "webapp-render.mjs" && n !== "webapp-wallet.mjs")) {
+        expect(readBrowserSource(file), `${file} định nghĩa lại ${name}`).not.toMatch(
+          new RegExp("function " + name + "(?![A-Za-z0-9_$])")
+        );
+      }
     }
   });
 

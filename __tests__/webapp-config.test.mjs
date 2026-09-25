@@ -16,6 +16,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig, assertProxyAuthConfig } from "../webapp-config.mjs";
 import { RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
+// Audit P5: danh sách module browser suy từ đồ thị import (helper dùng chung).
+import { browserSources, webappSource } from "./helpers/browser-modules.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
@@ -27,6 +29,10 @@ const app = fs.readFileSync(path.join(__dirname, "..", "webapp-app.mjs"), "utf8"
 // Audit P2.7: nhận diện ví tách sang webapp-wallet.mjs — kiểm hợp đồng trên file
 // đó thay vì tìm trong webapp-app.mjs (nơi nó không còn tồn tại).
 const wallet = fs.readFileSync(path.join(__dirname, "..", "webapp-wallet.mjs"), "utf8");
+// Audit P5: `webapp-app.mjs` đã tách thành các module luồng. Khẳng định kiểu "webapp
+// dùng X / không chứa Y" phải đọc toàn bộ closure module browser — nếu ghim vào một
+// file thì mỗi lần code chuyển nhà là một test đỏ giả (đúng thứ đã xảy ra ở P2.7).
+const webapp = webappSource();
 
 const MARKET = { id: "0x" + "a".repeat(64), minLiquidity: "100", suddenDrainMultiplier: 2 };
 const LENDER = "0x" + "b".repeat(40);
@@ -104,7 +110,8 @@ describe("webapp.html hygiene (M2)", () => {
   it("không còn RPC URL kèm API key trong file phục vụ công khai", () => {
     // A.1: file phục vụ công khai nay gồm CẢ webapp-app.mjs — phải kiểm cả hai,
     // nếu không thì danh sách RPC đã chuyển sang module sẽ không còn ai ghim.
-    for (const source of [html, app]) {
+    // P5: kiểm HẾT module được phục vụ công khai, không chỉ html + app.
+    for (const source of [html, ...browserSources()]) {
       expect(source).not.toMatch(/infura\.io\/v3\//);
       expect(source).not.toMatch(/ankr\.com\/eth\/0x/);
       expect(source).not.toMatch(/alchemy\.com\/v2\//);
@@ -115,15 +122,16 @@ describe("webapp.html hygiene (M2)", () => {
   });
 
   it("dùng CFG.rpcUrls do server inject, với fallback keyless", () => {
-    expect(app).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
-    expect(app).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
+    // P5: RPC_URLS nay ở webapp-state.mjs (lớp lá) ⇒ kiểm trên toàn webapp.
+    expect(webapp).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
+    expect(webapp).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
     // Round-4 phụ lục (2026-09-25): ankr key-less ĐÃ CHẾT — trả -32000
     // "Unauthorized: You must authenticate with an API key". Giữ nó trong
     // fallback là lỗi cấu hình, phải pin KHÔNG CÒN.
-    expect(app).not.toMatch(/rpc\.ankr\.com\/eth/);
+    expect(webapp).not.toMatch(/rpc\.ankr\.com\/eth/);
     // 2 endpoint thay thế đã probe thật (CORS mở, chainId=0x1).
-    expect(app).toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
-    expect(app).toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
+    expect(webapp).toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
+    expect(webapp).toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
   });
 });
 
@@ -233,9 +241,11 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
   });
 
   it("ký gọi thẳng sendTransaction, không gate phía trước", () => {
-    const sends = [...app.matchAll(/walletClient\.sendTransaction\(/g)].map((m) => m.index);
+    // P5: hai call site ký nằm ở webapp-presign.mjs ⇒ đếm trên toàn webapp vẫn là 2,
+    // và bất biến "không gate bằng probe mạng" được kiểm trên mọi module.
+    const sends = [...webapp.matchAll(/walletClient\.sendTransaction\(/g)].map((m) => m.index);
     expect(sends).toHaveLength(2);
-    expect(app).not.toMatch(/await assertProxyNetwork\(\)/);
+    expect(webapp).not.toMatch(/await assertProxyNetwork\(\)/);
   });
 
   it("nút Thêm Mạng Proxy: message thành công như main + giữ hướng dẫn khi ví chặn method", () => {
@@ -249,27 +259,29 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
     expect(html).toContain('id="market-switcher"'); // markup
     expect(html).toContain('id="market-switcher-wrap"');
     expect(html).toContain('id="presign-overview"');
-    expect(app).toMatch(/SERVER_MARKETS\.length <= 1/); // ẩn khi 1 market
-    expect(app).toMatch(/window\.switchMarket = function/);
-    expect(app).toMatch(/api\/overview/);
-    expect(app).toMatch(/refreshPresignOverview\(\)/);
-    expect(app).toMatch(/initMarketSwitcher\(\)/);
+    // P5: switcher ở webapp-overview.mjs, khối overview ở webapp-presign-bundles.mjs,
+    // và app chỉ CÔNG BỐ handler ra window (không định nghĩa tại chỗ nữa).
+    expect(webapp).toMatch(/SERVER_MARKETS\.length <= 1/); // ẩn khi 1 market
+    expect(webapp).toMatch(/window\.switchMarket = switchMarket;/);
+    expect(webapp).toMatch(/api\/overview/);
+    expect(webapp).toMatch(/refreshPresignOverview\(\)/);
+    expect(webapp).toMatch(/initMarketSwitcher\(\)/);
   });
 
   it("multi-market: cảnh báo race cùng nonce + note bậc thang nonce", () => {
-    expect(app).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
-    expect(app).toMatch(/trigger trước/);
-    expect(app).toMatch(/sẽ <b>expired<\/b>/);
-    expect(app).toMatch(/Bậc thang nonce/);
+    expect(webapp).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
+    expect(webapp).toMatch(/trigger trước/);
+    expect(webapp).toMatch(/sẽ <b>expired<\/b>/);
+    expect(webapp).toMatch(/Bậc thang nonce/);
     // Race check trước khi ký: confirm dialog, không chặn cứng.
-    expect(app).toMatch(/TRIGGER trước/);
-    expect(app).toMatch(/EXPIRED ngay khi nonce này được tiêu thụ/);
+    expect(webapp).toMatch(/TRIGGER trước/);
+    expect(webapp).toMatch(/EXPIRED ngay khi nonce này được tiêu thụ/);
   });
 
   it("M9: bundle expired/submitted hiện hướng dẫn ký lại với nonce mới", () => {
-    expect(app).toMatch(/r\.status === "expired"/);
-    expect(app).toMatch(/on-chain nonce đã đi qua nonce của bundle đó/);
-    expect(app).toMatch(/Ký lại với nonce mới/);
-    expect(app).toMatch(/submitted\/failed/);
+    expect(webapp).toMatch(/r\.status === "expired"/);
+    expect(webapp).toMatch(/on-chain nonce đã đi qua nonce của bundle đó/);
+    expect(webapp).toMatch(/Ký lại với nonce mới/);
+    expect(webapp).toMatch(/submitted\/failed/);
   });
 });

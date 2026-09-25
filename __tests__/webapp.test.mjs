@@ -31,6 +31,11 @@ import {
 // Audit P2.8: hai bản wadToPercent/shortenAddr tồn tại vì browser không import
 // được shared.mjs; test này là lưới an toàn chống chúng lệch nhau.
 import { wadToPercent as sharedWadToPercent, shortenAddress } from "../shared.mjs";
+// Audit P5: `webapp-app.mjs` đã tách thành các module luồng, nên khẳng định kiểu
+// "webapp có/không có X" phải đọc TOÀN BỘ closure module browser (suy từ đồ thị
+// import), không ghim vào một file. Ghim file là cách chắc chắn nhất để mỗi lần
+// code chuyển nhà lại có một test đỏ giả — đúng thứ đã xảy ra ở P2.7.
+import { browserModuleNames, browserSources, readBrowserSource, webappSource } from "./helpers/browser-modules.mjs";
 
 const readSource = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
@@ -379,33 +384,33 @@ describe("webapp-app — xác minh tx của tab Rút Tiền (R4)", () => {
 });
 
 describe("webapp-app — contract xoá tier theo rung (R2)", () => {
-  // Code UI nằm ở module webapp-app.mjs (audit A.1) nên kiểm hợp đồng tĩnh trên
-  // module: nút ✕ PHẢI gọi kèm nonce, và URL DELETE phải gửi market+nonce+tier.
-  // Không có nonce, API đã guard (F3) sẽ trả 400 cho market có ladder — tức là
-  // người dùng không xoá được tier nào cả.
-  const app = readSource("webapp-app.mjs");
+  // Code UI nằm ở module browser (audit A.1) nên kiểm hợp đồng tĩnh trên TOÀN BỘ
+  // webapp (P5: phần xoá rung nay ở webapp-presign-bundles.mjs): nút ✕ PHẢI gọi
+  // kèm nonce, và URL DELETE phải gửi market+nonce+tier. Không có nonce, API đã
+  // guard (F3) sẽ trả 400 cho market có ladder — người dùng không xoá được tier nào.
+  const webapp = webappSource();
 
   it("mọi nút ✕ đều gọi deleteTierFromBundle kèm (nonce, index)", () => {
-    const onclickCalls = [...app.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
+    const onclickCalls = [...webapp.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
     expect(onclickCalls.length).toBeGreaterThan(0);
     for (const args of onclickCalls) expect(args.split(",").length).toBe(2);
   });
 
   it("URL DELETE gửi kèm market + nonce + tier", () => {
-    expect(app).toContain("/api/presign?market=${encodeURIComponent(marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
+    expect(webapp).toContain("/api/presign?market=${encodeURIComponent(state.marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
   });
 
   it("rung đang broadcasting không hiện nút xoá (API trả 409)", () => {
-    expect(app).toContain('r.status !== "broadcasting"');
+    expect(webapp).toContain('r.status !== "broadcasting"');
   });
 
   it("doWithdraw gọi xác minh và render note cảnh báo capture", () => {
-    expect(app).toContain("txVisibleOnChain(publicClient, hash)");
-    expect(app).toContain('id="tx-verify-note"');
+    expect(webapp).toContain("txVisibleOnChain(state.publicClient, hash)");
+    expect(webapp).toContain('id="tx-verify-note"');
     // Kết quả xác minh của lần rút cũ không được ghi đè banner của lần rút mới.
-    expect(app).toContain("verifyToken !== txVerifyToken");
+    expect(webapp).toContain("verifyToken !== txVerifyToken");
     // Cảnh báo phải nêu rõ nguyên nhân (ví trỏ RPC về proxy ⇒ chỉ được capture).
-    expect(app).toContain("ghi lại (capture)");
+    expect(webapp).toContain("ghi lại (capture)");
   });
 });
 
@@ -415,6 +420,8 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
   const logic = readSource("webapp-logic.mjs");
   const server = readSource("webapp-server.mjs");
   const handlerSrc = readSource("webapp-handler.mjs");
+  // P5: mọi khẳng định về "webapp" đọc toàn bộ closure module browser, không ghim file.
+  const webapp = webappSource();
 
   it("MỌI hàm được gọi từ thuộc tính on* trong HTML đều là thuộc tính của window trong module", () => {
     const attr = /\son(?:click|change|input|keydown|keyup|submit|blur|focus)="([^"]*)"/g;
@@ -432,16 +439,34 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(logic).not.toMatch(/\bdocument\b|\bwindow\b|localStorage|navigator/);
   });
 
-  it("A.1b: webapp-app.mjs import logic từ module chung, KHÔNG còn bản sao cục bộ", () => {
-    for (const name of [
+  it("A.1b: module browser import logic từ module chung, KHÔNG còn bản sao cục bộ", () => {
+    const LOGIC = "webapp-logic.mjs";
+    const SHARED_FNS = [
       "wadToPercent", "shortenAddr", "broadcastingAgeMinutes", "isClaimOverdue",
       "txVisibleOnChain", "computeSupplyAssets", "computeBorrowAssets", "computeLiquidity",
       "computeUtilization", "computeMaxWithdraw", "validateWithdraw", "stepNonce",
-    ]) {
-      expect(app).toMatch(new RegExp(`^\\s*${name},?$`, "m"));           // có trong khối import
-      expect(app).not.toMatch(new RegExp(`function ${name}\\b`));        // không định nghĩa lại
+    ];
+    // P5: kiểm trên TỪNG module browser (chỉ webapp-logic.mjs được định nghĩa chúng).
+    const others = browserModuleNames().filter((name) => name !== LOGIC);
+    expect(others.length).toBeGreaterThanOrEqual(6); // chốt chống danh sách rỗng
+    for (const file of others) {
+      const source = readBrowserSource(file);
+      for (const name of SHARED_FNS) {
+        expect(source, `${file} định nghĩa lại ${name}`).not.toMatch(new RegExp("function " + name + "(?![A-Za-z0-9_$])"));
+      }
     }
-    expect(app).toMatch(/from "\.\/webapp-logic\.mjs"/);
+    // ...và mỗi hàm chung phải thực sự được import ở đâu đó (không phải code chết).
+    const imported = new Set();
+    for (const file of others) {
+      for (const line of readBrowserSource(file).split("\n")) {
+        if (!line.startsWith("import {")) continue;
+        const list = line.slice(line.indexOf("{") + 1, line.indexOf("}"));
+        const spec = line.slice(line.indexOf('from "') + 6, line.lastIndexOf('"'));
+        if (spec !== "./" + LOGIC) continue;
+        for (const n of list.split(",").map((x) => x.trim()).filter(Boolean)) imported.add(n);
+      }
+    }
+    expect(SHARED_FNS.filter((name) => !imported.has(name))).toEqual([]);
   });
 
   it("server đọc + truyền module logic, handler phục vụ route của nó", () => {
@@ -469,34 +494,41 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
   // (c) mọi bare specifier phải có trong importmap của webapp.html. Lệch một trong
   // ba thì browser nhận 404/SyntaxError và CẢ UI chết lặng (đồ thị import là
   // all-or-nothing), trong khi mọi test khác — kể cả `node --check` — vẫn xanh.
-  it("vòng 5: đồ thị module browser khép kín — import ⊆ route map ⊆ importmap", () => {
-    const BROWSER_MODULES = ["webapp-app.mjs", "webapp-logic.mjs", "webapp-render.mjs", "webapp-wallet.mjs"];
+  it("vòng 5: đồ thị module browser khép kín — import ⊆ route map, bare ⊆ importmap", () => {
     const wiring = `${server}\n${handlerSrc}`;
     const importMap = JSON.parse(
       html.match(/<script\b[^>]*\btype="importmap"[^>]*>([\s\S]*?)<\/script>/)[1]
     ).imports;
+    // P5: thay danh sách viết tay bằng closure THẬT của đồ thị import, nên thêm
+    // module mới là tự động vào phạm vi kiểm (đúng ý "test tự phủ" của P5).
+    const modules = browserModuleNames();
+    const routed = new Set([...wiring.matchAll(/"([A-Za-z0-9_.-]+\.mjs)"\s*:/g)].map((m) => m[1]));
 
     let relative = 0, bare = 0;
-    for (const name of BROWSER_MODULES) {
-      const source = readSource(name);
+    for (const name of modules) {
+      const source = readBrowserSource(name);
       for (const [, spec] of source.matchAll(/(?:^|\s)(?:import|export)[^"']*?from\s*"([^"]+)"/g)) {
         if (spec.startsWith("./")) {
           relative++;
           const file = spec.slice(2);
-          expect(BROWSER_MODULES, `${name} import ${spec} — không phải module browser đã biết`).toContain(file);
-          expect(
-            new RegExp(`"${file.replace(/\./g, "\\.")}"\\s*:`).test(wiring),
-            `${name} import ${spec} nhưng server/handler không wire "${file}" vào route map`
-          ).toBe(true);
+          expect(routed, `${name} import ${spec} nhưng route map không có khoá "${file}"`).toContain(file);
         } else {
           bare++;
           expect(Object.keys(importMap), `${name} import "${spec}" — thiếu trong importmap`).toContain(spec);
         }
       }
     }
-    // Chốt chống regex hỏng: 4 module này phải thật sự import lẫn nhau + ít nhất
-    // một bare specifier (viem), đừng để test xanh vì không match được gì.
-    expect(relative).toBeGreaterThanOrEqual(3);
+    // Chiều NGƯỢC lại: route map không được thừa. Module được phục vụ mà không ai
+    // import nó nghĩa là import đã bị xoá nhầm (browser 404) hoặc dead file — cả hai
+    // đều phải đỏ, chứ không im lặng như trước P5.
+    for (const file of routed) {
+      expect(modules, `route map phục vụ "${file}" nhưng không module browser nào import nó`).toContain(file);
+    }
+    // Chốt chống regex hỏng: closure phải thật sự là cả đồ thị, đừng để test xanh
+    // vì match rỗng.
+    expect(modules.length).toBeGreaterThanOrEqual(7);
+    expect(routed.size).toBe(modules.length);
+    expect(relative).toBeGreaterThanOrEqual(6);
     expect(bare).toBeGreaterThanOrEqual(1);
   });
 
@@ -505,23 +537,26 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
   // `id="x"` trong HTML, hoặc app phải tự chèn nó (`id="x"` có trong chính webapp-app.mjs —
   // ví dụ `tx-verify-note` chèn vào banner rồi tra lại, có null-guard). Sai một cái ⇒
   // `null.textContent` ⇒ TypeError chỉ hiện khi người dùng bấm đúng nút đó.
-  it("vòng 5: mọi getElementById trong app đều có id tương ứng (HTML hoặc app tự chèn)", () => {
+  it("vòng 5: mọi getElementById trong webapp đều có id tương ứng (HTML hoặc module tự chèn)", () => {
     const htmlIds = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
-    const used = [...app.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]);
+    // P5: id tự chèn có thể nằm ở BẤT KỲ module browser nào (ví dụ `tx-verify-note`
+    // nay ở webapp-withdraw.mjs) nên phải quét cả closure, không chỉ module app.
+    const selfInjected = new Set(browserSources().flatMap((s) => [...s.matchAll(/id="([^"]+)"/g)].map((m) => m[1])));
+    const used = [...webapp.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]);
     expect(used.length).toBeGreaterThanOrEqual(60); // chốt chống regex hỏng (đo được: 61)
-    const missing = [...new Set(used)].filter((id) => !htmlIds.has(id) && !app.includes(`id="${id}"`));
+    const missing = [...new Set(used)].filter((id) => !htmlIds.has(id) && !selfInjected.has(id));
     expect(missing).toEqual([]);
   });
 
   it("bản sao logic đã chuyển sang module chung được dùng ở đúng call site", () => {
     // Rút tiền: validation + MAX phải đi qua hàm chung (nếu không, test trên
     // module xanh mà UI vẫn dùng bản cũ — đúng thứ A.1b muốn chặn).
-    expect(app).toContain("validateWithdraw({");
-    expect(app).toContain("computeMaxWithdraw(");
-    expect(app).toContain("computeSupplyAssets(");
-    expect(app).toContain("computeBorrowAssets(");
-    expect(app).toContain("computeLiquidity(");
-    expect(app).toContain("computeUtilization(");
+    expect(webapp).toContain("validateWithdraw({");
+    expect(webapp).toContain("computeMaxWithdraw(");
+    expect(webapp).toContain("computeSupplyAssets(");
+    expect(webapp).toContain("computeBorrowAssets(");
+    expect(webapp).toContain("computeLiquidity(");
+    expect(webapp).toContain("computeUtilization(");
   });
 
   // Stepper nonce presign (2026-09-25): người dùng yêu cầu nút tăng/giảm thay
@@ -540,9 +575,39 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
     expect(html).toMatch(/id="btn-nonce-dec"[^>]*disabled/);
     expect(html).toMatch(/id="btn-nonce-inc"[^>]*disabled/);
     // App: enable sau khi fetch, kẹp sàn qua hàm thuần chung.
-    expect(app).toMatch(/setNonceStepperEnabled\(/);
-    expect(app).toMatch(/window\.onNonceStep\s*=/);
-    expect(app).toMatch(/stepNonce\(/);
+    expect(webapp).toMatch(/setNonceStepperEnabled\(/);
+    expect(webapp).toMatch(/window\.onNonceStep\s*=/);
+    expect(webapp).toMatch(/stepNonce\(/);
+  });
+
+  // Audit P5: "một chủ sở hữu window.*". Nếu một module luồng cũng gán window.X thì
+  // hợp đồng `on*` ở trên vẫn xanh (nó chỉ kiểm TỒN TẠI, không kiểm AI sở hữu), và
+  // thứ tự nạp module sẽ quyết định handler nào thắng — đúng loại bug im lặng.
+  it("P5: chỉ webapp-app.mjs gán window.*, không module luồng nào chạm", () => {
+    const modules = browserModuleNames();
+    expect(modules.length).toBeGreaterThanOrEqual(7);
+    for (const file of modules) {
+      const assigns = [...readBrowserSource(file).matchAll(/^[ ]*window[.][A-Za-z_$][A-Za-z0-9_$]*[ ]*=/gm)].length;
+      if (file === "webapp-app.mjs") expect(assigns, "app phải sở hữu hợp đồng window.*").toBeGreaterThanOrEqual(20);
+      else expect(assigns, `${file} gán window.* (chỉ webapp-app.mjs được phép)`).toBe(0);
+    }
+  });
+
+  // Audit P5: `state` là object ĐÓNG (Object.seal) — gõ sai tên field thành TypeError
+  // lúc chạy, nhưng chỉ khi nhánh đó chạy. Lưới tĩnh dưới đây phủ MỌI lần đọc
+  // `state.<field>` ở mọi module, nên một field viết sai chính tả là đỏ ngay.
+  it("P5: mọi state.<field> đều là field đã khai báo trong webapp-state.mjs", () => {
+    const stateSrc = readBrowserSource("webapp-state.mjs");
+    const declared = new Set([...stateSrc.matchAll(/^[ ]{2}([A-Za-z_$][A-Za-z0-9_$]*):/gm)].map((m) => m[1]));
+    expect(declared.size).toBeGreaterThanOrEqual(10); // chốt chống regex hỏng (đo được: 14)
+    expect(stateSrc).toContain("Object.seal(state)");
+    const used = new Set();
+    for (const file of browserModuleNames()) {
+      // `-state.mjs` (tên file) không được tính là truy cập field ⇒ loại cả dấu `-`.
+      for (const [, field] of readBrowserSource(file).matchAll(/(?<![A-Za-z0-9_$.-])state[.]\s*([A-Za-z_$][A-Za-z0-9_$]*)/g)) used.add(field);
+    }
+    expect(used.size).toBeGreaterThanOrEqual(10);
+    expect([...used].filter((f) => !declared.has(f))).toEqual([]);
   });
 });
 

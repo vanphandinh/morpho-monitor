@@ -17,6 +17,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
+// Audit P5: id mà webapp TỰ CHÈN có thể nằm ở bất kỳ module browser nào (ví dụ
+// `tx-verify-note` nay ở webapp-withdraw.mjs), nên phải quét cả closure import.
+import { browserSources } from "./helpers/browser-modules.mjs";
 
 const html = fs.readFileSync(new URL("../webapp.html", import.meta.url), "utf8");
 const htmlIds = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
@@ -26,7 +29,7 @@ const requestedIds = new Set();
 /** id mà app tra nhưng HTML không có — phải rỗng, nếu không là mismatch thiệt. */
 const unknownIds = [];
 /** id app tự chèn rồi tra lại (vd `tx-verify-note`) — hợp lệ nếu app cũng sinh `id="x"`. */
-const selfInjectedIds = new Set([...fs.readFileSync(new URL("../webapp-app.mjs", import.meta.url), "utf8").matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+const selfInjectedIds = new Set(browserSources().flatMap((source) => [...source.matchAll(/id="([^"]+)"/g)].map((m) => m[1])));
 
 function makeElement(id) {
   return {

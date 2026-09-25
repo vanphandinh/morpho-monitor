@@ -73,33 +73,39 @@ if (fs.existsSync(webappPath)) {
 
   // Audit A.1b: logic thuần nằm ở webapp-logic.mjs — module dùng chung cho
   // browser (import từ webapp-app.mjs, route do webapp-handler.mjs phục vụ) và
-  // test (import trực tiếp trong vitest). Thiếu file, hoặc app không import nó,
-  // nghĩa là hoặc UI chết lặng, hoặc logic rơi về bản sao cục bộ mà test không
-  // chạm tới — đúng lớp lỗi mà A.1 muốn diệt.
-  const logicModulePath = path.join(root, "webapp-logic.mjs");
-  if (!fs.existsSync(logicModulePath)) {
-    fail("thiếu webapp-logic.mjs — webapp-app.mjs import file này (route /webapp-logic.mjs)");
-  }
-  checked++;
-  if (fs.existsSync(appModulePath) && !/from "\.\/webapp-logic\.mjs"/.test(fs.readFileSync(appModulePath, "utf8"))) {
-    fail('webapp-app.mjs phải import logic dùng chung: from "./webapp-logic.mjs"');
+  // test (import trực tiếp trong vitest). Thiếu file, hoặc không module browser nào
+  // import nó, nghĩa là hoặc UI chết lặng, hoặc logic rơi về bản sao cục bộ mà test
+  // không chạm tới — đúng lớp lỗi mà A.1 muốn diệt.
+  //
+  // Audit P5: `webapp-app.mjs` KHÔNG còn là module browser duy nhất, nên bất biến
+  // "app import file X" phải đổi thành "có MỘT module browser trong closure import
+  // X". Cách này vẫn bắt được file chết và import bị xoá nhầm, mà không phạt việc
+  // chuyển code sang module khác (chính là P5).
+  const browserClosure = new Set(["webapp-app.mjs"]);
+  const pending = ["webapp-app.mjs"];
+  while (pending.length > 0) {
+    const name = pending.shift();
+    const full = path.join(root, name);
+    if (!fs.existsSync(full)) continue;
+    for (const [, target] of fs.readFileSync(full, "utf8").matchAll(/(?:^|\s)(?:import|export)[^"']*?from\s*"\.\/([^"]+)"/g)) {
+      if (browserClosure.has(target)) continue;
+      browserClosure.add(target);
+      pending.push(target);
+    }
   }
 
-  // Audit P2.7: render helper + nhận diện ví cũng tách thành module browser dùng
-  // chung. Ghim cùng bất biến với webapp-logic.mjs: file phải tồn tại và app phải
-  // import nó, nếu không thì hoặc UI chết (404) hoặc bản sao cục bộ quay lại.
-  const browserModules = [
+  const sharedBrowserModules = [
+    { file: "webapp-logic.mjs", symbols: "logic dùng chung" },
     { file: "webapp-render.mjs", symbols: "esc, row, formatToken" },
     { file: "webapp-wallet.mjs", symbols: "getWalletProviderName, getCompatibilityMessage" },
   ];
-  const appSource = fs.existsSync(appModulePath) ? fs.readFileSync(appModulePath, "utf8") : null;
-  for (const { file, symbols } of browserModules) {
+  for (const { file, symbols } of sharedBrowserModules) {
     checked++;
     if (!fs.existsSync(path.join(root, file))) {
-      fail(`thiếu ${file} — webapp-app.mjs import file này (route /${file})`);
+      fail(`thiếu ${file} — module browser import file này (route /${file})`);
     }
-    if (appSource && !appSource.includes(`from "./${file}"`)) {
-      fail(`webapp-app.mjs phải import ${symbols} từ "./${file}"`);
+    if (!browserClosure.has(file)) {
+      fail(`không module browser nào import ${file} (${symbols}) — import bị xoá nhầm?`);
     }
   }
 

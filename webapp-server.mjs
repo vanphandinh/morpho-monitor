@@ -36,10 +36,10 @@ const WEBAPP_APP_FILE = path.join(__dirname, "webapp-app.mjs");
 // Audit A.1b: logic thuần dùng chung cho browser và test. webapp-app.mjs import
 // nó qua `./webapp-logic.mjs` nên nó cũng phải được phục vụ như file tĩnh.
 const WEBAPP_LOGIC_FILE = path.join(__dirname, "webapp-logic.mjs");
-// Audit P2.7: module browser tách tiếp từ webapp-app.mjs — app import chúng nên
-// chúng cũng phải được phục vụ như file tĩnh (xem handler `scripts`).
-const WEBAPP_RENDER_FILE = path.join(__dirname, "webapp-render.mjs");
-const WEBAPP_WALLET_FILE = path.join(__dirname, "webapp-wallet.mjs");
+// Audit P2.7 + P5: các module browser tách từ webapp-app.mjs — app import chúng nên
+// chúng cũng PHẢI được phục vụ như file tĩnh (xem handler `scripts`). Thiếu một file
+// ⇒ import của browser trả 404 ⇒ module không nạp ⇒ UI chết lặng, nên đọc lúc khởi
+// động và fail-fast (không để lộ ra lúc người dùng bấm nút).
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
 const configuredMarkets = loadMarkets(path.join(__dirname, MARKETS_FILE));
@@ -94,8 +94,7 @@ const readBrowserModule = (file, importedBy) => {
     process.exit(1);
   }
 };
-const renderScript = readBrowserModule(WEBAPP_RENDER_FILE, "webapp-app.mjs");
-const walletScript = readBrowserModule(WEBAPP_WALLET_FILE, "webapp-app.mjs");
+const browserModule = (name) => readBrowserModule(path.join(__dirname, name), "webapp-app.mjs");
 
 // Fail closed khi thiếu WEBAPP_PASSWORD (audit 2026-09-24 P1): không password
 // thì MỌI request (kể cả DELETE bundle đã ký) đều được coi là đã xác thực.
@@ -133,8 +132,14 @@ const handler = createRequestHandler({
   appScript,
   logicScript,
   scripts: {
-    "webapp-render.mjs": renderScript,
-    "webapp-wallet.mjs": walletScript,
+    "webapp-render.mjs": browserModule("webapp-render.mjs"),
+    "webapp-wallet.mjs": browserModule("webapp-wallet.mjs"),
+    "webapp-state.mjs": browserModule("webapp-state.mjs"),
+    "webapp-shell.mjs": browserModule("webapp-shell.mjs"),
+    "webapp-overview.mjs": browserModule("webapp-overview.mjs"),
+    "webapp-presign-bundles.mjs": browserModule("webapp-presign-bundles.mjs"),
+    "webapp-presign.mjs": browserModule("webapp-presign.mjs"),
+    "webapp-withdraw.mjs": browserModule("webapp-withdraw.mjs"),
   },
 });
 
