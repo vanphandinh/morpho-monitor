@@ -167,6 +167,12 @@ function sameClaims(a, b) {
  */
 export async function updateRegistry(filePath, mutate, opts = {}) {
   const origin = opts.origin === "user" ? "user" : "monitor";
+  // Thư mục chứa registry phải tồn tại TRƯỚC khi lấy lock: `withFileLock` dùng
+  // openSync(lockPath, "wx") nên thư mục cha thiếu ⇒ ENOENT ngay ở request đầu
+  // tiên trên host chưa có `data/` (Docker che bằng named volume + `RUN mkdir`,
+  // local dev thì không). `writeRegistry` đã tự mkdir, nhưng nó chạy SAU lock —
+  // quá muộn. Test ghim: __tests__/presigned-store-init.test.mjs.
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   return withFileLock(`${filePath}.lock`, async () => {
     const registry = readRegistry(filePath);
     // A.2 — sàn bất biến, lấy TRƯỚC khi mutate: mọi nonce ≤ sàn đã tiêu thụ và

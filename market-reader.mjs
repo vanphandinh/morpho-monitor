@@ -3,18 +3,49 @@ import { AccrualPosition, Market, Position } from "@morpho-org/blue-sdk";
 import { parseUnits } from "viem";
 
 /**
+ * Zero address — `Morpho.idToMarketParams(id)` trả NGUYÊN struct 0 cho market id
+ * không tồn tại (mapping mặc định), nên params toàn zero là dấu hiệu cấu hình sai
+ * chứ không phải market rỗng.
+ */
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+/** Error code: configured market id does not exist on-chain (all-zero params). */
+export const MARKET_PARAMS_ZERO = "MARKET_PARAMS_ZERO";
+
+/**
  * Deep read module: immutable params/token metadata are initialized once;
  * dynamic market and lender position state are read together via Multicall.
+ *
+ * `fetchParams`/`fetchTokenById` are injectable (audit P0.3) so this module — the
+ * load-bearing "one multicall at one block" contract — is testable with fakes
+ * instead of a live RPC. blue-sdk-viem's fetchers cannot be faked from outside:
+ * `fetchMarketParams` consults an internal registry first and `fetchToken`
+ * defaults to a deployless call.
  */
-export async function createMarketReader({ client, lenderAddress, morphoBlueAddress, markets }) {
+export async function createMarketReader({
+  client, lenderAddress, morphoBlueAddress, markets,
+  fetchParams = fetchMarketParams,
+  fetchTokenById = fetchToken,
+}) {
   const tokenCache = new Map();
   const runtimes = new Map();
 
   for (const config of markets) {
-    const params = await fetchMarketParams(config.id, client, { chainId: 1 });
+    const params = await fetchParams(config.id, client, { chainId: 1 });
+    // Fail fast (audit P0.3): một chữ sai trong config/markets.json trước đây biến
+    // market đó thành market rỗng "hợp lệ" (liquidity 0, symbol undefined) và
+    // monitor im lặng không bao giờ cảnh báo. Thà chết lúc khởi động kèm id.
+    if (!params?.loanToken || params.loanToken.toLowerCase() === ZERO_ADDRESS) {
+      const err = new Error(
+        `❌ Market id không tồn tại on-chain (params toàn zero): ${config.id}\n` +
+        "   → Kiểm tra lại `id` trong config/markets.json (MARKETS_FILE)."
+      );
+      err.code = MARKET_PARAMS_ZERO;
+      err.marketId = config.id;
+      throw err;
+    }
     const tokenFor = async (address) => {
       const key = address.toLowerCase();
-      if (!tokenCache.has(key)) tokenCache.set(key, fetchToken(address, client, { chainId: 1 }));
+      if (!tokenCache.has(key)) tokenCache.set(key, fetchTokenById(address, client, { chainId: 1 }));
       return tokenCache.get(key);
     };
     const [loanToken, collateralToken] = await Promise.all([

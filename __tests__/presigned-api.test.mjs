@@ -174,6 +174,59 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(stored.bundles[MARKET_A]).toBeUndefined(); // nothing persisted on failure
   });
 
+  // ---- P0.2: validate TRƯỚC khi lấy lock ----
+  it("P0.2: validate chạy trước lock — body rỗng vẫn 400 dù thư mục registry chưa tồn tại", async () => {
+    const missingDirPath = path.join(dir, "not-created-yet", "presigned.json");
+    const other = http.createServer(createRequestHandler({ presignedPath: missingDirPath, markets, content }));
+    await new Promise((r) => other.listen(0, "127.0.0.1", r));
+    const otherPort = other.address().port;
+    try {
+      const resp = await fetch(`http://127.0.0.1:${otherPort}/api/presign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(resp.status).toBe(400); // 400 (validate), KHÔNG phải 500 (lock ENOENT)
+      // Không chạm registry: thư mục chưa được tạo, không có .lock.
+      expect(fs.existsSync(path.dirname(missingDirPath))).toBe(false);
+    } finally {
+      await new Promise((r) => other.close(r));
+    }
+  });
+
+  it("P0.2: POST JSON hỏng / market lạ / thiếu withdrawals đều 400-404 và không để lại .lock", async () => {
+    seedRegistry({});
+    const badJson = await fetch(`http://127.0.0.1:${port}/api/presign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not json",
+    });
+    expect(badJson.status).toBe(400);
+
+    const emptyBundle = await api("POST", "/api/presign", {});
+    expect(emptyBundle.status).toBe(400);
+    expect(emptyBundle.json.error).toMatch(/withdrawals empty/);
+
+    const unknownMarket = await api("POST", "/api/presign", {
+      version: 2,
+      marketId: "0x" + "c".repeat(64),
+      nonce: 7,
+      withdrawals: [{ label: "t1", amountWei: "10", signedTx: "0x01" }],
+    });
+    expect(unknownMarket.status).toBe(404);
+
+    expect(fs.existsSync(`${registryPath}.lock`)).toBe(false);
+  });
+
+  it("P0.2: DELETE tier index không hợp lệ bị chặn trước lock", async () => {
+    seedRegistry({ [MARKET_A]: { nonce: 5, status: "pending", withdrawals: [{ label: "t1", amountWei: "10", signedTx: "0x01" }] } });
+    const before = fs.readFileSync(registryPath, "utf8");
+    const resp = await api("DELETE", `/api/presign?market=${MARKET_A}&tier=-1`);
+    expect(resp.status).toBe(400);
+    expect(fs.readFileSync(registryPath, "utf8")).toBe(before);
+    expect(fs.existsSync(`${registryPath}.lock`)).toBe(false);
+  });
+
   it("error status mapping is total", () => {
     expect(statusForError({ code: MARKET_INPUT_INVALID })).toBe(400);
     expect(statusForError({ code: MARKET_NOT_CONFIGURED })).toBe(404);

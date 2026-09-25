@@ -319,6 +319,11 @@ export function createRequestHandler({
       try {
         const marketId = requireMarket(urlObj.searchParams.get("market"));
         const nonceParam = urlObj.searchParams.get("nonce");
+        // Kiểm rẻ tiền trước lock (P0.2); giới hạn trên phải chờ đọc registry.
+        const tierIndex = tierIdx === null ? null : parseInt(tierIdx, 10);
+        if (tierIdx !== null && (isNaN(tierIndex) || tierIndex < 0)) {
+          throw Object.assign(new Error(`Invalid tier index: ${tierIdx}`), { code: MARKET_INPUT_INVALID });
+        }
         let outcome;
         await updateRegistry(presignedPath, (registry) => {
           // v3: bundles are keyed `marketId@nonce`. DELETE without nonce →
@@ -345,7 +350,7 @@ export function createRequestHandler({
               );
             }
             if (bundle) {
-              const idx = parseInt(tierIdx, 10);
+              const idx = tierIndex;
               if (isNaN(idx) || idx < 0 || idx >= (bundle.withdrawals?.length || 0)) {
                 throw Object.assign(new Error(`Invalid tier index: ${tierIdx}`), { code: MARKET_INPUT_INVALID });
               }
@@ -398,35 +403,40 @@ export function createRequestHandler({
       }
 
       try {
+        // Validate TRƯỚC khi lấy lock (audit P0.2): parse JSON, kiểm withdrawals,
+        // allow-list market, version, nonce và verify calldata đều KHÔNG cần đọc
+        // registry. Trước đây chúng nằm trong mutation nên một request rác vẫn
+        // chiếm cross-process lock (và khi thư mục registry/vừa thiếu thì lỗi
+        // lock — 500 — che mất lỗi validate — 400).
+        let parsed;
+        try { parsed = JSON.parse(body); } catch (err) {
+          throw Object.assign(new Error(`Invalid JSON body: ${err.message}`), { code: MARKET_INPUT_INVALID });
+        }
+        if (!parsed.withdrawals || parsed.withdrawals.length === 0) {
+          throw Object.assign(new Error("Invalid bundle: withdrawals empty"), { code: MARKET_INPUT_INVALID });
+        }
+
+        // Fail-closed: verify Morpho withdraw calldata trước khi persist
+        const marketId = requireMarket(parsed.marketId);
+        if (parsed.version !== 2) {
+          throw Object.assign(new Error("Presigned bundle must use version 2"), { code: MARKET_INPUT_INVALID });
+        }
+        if (!Number.isFinite(Number(parsed.nonce))) {
+          throw Object.assign(new Error("Presigned bundle requires a numeric nonce"), { code: MARKET_INPUT_INVALID });
+        }
+        const incoming = sanitizePendingBundle(parsed);
+        incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
+        const verified = await verifyPresignedBundle(incoming, {
+          morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+          lenderAddress: LENDER_ADDRESS,
+          marketId,
+        });
+        if (!verified.ok) {
+          throw Object.assign(new Error(`Calldata verify failed: ${verified.error}`), { code: MARKET_INPUT_INVALID });
+        }
+
         let outcome;
         await updateRegistry(presignedPath, async (registry) => {
-          let parsed;
-          try { parsed = JSON.parse(body); } catch (err) {
-            throw Object.assign(new Error(`Invalid JSON body: ${err.message}`), { code: MARKET_INPUT_INVALID });
-          }
-          if (!parsed.withdrawals || parsed.withdrawals.length === 0) {
-            throw Object.assign(new Error("Invalid bundle: withdrawals empty"), { code: MARKET_INPUT_INVALID });
-          }
-
-          // Fail-closed: verify Morpho withdraw calldata trước khi persist
-          const marketId = requireMarket(parsed.marketId);
-          if (parsed.version !== 2) {
-            throw Object.assign(new Error("Presigned bundle must use version 2"), { code: MARKET_INPUT_INVALID });
-          }
-          if (!Number.isFinite(Number(parsed.nonce))) {
-            throw Object.assign(new Error("Presigned bundle requires a numeric nonce"), { code: MARKET_INPUT_INVALID });
-          }
-          const incoming = sanitizePendingBundle(parsed);
-          incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
-          const verified = await verifyPresignedBundle(incoming, {
-            morphoBlueAddress: MORPHO_BLUE_ADDRESS,
-            lenderAddress: LENDER_ADDRESS,
-            marketId,
-          });
-          if (!verified.ok) {
-            throw Object.assign(new Error(`Calldata verify failed: ${verified.error}`), { code: MARKET_INPUT_INVALID });
-          }
-
           let merged = incoming;
           let action = "saved";
           // Key của rung sẽ ghi. Rung được tra theo IDENTITY (marketId, nonce)
