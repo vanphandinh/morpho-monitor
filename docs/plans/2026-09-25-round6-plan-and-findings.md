@@ -95,14 +95,28 @@ không đổi kết quả. Ghim bằng một test mới trong `webapp-flows.test
 AssertionError: expected 'C:\\Users\\VanPhanDinh\\Desktop\\morpho\\w…' to be 'webapp-app.mjs'
 ```
 
-### D12 (LOW — hành vi, ĐÃ ĐO, CHƯA SỬA)
+### D12 (LOW — hành vi) — ĐÃ SỬA trong pha riêng, sau khi vòng 6 đóng
 
 `signWithdrawAll()` gọi `onGasInputChange()` để đọc lại gas, và hàm đó gọi `invalidateSignatures()`
 **vô điều kiện** ⇒ bấm "Ký Rút Toàn Bộ Shares" reset mọi tier đã ký về `pending` kèm báo "Gas đã thay
-đổi" **dù gas không đổi**, đồng thời bật lại nút lưu. Trace ghim đúng hành vi này ở cả hai cây (bước
-`sign-withdraw-all`), nên nếu ai sửa thì `refactor-diff` sẽ lộ ngay. **Không sửa trong vòng 6** vì sửa
-là đổi hành vi đường tiền, và đổi hành vi làm mất luôn phép so trung thành ở §2 — nó phải là một pha
-riêng, có đỏ-trước. Ghi ở `CLAUDE.md` mục Sharp edges.
+đổi" **dù gas không đổi**, đồng thời bật lại nút lưu. **Vòng 6 cố ý không sửa** vì đổi hành vi làm mất
+phép so trung thành ở §2 — sửa là một pha riêng, và pha đó đã chạy như sau:
+
+- `signWithdrawAll` gọi `readGasInputs()` (chỉ ĐỌC); `onGasInputChange()` chỉ invalidate khi
+  `gasValuesChanged()` xác nhận gas thực sự đổi — so **trước khi** gán `presignedGas`.
+- Đỏ-trước bước 1 (áp CHỈ guard lên code cũ): đúng 3 test đỏ — 2 test ghim hành vi cũ + fixture.
+- Lỗi trong quá trình sửa, ghi thẳng: lần áp đầu tiên so gas SAU khi gán ⇒ so giá trị mới với chính
+  nó ⇒ luôn false ⇒ bảo vệ vô hiệu. Lần thứ hai của cùng lớp lỗi: chỗ duy nhất gas đổi trong kịch
+  bản (`autoFillGas`) ghi thẳng state rồi mới ghi ra ô nhập nên onchange không bắn — ca dương DƯƠNG
+  phải là người dùng sửa ô gas. Cả hai nay được ghim bởi ca dương "D12: gas THỰC SỰ đổi thì chữ ký
+  vẫn bị vô hiệu".
+- Đỏ-trước bước 2: bỏ guard ⇒ 3 đỏ (hành vi cũ bị bắt); guard luôn-false ⇒ đúng ca dương đỏ.
+  Probe "quay lại gọi `onGasInputChange()`" XANH — kết quả dự kiến vì guard đã sửa đúng; không nhặt
+  nó làm bằng chứng.
+- Fixture đóng băng lại: khác biệt chỉ ở `sign-withdraw-all` + `save-to-server-all-shares`; 12 bước
+  trước đó 0 khác biệt so với cây trước P5; vẫn 19 bước · 46 lời gọi.
+
+Cổng sau pha này: lint 0/0 (83 file), `node --check` 84/84, 544 passed | 7 skipped (551) / 37 file.
 
 ### Ghi chú kỹ thuật dễ mất khi "rút gọn" code
 
