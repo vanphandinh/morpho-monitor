@@ -16,6 +16,7 @@
     "verify": "node verify-presigned.mjs",
     "lint": "oxlint --deny no-undef --deny-warnings .",
     "check": "npm run lint && node scripts/check-syntax.mjs && vitest run",
+    "diff:refactor": "node scripts/refactor-diff.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
