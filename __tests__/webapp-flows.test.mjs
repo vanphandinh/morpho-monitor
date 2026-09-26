@@ -55,6 +55,17 @@ beforeAll(() => {
   trace = runTrace();
 });
 
+/**
+ * Timeout cho những ca chạy TRỌN kịch bản trong TIẾN TRÌNH CON (`runTrace`).
+ *
+ * Mỗi lần gọi là một `execFileSync` khởi động Node mới + dựng lại toàn bộ webapp + đi hết 19 bước:
+ * đo được ~3.1s khi máy rảnh. Mặc định 5s của vitest đủ khi chạy một mình, nhưng vượt ngưỡng khi cả
+ * 48 file chạy song song (thêm test ⇒ thêm worker ⇒ cùng một khẳng định đỏ vì TẢI MÁY, không vì hành
+ * vi — đã xảy ra ngay khi thêm hai file test layout). Đây là test I/O + khời-động tiến trình, không
+ * phải test logic, nên ngân sách thời gian phải rộng; các khẳng định bên trong vẫn chặt như cũ.
+ */
+const CHILD_TRACE_TIMEOUT_MS = 30_000;
+
 const stepNamed = (name) => {
   const found = trace.steps.find((step) => step.name === name);
   expect(found, `trace không có bước "${name}"`).toBeTruthy();
@@ -239,7 +250,7 @@ describe("đường tiền — lưu bundle lên server", () => {
     expect(step.obs.presignResult).toContain("Gas đã thay đổi");
     expect(step.obs.tierList.match(/✅/g) ?? []).toHaveLength(0);
     expect(step.obs.signAllDisabled).toBe(false);
-  });
+  }, CHILD_TRACE_TIMEOUT_MS);
 
   it("D14: bấm Tự Động Gas SAU khi ký + phí ĐỔI ⇒ chữ ký phải bị vô hiệu (audit 2026-09-26)", () => {
     // `autoFillGas()` là đường DUY NHẤT ghi `presignedGas` mà không đi qua cổng vô hiệu chữ ký:
@@ -253,7 +264,7 @@ describe("đường tiền — lưu bundle lên server", () => {
     expect(step.obs.presignResult).toContain("Gas đã thay đổi");
     expect(step.obs.tierList.match(/✅/g) ?? []).toHaveLength(0); // chữ ký đã ký về ⬜
     expect(step.obs.signAllDisabled).toBe(false);
-  });
+  }, CHILD_TRACE_TIMEOUT_MS);
 
   it("D14: bấm Tự Động Gas SAU khi ký nhưng phí KHÔNG đổi ⇒ GIỮ chữ ký (ca âm)", () => {
     // Cổng so-sánh-phải-chạy-trước-khi-gán, không phải một lệnh invalidate vô điều kiện: nếu
@@ -264,7 +275,7 @@ describe("đường tiền — lưu bundle lên server", () => {
     expect(step.obs.gasPriority).toBe("2"); // phí không đổi
     expect(step.obs.presignResult).not.toContain("Gas đã thay đổi");
     expect(step.obs.tierList.match(/✅/g) ?? []).toHaveLength(2); // 2 mốc đã ký vẫn còn
-  });
+  }, CHILD_TRACE_TIMEOUT_MS);
 
   it("DELETE tier gửi kèm market + nonce + tier (thiếu nonce ⇒ server sửa nhầm rung)", () => {
     const deletes = apiOf(stepNamed("delete-tier"), "DELETE");
@@ -319,7 +330,7 @@ describe("R4 — xác minh tx best-effort không chặn UI", () => {
     expect(step.obs.txVerifyNoteHtml).toContain("http://127.0.0.1:8545"); // URL proxy trong cảnh báo
     // Xác minh là best-effort: banner thành công vẫn còn nguyên, không bị đảo thành lỗi.
     expect(step.obs.txResult).toContain("thành công");
-  });
+  }, CHILD_TRACE_TIMEOUT_MS);
 });
 
 describe("lưới hồi quy — trace đã đóng băng", () => {

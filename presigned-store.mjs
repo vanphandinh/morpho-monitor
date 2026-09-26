@@ -99,6 +99,39 @@ export function readRegistry(filePath) {
   return migrateRegistry(registry);
 }
 
+/**
+ * Mã lỗi khi `rename()` đè lên file đích đang được tiến trình KHÁC mở/đọc. Trên Windows, share mode
+ * của `fs.readFileSync` KHÔNG cho phép rename/delete ⇒ `renameSync(tmp, file)` ném `EPERM` (hoặc
+ * `EBUSY`/`EACCES` tuỳ thứ đang giữ file) trong khi reader chỉ sống vài ms. Trên POSIX điều này không
+ * tồn tại (rename không quan tâm ai đang mở file).
+ */
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+/**
+ * Ngân sách thử lại CỐ Ý nhỏ (5 × 20ms = ≤100ms): `writeRegistry` chạy BÊN TRONG lock file, mà lock
+ * chỉ kiên nhẫn 50 × 20ms (~1s) — thử lại quá lâu sẽ biến một rename lỗi tạm thời thành
+ * `LOCK_STALE` cho tiến trình khác. Cửa sổ thật cần che chỉ là vài ms (`readRegistry` mở, đọc, đóng).
+ */
+const RENAME_ATTEMPTS = 5;
+const RENAME_DELAY_MS = 20;
+
+/** Ngủ ĐỒNG BỘ (writeRegistry là hàm sync) mà không bận CPU. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** `rename` có thử lại cho lỗi TẠM THỜI của Windows; lỗi khác ném ngay (không che lỗi thật). */
+function renameWithTransientRetry(from, to) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      if (attempt >= RENAME_ATTEMPTS || !TRANSIENT_RENAME_CODES.has(err.code)) throw err;
+      sleepSync(RENAME_DELAY_MS);
+    }
+  }
+}
+
 export function writeRegistry(filePath, registry) {
   if (registry?.version !== REGISTRY_VERSION || !registry.bundles || Array.isArray(registry.bundles)) {
     throw new Error("Refusing to write invalid presigned registry");
@@ -106,7 +139,13 @@ export function writeRegistry(filePath, registry) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(registry, null, 2));
-  fs.renameSync(tmp, filePath);
+  try {
+    renameWithTransientRetry(tmp, filePath);
+  } catch (err) {
+    // Không để lại rác `.tmp` phía sau một lần ghi thất bại (lần ghi sau sẽ ghi lại từ đầu).
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
   try { fs.chmodSync(filePath, 0o600); } catch {}
 }
 

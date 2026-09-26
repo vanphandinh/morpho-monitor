@@ -88,6 +88,24 @@
       border: 1px solid var(--border);
       color: var(--text);
     }
+    /* Nút phụ INLINE trong một hàng (xoá tier, xoá rung). Mặc định của `button` là
+       `display:block; width:100%; padding:14px; margin:8px 0` — đúng cho nút hành động toàn khối,
+       SAI cho nút cỡ nhỏ nằm trong hàng: nó giãn theo bề rộng hàng và cao theo padding 14px.
+       Đây là rule NỀN cho mọi `.btn-remove`; hai rule theo container (`.tier-row`,
+       `.bundle-tier-row`) bên dưới chỉ chỉnh lại khi cần.
+       Chẩn đoán 2026-09-26: nút 🗑 của rung nằm trong `.row` TRẦN nên không khớp rule nào và rơi
+       về mặc định — nút xoá rộng 255–324px, hai rung lệch nhau, hàng rung cao 80px (browser thật,
+       viewport 644px) trong khi ✕ của tier chỉ 29×22. `align-self:center` vì hàng có thể cao hơn
+       nút (nhãn nonce/trạng thái xuống dòng); `flex:0 0 auto` để không bị co/giãn theo hàng. */
+    .btn-remove {
+      width: auto;
+      flex: 0 0 auto;
+      align-self: center;
+      padding: 2px 8px;
+      margin: 0;
+      font-size: 0.85rem;
+      line-height: 1.2;
+    }
 
     .input-group {
       display: flex;

@@ -32,8 +32,13 @@ npm run check        # lint + node --check (.mjs + script nội tuyến của we
 npm run diff:refactor -- --base ee43de6   # so HÀNH VI đường tiền giữa cây cũ và HEAD (cần lịch sử git)
 node scripts/webapp-trace.mjs            # in trace kịch bản đường tiền của cây hiện tại ra stdout (JSON)
 
+# Cổng UI THẬT (browser) — không nằm trong `check` vì cần Chromium
+npx playwright install chromium          # một lần mỗi máy (CI tự cài trong job `ui`)
+npm run ui:check                         # boot webapp THẬT + Chromium: lỗi runtime + bất biến layout, 2 viewport
+npm run ui:check -- --keep-open           # giữ server + browser mở để soi bằng mắt (in cả URL + token fixture)
+
 # Tests
-npm test             # vitest run (all 595 tests across 44 files; 588 chạy + 7 skipped = live ntfy, NTFY_LIVE=1 để chạy)
+npm test             # vitest run (all 653 tests across 49 files; 646 chạy + 7 skipped = live ntfy, NTFY_LIVE=1 để chạy)
 npx vitest run       # same
 npx vitest           # watch mode
 npx vitest run __tests__/shared.test.mjs  # single file
@@ -136,6 +141,7 @@ Pure function tested independently. Five checks in order: threshold, 0→positiv
 
 ### Write serialization and lifecycle guard (presigned-store.mjs)
 - All registry mutations go through `updateRegistry` → cross-process `withFileLock` (`.lock` file) → read → mutate → atomic write (tmp file + rename). Webapp POST/DELETE use `origin: "user"`; the monitor broadcaster uses the default monitor origin.
+- The rename retries **transient Windows lock errors** (`EPERM`/`EBUSY`/`EACCES`, ≤100ms total) because on Windows `rename` over a file another process has open for reading fails — share mode does not allow rename/delete (POSIX has no such rule). Without this, a sibling `readRegistry()` of a few ms made the terminal write fail, the broadcast claim stayed `broadcasting` (by design: “ambiguity keeps the claim”), and `two-process-race` flaked on `windows-latest`. The retry budget is deliberately small: `writeRegistry` runs **inside** the file lock, which only waits ~1s (`50 × 20ms`) — retrying longer would turn a transient rename failure into `LOCK_STALE` for another process.
 - User-origin mutations are compared against an active-claim signature (id, status, nonce, txHash, tier digest of every broadcasting/submitted bundle) taken before and after the mutation inside the same lock. Any difference rejects the mutation with `ACTIVE_CLAIM_CONFLICT` and the registry is left unchanged — the web UI can never delete or edit an in-flight withdrawal.
 
 ### Presigned lifecycle invariants (presigned-broadcast.mjs)
@@ -149,6 +155,13 @@ Pure function tested independently. Five checks in order: threshold, 0→positiv
 
 ### Challenge rate limiting (webapp-handler.mjs)
 `GET /api/challenge` is rate-limited to 10 requests per minute per IP via a per-handler `challengeRateLimit` Map inside the `createRequestHandler` closure (test handlers never share state). IPs exceeding the limit receive HTTP 429. Expired rate-limit entries are cleaned up every 2 minutes along with expired challenges; the interval belongs to the bootstrap (`handler.startCleanupTimer()`, cancelled on shutdown), so importing the handler in tests leaves no timer behind. Routing matches the exact pathname (`/api/presignXYZ` is not `/api/presign`) and any unknown `/api/*` path returns JSON 404 instead of the SPA HTML.
+
+### Real-browser UI gate (scripts/ui-checks.mjs)
+`npm run ui:check` boots the **real** `webapp-server.mjs` (spawned child, fixture in `ci-fixture/`, seeded registry matching the reported bundle ladder) and drives headless Chromium over it. It logs in via the **real** HMAC path — `createSessionToken()` from `auth.mjs` written into `sessionStorage` before page scripts run — so no wallet double is needed.
+- Fails on: `pageerror`, `console.error`, failed requests, HTTP ≥ 400 (all filtered through a **named** allowlist with reasons: the deliberately dead RPC port, `ERR_UNSAFE_PORT`, favicon — never “ignore everything”), page-wide horizontal overflow, and layout invariants measured with `getBoundingClientRect()` at 644×1355 and 1280×900 (buttons inside a row ≤ 25% of the row width and ≤ 40px tall, rung rows ≤ 48px, same-kind buttons across rungs within 2px, visible controls ≥ 16×16px).
+- Measures **twice**: before, and after leaving the presign tab and coming back — the bundle section must rebuild itself with identical layout.
+- Fail closed (the D10 lesson): not seeing the ladder, fewer than 5 delete buttons, or a hidden bundle section is a **failure**, never a pass. Everything is written to `test-results/ui/` (both screenshots, `report.json` with per-button numbers, runtime problems, server log tail); CI uploads that directory when the `ui` job fails.
+- Not covered on purpose: business flows that need a signing wallet, and visual/pixel snapshots. `npm run check` stays the fast local gate; this is the deep one.
 
 ### Dependency injection for testing
 `broadcastEligible`, `createRequestHandler`, `createCheckScheduler`, `createWssWatcher`, `createWssConnect`, `createRpcDispatcher`/`createProxyRequestHandler`, `buildWebappConfig` and `injectWebappConfig` all accept their I/O (RPC client, registry path, timers, fetch, connect, viem factories) as injectable parameters, so the production modules are tested directly with fakes instead of duplicated logic. Test doubles for viem WSS must use the real transport shape: `{ value: { getRpcClient: () => Promise.resolve({ close }) } }` — a fake `{ close }` on the transport hides the fact that viem has no `transport.close`.

@@ -2,6 +2,17 @@
  * Two-process race test: hai tiến trình Node THẬT đua claim cùng nonce trên
  * cùng registry file (production store + production broadcaster).
  * Không có promise queue giả lập — serialize đến từ withFileLock thật.
+ *
+ * Chẩn đoán 2026-09-26 (flake `windows-latest`, từng làm CI #19 đỏ): khẳng định cũ
+ * `expect(submittedCount).toBe(1)` giả định "ĐÚNG MỘT chu kỳ luôn hoàn tất terminal" — đó KHÔNG phải
+ * hợp đồng của hệ thống. `broadcastEligible` chủ ý giữ claim khi kết quả mơ hồ ("ambiguity keeps the
+ * claim") và hoàn tất ở chu kỳ sau; trên Windows còn thêm một đường mơ hồ thật: `writeRegistry` ghi
+ * `.tmp` rồi `renameSync`, mà rename đè lên file đang được tiến trình anh em MỞ ĐỂ ĐỌC thì ném
+ * `EPERM` (share mode của Windows; POSIX không quan tâm) ⇒ bước chốt terminal không chạy xong. Đã sửa
+ * tận gốc ở `writeRegistry` (thử lại lỗi tạm thời — `__tests__/presigned-store-write-race.test.mjs`),
+ * và ở đây khẳng định đúng HỢP ĐỒNG thay vì đúng một thời điểm: tối đa MỘT raw send, bên thua không
+ * bao giờ thành `submitted`, và nếu claim còn sống thì bên thua phải còn `pending` (nonce CHƯA được
+ * chứng minh là đã tiêu thụ nên không được đánh `expired`).
  */
 import { describe, it, expect } from "vitest";
 import { execFile } from "node:child_process";
@@ -54,11 +65,32 @@ describe("two-process claim race (real child processes)", () => {
     const statuses = [stored.bundles[marketA].status, stored.bundles[marketB].status];
 
     if (totalSent === 1) {
-      // Winner is terminal (mock receipt is mined) and the mined receipt
-      // consumes the nonce: the sibling must be expired, never broadcast.
-      const submittedCount = statuses.filter((s) => s === "submitted").length;
-      expect(submittedCount).toBe(1);
-      expect(statuses).toContain("expired");
+      // Khẳng định theo BÊN GỬI, không theo thời điểm. Ba trạng thái của bên gửi đều hợp lệ:
+      //   `submitted`   — receipt mine thành công (bước chốt terminal đã chạy xong);
+      //   `failed`      — receipt mine nhưng status ≠ success (nonce VẪN bị tiêu thụ — `isMinedReceipt`
+      //                   chỉ đòi blockHash/blockNumber/transactionHash, không đòi status);
+      //   `broadcasting`— bước chốt terminal CHƯA chạy xong (RPC mơ hồ, hoặc rename bị chặn tạm thời
+      //                   trên Windows — xem đầu file): claim durable nằm lại theo thiết kế
+      //                   "ambiguity keeps the claim" và chu kỳ sau hoàn tất nó.
+      const sender = a.sent === 1 ? marketA : marketB;
+      const loser = a.sent === 1 ? marketB : marketA;
+      const senderStatus = stored.bundles[sender].status;
+      const loserStatus = stored.bundles[loser].status;
+
+      expect(["broadcasting", "submitted", "failed"]).toContain(senderStatus);
+      // Bên KHÔNG gửi không bao giờ được terminal: nó chỉ được chờ (`pending`), hoặc bị đánh `expired`
+      // khi nonce đã được chứng minh là tiêu thụ. `submitted` ở bên không gửi = broadcast cùng nonce.
+      expect(["pending", "expired"]).toContain(loserStatus);
+
+      if (senderStatus === "broadcasting") {
+        // Chưa có bằng chứng nonce bị tiêu thụ ⇒ bên kia PHẢI còn `pending` (đánh `expired` ở đây sẽ
+        // xoá mất một chữ ký còn dùng được), và claim phải giữ rawTx để chu kỳ sau chốt tiếp.
+        expect(loserStatus).toBe("pending");
+        expect(typeof stored.bundles[sender].rawTx, "claim sống phải còn rawTx").toBe("string");
+      } else {
+        // Receipt mine (thành công HAY thất bại) đều tiêu nonce ⇒ rung cùng nonce hết đường.
+        expect(loserStatus).toBe("expired");
+      }
     } else if (totalSent === 0) {
       // Both found the other's claim first (possible under contention) —
       // no corruption, and at most one reservation exists.

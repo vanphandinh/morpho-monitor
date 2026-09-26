@@ -11,6 +11,12 @@
 #     webapp TỪ TRONG image, kiểm đồ thị module có đủ file và các route trả đúng mã — bắt được lớp
 #     lỗi "Dockerfile copy thiếu module" mà mọi test trên cây nguồn đều mù.
 #
+#  3. Cổng `ui` (2026-09-26): `npm run check` chạy trên DOM GIẢ — không layout, không module thật,
+#     không JS của trang chạy. Lỗi "nút xoá tier quá to và không đồng đều" (258px/327px, hàng 80px)
+#     lọt qua toàn bộ cổng cũ vì không có gì trong đó ĐO được UI thật. Job `ui` boot webapp THẬT rồi
+#     mở Chromium để kiểm lỗi runtime + bất biến layout. Chỉ chạy ubuntu: bản Chromium trên runner
+#     windows chậm và thêm flake mà không thêm khả năng bắt lỗi.
+#
 # Ghi chú giới hạn (không nên đọc quá lời): CI này chỉ chạy khi repo được push lên một remote có
 # GitHub Actions. `npm run check` ở máy vẫn là cổng nhanh nhất; CI là cổng không thể bỏ qua.
 name: CI
@@ -38,6 +44,33 @@ jobs:
       - run: npm ci
       # `npm run check` = lint (có tự kiểm độ phủ file) + node --check + toàn bộ vitest.
       - run: npm run check
+
+  ui:
+    name: ui · chromium layout + runtime
+    needs: gate
+    runs-on: ubuntu-latest
+    # Không cần matrix OS/Node: `npm run ui:check` chỉ cần MỘT Chromium trên MỘT hệ để đo layout thật.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # `--only-shell`: chỉ tải bản Chromium headless (cổng này chỉ chạy headless trên CI) — nhỏ hơn
+      # nhiều so với tải trọn Chromium. Theo phiên bản playwright, nên cache có thể thêm sau bằng
+      # `actions/cache` khoá theo `npx playwright --version` nếu job này thành điểm chậm.
+      - run: npx playwright install --with-deps --only-shell chromium
+      - run: npm run ui:check
+      # Khi ĐỎ: đọc ngay `report.json` (số đo từng nút + danh sách lỗi runtime + tail log server) và
+      # ảnh chụp hai viewport, không phải chạy lại để đoán.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-failure
+          path: test-results/ui
+          if-no-files-found: ignore
 
   image:
     name: image · build + smoke

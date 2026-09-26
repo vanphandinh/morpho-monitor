@@ -16,6 +16,7 @@
     "verify": "node verify-presigned.mjs",
     "lint": "node scripts/lint.mjs",
     "check": "npm run lint && node scripts/check-syntax.mjs && vitest run",
+    "ui:check": "node scripts/ui-checks.mjs",
     "diff:refactor": "node scripts/refactor-diff.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -36,6 +37,7 @@
   "devDependencies": {
     "concurrently": "^10.0.3",
     "oxlint": "^1.85.0",
+    "playwright": "^1.63.0",
     "vitest": "^4.1.9"
   }
 }
