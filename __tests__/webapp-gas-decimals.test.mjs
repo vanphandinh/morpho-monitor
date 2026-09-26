@@ -43,6 +43,11 @@ describe("gas số nhỏ hàng thập phân (bug 4)", () => {
     expect(parseGasInput("0,00000026").wei).toBe(260n);
     expect(parseGasInput(" 0.00000026 ").wei).toBe(260n);
     expect(parseGasInput("50").wei).toBe(50_000_000_000n);
+    // Dạng thiếu số 0 đầu/cuối (`.5`, `,5`, `50.`) — `parseFloat` bản cũ chấp nhận cả ba, nên bản
+    // mới cũng phải đi cùng một đường với `0.5`/`50.0` (audit D15–D20, 2026-09-26).
+    expect(parseGasInput(".5").wei).toBe(500_000_000n);
+    expect(parseGasInput(",5").wei).toBe(500_000_000n);
+    expect(parseGasInput("50.").wei).toBe(50_000_000_000n);
     expect(parseGasInput("1e-7").error).toMatch(/không phải số Gwei hợp lệ/);
     expect(parseGasInput("0.0000000001").error).toMatch(/quá 9 chữ số thập phân/);
     expect(parseGasInput("")).toEqual({ wei: null, error: null });

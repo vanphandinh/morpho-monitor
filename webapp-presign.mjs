@@ -194,6 +194,9 @@ export async function autoFillGas() {
  * `autoFillGas` ghi ra (`formatUnits(260n, 9)` = `"0.00000026"`). Dấu phẩy thập phân kiểu VN
  * (`0,00000026`) thì `parseFloat` cắt tại `,` thành `0` ⇒ ô bị coi như rỗng, im lặng.
  *
+ * Chấp nhận cả dạng thiếu số 0 đầu/cuối (`.5`, `,5`, `50.`) như `0.5`/`50.0` — bản cũ
+ * (`parseFloat`) chấp nhận cả ba, nên từ chối chúng là hồi quy (audit D15–D20, 2026-09-26).
+ *
  * @param {string} raw giá trị thô trong ô nhập
  * @returns {{ wei: bigint|null, error: string|null }} `wei = null` khi ô rỗng/0 (chưa thiết lập)
  *   hoặc khi `error` khác null — không bao giờ trả về giá trị dở dang.
@@ -202,7 +205,12 @@ export function parseGasInput(raw) {
   const text = String(raw ?? "").trim();
   if (text === "") return { wei: null, error: null };
   // Dấu phẩy thập phân kiểu VN: chỉ đổi khi chuỗi KHÔNG có dấu chấm (tránh "1,000.5").
-  const normalized = text.includes(".") ? text : text.replace(",", ".");
+  let normalized = text.includes(".") ? text : text.replace(",", ".");
+  // Chuẩn hoá dạng thiếu số 0 đầu/cuối về dạng đầy đủ TRƯỚC khi khớp regex (`.5` → `0.5`).
+  if (normalized.startsWith(".")) normalized = `0${normalized}`;
+  else if (normalized.endsWith(".")) normalized = `${normalized}0`;
+  // `match[1]` PHẢI là phần thập phân (phần nguyên không bắt nhóm): nó là thứ chặn >9 chữ số mà
+  // `parseUnits` sẽ âm thầm cắt bớt.
   const match = /^\d+(?:\.(\d+))?$/.exec(normalized);
   if (!match) {
     return { wei: null, error: `"${text}" không phải số Gwei hợp lệ — dùng dấu . hoặc , thập phân (không dùng số mũ).` };
