@@ -111,6 +111,9 @@ export const CHALLENGE_EXPIRY_MS = envNum("CHALLENGE_EXPIRY_MINUTES", 5) * 60 * 
 // ---- Presigned Bundle ----
 // Registry v3 (2026-09-24): { version: 3, bundles: { ["marketId@nonce"]: bundle } } — đọc được cả v2.
 export const PRESIGNED_FILE = env("PRESIGNED_FILE", "./data/presigned.json");
+// Ân hạn trước khi monitor dọn rung `expired` (chẩn đoán 2026-09-26). 0 = xoá ngay chu kỳ kế tiếp.
+// Xoá record KHÔNG mất ký ức "nonce đã tiêu thụ": purge nâng `consumedNonce` lên nonce bị xoá.
+export const PRESIGN_EXPIRED_RETENTION_MINUTES = envNum("PRESIGN_EXPIRED_RETENTION_MINUTES", 60);
 export const PROXY_PORT = envNum("PROXY_PORT", 8545);
 // Bind address for proxy — mặc định localhost. Set PROXY_HOST=0.0.0.0 cho MetaMask mobile / VPS.
 export const PROXY_HOST = env("PROXY_HOST", "127.0.0.1");
