@@ -326,3 +326,160 @@ scenario), `purgeExpiredRungs` → LOW, `createProxyRequestHandler` → LOW. Hai
 thêm lưới catch quanh render) và bị ghim bởi test cũ + test mới. `detect-changes --scope all`:
 12 file, 21 symbol · risk **critical** (do các hub webapp `refreshPresignOverview`/`saveToServer`/
 `parseGasInput` + 2 flow `BroadcastEligible`), 17 flow · không `partial`/`truncated`.
+
+---
+
+## 10. Triệu chứng bổ sung (2026-09-26): Tổng Quan Presign không hiện sau khi xác thực ví
+
+Người dùng báo: "Tổng Quan Presign (mọi market) không xuất hiện sau khi xác thực ví mà phải refresh lại
+webapp mới xuất hiện".
+
+Đỏ-trước (`__tests__/webapp-auth-overview.test.mjs`, chạy trên cây trước fix, cùng harness thật):
+`AssertionError: xác thực xong phải đọc tổng quan NGAY, không đợi F5: expected 0 to be greater than 0`.
+
+Nguyên nhân: nút xác thực (`btn-sign-in`) nằm TRONG tab Ký Trước, nhưng `signIn()` sau khi lưu phiên chỉ gọi
+`fetchExistingBundle()` — **thiếu `refreshPresignOverview()`**. Mục `#presign-overview` (`webapp.html:312`)
+mang `style="display:none"` và chỉ được bật bởi `refreshPresignOverview()`, mà hàm đó chỉ được gọi từ
+`switchTab` và `init()` ⇒ đứng yên ở tab Ký Trước thì mục Tổng Quan im lặng cho tới khi chuyển tab hoặc F5.
+
+Fix: `signIn()` gọi thêm `refreshPresignOverview()` khi `currentTab === "presign"` — gate theo tab để giữ
+đúng hợp đồng mà D18 đã ghim ("đứng ở tab khác thì không đọc bundle", `__tests__/webapp-bundle-visibility.test.mjs`)
+và giữ nguyên trace 48 call của `webapp-flows` (bước `sign-in` trong scenario ở tab Rút tiền).
+
+Ca đối xứng CÙNG LỚP lỗi (sửa luôn, cùng file test): `signOut()` chỉ vẽ lại nút, không ai ẩn hai mục
+auth-gated ⇒ Tổng Quan và ladder nằm nguyên trên màn hình bằng dữ liệu của phiên vừa mất. Đỏ-trước:
+`AssertionError: mất phiên ⇒ ladder phải ẩn lại: expected 'block' to be 'none'`. Fix: `signOut()` gọi lại
+cùng hai hàm — cả hai tự early-return + ẩn khi chưa xác thực nên KHÔNG có request nào đi ra (test ghim số
+request không đổi trước/sau đăng xuất).
+
+Cổng sau fix: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` · oxlint 94 file `.mjs` ·
+`node --check: 92/92 target OK` · **45 file test, 596 passed | 7 skipped (603)**. GitNexus `impact`:
+`signIn`/`signOut` → UNKNOWN (đã xác nhận bằng text search: `onclick="signIn()"` `webapp.html:346`,
+`onclick="signOut()"` `webapp.html:349`, + scenario/test gọi qua `window`).
+
+---
+
+## 11. Ngữ nghĩa gas 0 (2026-09-26): `maxPriorityFeePerGas = 0` là giá trị HỢP LỆ
+
+Yêu cầu: "cho phép maxPriorityFeePerGas=0 trên webapp". Đây là đổi **ngữ nghĩa có chủ đích** (không chỉ
+là sửa lỗi): `0` = "chủ động không tip" là giá trị hợp lệ theo EIP-1559 và phải ký được; chỉ ô **TRỐNG**
+mới là "chưa thiết lập". Trần `maxFeePerGas = 0` thì ngược lại — KHÔNG bao giờ hợp lệ.
+
+Đỏ-trước (`__tests__/webapp-gas-decimals.test.mjs`, chạy thật trên cây trước fix: **4 failed | 3 passed**,
+exit 1): `parseGasInput("0")` → `{ wei: null }` thay vì `{ wei: 0n }`; test "ký với tip 0" và test
+"autoFillGas gặp RPC báo tip 0" cùng đỏ ở `ví không nhận được eth_sendTransaction nào`; test chặn trần 0
+đỏ vì chưa có thông báo nào chứa "không bao giờ vào bảng".
+
+Nguyên nhân: `parseGasInput` cố tình hạ `wei = 0n` về `null` ("0 = chưa thiết lập"), và **bốn** điểm sau
+đó kiểm gas bằng falsy — mà `0n` là falsy trong JS: `readGasInputs`/`onGasInputChange` (qua `wei = null`),
+`signAllTiers` (`!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas`),
+`signWithdrawAll` (cùng dạng), `updateSignButton` (+ nút rút-toàn-bộ) và `updatePresignWalletUI`. Điểm nhọn
+thực tế: `autoFillGas` ghi `formatUnits(priorityFee * 2n, 9)` — RPC trả `priorityFee = 0` ⇒ ô hiện đúng
+`"0"` ⇒ nút Ký bị khoá kèm "Vui lòng nhập gas" dù gas vừa lấy TỪ CHÍNH chain.
+
+Fix (`webapp-presign.mjs`):
+- `parseGasInput` trả `{ wei, error: null }` — `0n` là giá trị hợp lệ, ô trống vẫn `null`.
+- Thêm `zeroMaxFeeError(wei)`: trần 0 bị chặn với thông báo RIÊNG chứa `maxFeePerGas = 0` + "không bao giờ
+  vào bảng" (trần 0 dưới cả base fee ⇒ tx không vào bảng mà bundle đã ký vẫn tiêu nonce). Áp ở cả
+  `readGasInputs` và `onGasInputChange`.
+- Guard ký đổi sang `=== null` (0 hợp lệ cho tip); ba điểm UI đổi sang `!== null && > 0n`.
+- Placeholder hai ô (`webapp.html`) nói rõ: trần "phải > 0", tip "0 = không tip (hợp lệ)".
+
+Cổng sau fix: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` · `node --check: 92/92 target OK` ·
+**45 file test, 599 passed | 7 skipped (606)**; riêng `webapp-gas-decimals` 7/7. GitNexus `impact`:
+`updateSignButton` → **CRITICAL** (11 caller cùng module: signAllTiers/signWithdrawAll/fetchNonce/saveToServer/
+autoFillGas/onNonceStep/addTier/addPresetTier/removeTier/updateTierAmount/onGasInputChange),
+`parseGasInput` → **HIGH**, `readGasInputs`/`onGasInputChange`/`updatePresignWalletUI` → LOW,
+`signAllTiers`/`signWithdrawAll` → UNKNOWN (đã xác nhận bằng text search: `window.signAllTiers`/
+`window.signWithdrawAll` ở `webapp-app.mjs:404-405` + `onclick="signAllTiers()"`/`onclick="signWithdrawAll()"`
+`webapp.html:434,444`). Thay đổi ở các hub là **nới có kiểm soát**: mọi giá trị khác 0 giữ nguyên hành vi,
+`0n` chỉ mới được chấp nhận ở ô tip, còn trần 0 thêm một nhánh chặn.
+
+Tồn dư đã biết (không đổi trong lượt này): metadata `maxFeePerGas`/`maxPriorityFeePerGas` của bundle là
+thông tin hiển thị (proxy copy nguyên, `verify-presigned.mjs` chỉ in log, không tầng nào kiểm gas), và
+`buildPresignedBundle` đọc tươi từ ô (D14) — nên sửa ô thành 0 SAU khi đã ký rồi bấm lưu vẫn ghi metadata
+0 trong khi byte đã ký mang phí cũ (banner lỗi đã hiện; monitor broadcast đúng byte đã ký).
+
+---
+
+## 12. Audit vòng 2 (2026-09-26): 3 lỗi mới sinh từ chính hai lô chưa commit
+
+Soát lại lô "auth-overview + ngữ nghĩa gas 0" (§10–§11) và phần đã soát SẠCH (12.6). Ba lỗi thật:
+
+### 12.1 Khe GIỮA hai mock: handler bỏ `code` khỏi body ⇒ phục hồi D16 chết ở production (nặng nhất)
+
+Đỏ-trước — ca mới trong `__tests__/money-path-e2e.test.mjs` (proxy THẬT → `/api/presign` THẬT, cùng registry
+trên đĩa, trên HTTP thật): `AssertionError: mã lỗi của server phải tới được client (không bị nuốt ở
+handler): expected undefined to be 'NONCE_NOT_CLAIMABLE'`.
+
+Nguyên nhân: `webapp-handler.mjs` map `err.code` ⇒ HTTP status (`statusForError`) rồi trả body
+`{ ok: false, error }` — **KHÔNG có `code`**. Relay proxy chuyển tiếp `...(postResult.code ? { code } : {})`
+nên không có gì để chuyển; `saveToServer` so `result.code === "NONCE_NOT_CLAIMABLE"` không bao giờ đúng.
+Fix D16 (`dddb1cb`) đã nối hai ĐẦU đường (relay ↔ webapp) mà bỏ quên đầu thứ ba; hai lớp test bọc hai đầu
+(proxy giả định server có `code`, webapp giả lập API có `code`) nên khe ở GIỮA vô hình với cả cổng.
+
+Fix: `errorPayload(err)` — bất biến "lỗi nào có `code` thì body có `code`" (lỗi không mã giữ nguyên body),
+áp cho cả bốn chỗ `statusForError`. Ghim bởi test A4 (handler thật) + ca e2e (cả chuỗi).
+
+### 12.2 Cổng cặp phí thiếu vế `tip > trần` ⇒ viem ném giữa vòng ký, im lặng
+
+Đỏ-trước (`__tests__/webapp-gas-decimals.test.mjs`, đo thật trong harness): `maxFeePerGas = 1`, `tip = 5` ⇒
+`eth_sendTransaction` = **0** (viem chặn client-side ở `assertRequest`/`assertTransactionEIP1559`), tier chuyển
+❌ với thông báo tiếng Anh trong `#progress-text`, **KHÔNG banner** ở `#presign-result` (banner cũ nằm
+nguyên), nút Ký vẫn bật ⇒ bấm lại lặp đúng lỗi đó. Cổng trần-0 của §11 không bắt được vế này.
+
+Fix: `gasPairError(maxFeeWei, priorityWei)` gộp hai luật TĨNH (trần 0; tip > trần — biên `tip === trần` hợp
+lệ, đúng như viem) + `gasPairReady()` làm nguồn sự thật chung cho `updateSignButton`/`updatePresignWalletUI`
+(nút không thể mời bấm một lượt ký mà cổng chắc chắn từ chối).
+
+### 12.3 Đường phục hồi nonce "chưa tiêu thụ" không có lối ra (và chỉ dẫn sai)
+
+Đỏ-trước (`__tests__/webapp-stale-nonce-guard.test.mjs`): 409 `NONCE_NOT_CLAIMABLE` khi on-chain nonce
+KHÔNG đổi ⇒ banner cũ vẫn bảo "Đã lấy lại nonce on-chain (14). Ký lại để dùng nonce mới" trong khi nonce
+không đổi, chữ ký còn ✅, nút Lưu vẫn mở ⇒ bấm lại nhận đúng 409 đó — vòng lặp không lối ra.
+
+Nguyên nhân: nhánh phục hồi D16 giả định "server từ chối ⇒ nonce đã chết" — sai với rung `invalid` (verify
+NỘI DUNG bundle thất bại, chưa từng broadcast: nonce còn nguyên trên chain). Server cũng mách "lấy nonce
+mới" cho mọi status NON_MERGEABLE.
+
+Fix: `fetchNonce()` trả `boolean` (đọc được hay không); `saveToServer` đọc nonce TRƯỚC/SAU để phân nhánh
+(`headline` + `nonceNote`), tách khỏi ca "không đọc lại được nonce"; server tách thông báo theo trạng thái
+(`invalid` ⇒ "nonce CHƯA bị tiêu thụ: xoá rung đó rồi lưu lại, chữ ký vẫn dùng được").
+
+### 12.4 `DELETE ?nonce=` (không `tier`) xoá CẢ bậc thang — trái chính comment của nó
+
+Đỏ-trước (`__tests__/presigned-api.test.mjs`): `AssertionError: expected { ok: true, deleted: 2 } to match
+object { ok: true, deleted: 1, nonce: 7, remaining: 1 }` — hai rung của market đều bị xoá dù URL chỉ định
+`nonce=7`. Comment ngay trên nhánh đó vẫn ghi "With nonce → only that ladder rung": một client (hoặc người
+dùng ghép tay URL) tưởng đang xoá đúng một rung lại nhận cả bậc thang bị xoá, im lặng.
+
+Fix: nhánh rung-scoped thật (chỉ rung được chỉ định; nonce không tồn tại → 400 như nhánh theo tier); nhánh
+market-scoped giữ nguyên cho nút "Xóa Mọi Bundle Của Market Này".
+
+### 12.5 UI chỉ có ✕ theo tier ⇒ lời khuyên "xoá rung chặn" bất khả thi
+
+✕ (`deleteTierFromBundle`) chỉ bỏ MỘT tier; record cùng nonce (`invalid`) vẫn nằm nguyên nên POST vẫn 409.
+Trước fix, đường duy nhất gỡ được là xoá MỌI bundle của market — trong khi §12.3 vừa chỉ người dùng "xoá
+rung chặn".
+
+Fix: `deleteRungFromBundle(nonce)` + nút 🗑 ở mỗi rung không-broadcasting (`webapp-presign-bundles.mjs`, gắn
+`window.*` ở `webapp-app.mjs`), dùng đúng nhánh §12.4. Ca `webapp-stale-nonce-guard` khép trọn vòng: 409 ⇒
+xoá rung (`?nonce=14`, KHÔNG `tier`) ⇒ lưu lại THÀNH CÔNG mà không phải ký lại.
+
+### 12.6 Audit vòng 2 tự soi fix của mình
+
+Bản đầu của `gasPairReady()` đòi CẢ hai ô non-null ⇒ ô tip TRỐNG làm nút Ký chết không lời giải thích (mất
+lời nhắc "Vui lòng nhập gas" vốn hữu ích và không rủi ro). Đã sửa + test ghim (đỏ-trước: `expected true to be
+false`).
+
+Soát SẠCH (không cần sửa): purge best-effort (`d40eede`) — lỗi lock chỉ trì hoãn, không giết chu kỳ; relay
+`code` (`dddb1cb`) đúng dạng và không rò rỉ gì; `signWithdrawAll` với tip 0 gửi `0x0`; trần 0 khoá cả hai nút
+kèm banner; `gasValuesChanged` phân biệt `0n` ↔ `null`; hợp đồng D18 (tab khác không đọc bundle) giữ nguyên;
+metadata gas của bundle là thông tin hiển thị (proxy copy nguyên, `verify-presigned` chỉ in log) — tồn dư đã
+giải thích ở §11, không phải đường tiền.
+
+Cổng sau vòng 2: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` · `node --check: 92/92 target OK` ·
+**45 file test, 606 passed | 7 skipped (613)**. `detect-changes --scope all`: 12 file, 26 symbol · risk
+critical (các hub webapp + handler) · 27 flow · không `partial`/`truncated`. GitNexus `impact` vòng 2:
+`createRequestHandler` → LOW; `deleteBundle`/`deleteTierFromBundle` → UNKNOWN (đã xác nhận bằng text search:
+`window.deleteTierFromBundle`/`window.deleteBundle` `webapp-app.mjs:407-409`).

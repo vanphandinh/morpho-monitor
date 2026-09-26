@@ -384,12 +384,12 @@
         <div class="row" style="margin-top:8px">
           <span class="label">maxFeePerGas (Gwei):</span>
         </div>
-        <input type="text" inputmode="decimal" id="presign-gas-maxfee" placeholder="vd: 50 — hỗ trợ số nhỏ: 0,00000026"
+        <input type="text" inputmode="decimal" id="presign-gas-maxfee" placeholder="vd: 50 — phải > 0 (trần 0 không bao giờ vào bảng); hỗ trợ số nhỏ: 0,00000026"
           onchange="onGasInputChange()" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.95rem;margin-top:4px">
         <div class="row" style="margin-top:8px">
           <span class="label">maxPriorityFeePerGas (Gwei):</span>
         </div>
-        <input type="text" inputmode="decimal" id="presign-gas-priority" placeholder="vd: 1 — hỗ trợ số nhỏ: 0,00000026"
+        <input type="text" inputmode="decimal" id="presign-gas-priority" placeholder="vd: 1 — 0 = không tip (hợp lệ); hỗ trợ số nhỏ: 0,00000026"
           onchange="onGasInputChange()" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:0.95rem;margin-top:4px">
         <button class="btn-outline" id="btn-auto-gas" onclick="autoFillGas()" style="width:auto;margin-top:8px">
           ⛽ Tự Động Gas

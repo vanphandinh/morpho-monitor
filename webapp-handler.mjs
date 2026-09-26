@@ -34,6 +34,20 @@ const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
 const BROWSER_MODULE_RE = /^\/[A-Za-z0-9_.-]+\.mjs$/;
 
 /** Map a thrown error to an HTTP status (400/404/409/503 for known codes; 500 otherwise). */
+/**
+ * Body lỗi thống nhất: mã lỗi PHẢI đi cùng HTTP status (audit 2026-09-26).
+ *
+ * Vì sao cần: `/api/presign` từ chối rung đã chết bằng 409 `NONCE_NOT_CLAIMABLE`, proxy relay chuyển
+ * tiếp `code` cho webapp, và `saveToServer` tự phục hồi dựa vào CHÍNH `code` đó — nhưng handler chỉ map
+ * code ⇒ HTTP status rồi BỎ code khỏi body, nên ở production relay không có gì để chuyển và nhánh phục
+ * hồi không bao giờ chạy (bấm Lưu lại nhận đúng 409 đó, không lối ra). Hai lớp test bọc hai ĐẦU đường
+ * (proxy giả định server có `code`; webapp giả lập API có `code`) nên khe ở GIỮA không ai thấy.
+ * Bất biến: lỗi nào có `code` thì body có `code` — lỗi không có mã thì body y như cũ.
+ */
+function errorPayload(err) {
+  return { ok: false, error: err.message, ...(err?.code ? { code: err.code } : {}) };
+}
+
 export function statusForError(err) {
   if (err?.code === MARKET_INPUT_INVALID) return 400;
   if (err?.code === MARKET_NOT_CONFIGURED) return 404;
@@ -267,7 +281,7 @@ export function createRequestHandler({
           rounds,
         });
       } catch (err) {
-        sendJson(res, statusForError(err), { ok: false, error: err.message });
+        sendJson(res, statusForError(err), errorPayload(err));
       }
       return;
     }
@@ -290,7 +304,7 @@ export function createRequestHandler({
           ...(head ? { ...head } : { exists: false }),
         });
       } catch (err) {
-        sendJson(res, statusForError(err), { ok: false, exists: false, error: err.message });
+        sendJson(res, statusForError(err), { ...errorPayload(err), exists: false });
       }
       return;
     }
@@ -392,6 +406,23 @@ export function createRequestHandler({
             } else {
               outcome = { ok: true, removed: null, remaining: 0 };
             }
+          } else if (nonceParam !== null) {
+            // Rung-scoped delete: `?nonce=` mà KHÔNG có `tier` (audit 2026-09-26). Trước fix nhánh
+            // này bỏ qua `nonce` và xoá MỌI rung của market — trái với chính comment ngay trên
+            // ("With nonce → only that ladder rung"): client tưởng đang xoá đúng rung lại nhận cả
+            // bậc thang bị xoá, im lặng. Không thấy rung ⇒ 400, giống nhánh theo tier.
+            const rung = targets.filter((t) => String(t.bundle?.nonce) === nonceParam);
+            if (!rung[0]?.bundle) {
+              throw Object.assign(
+                new Error(`market này không có bundle ở nonce ${nonceParam}`),
+                { code: MARKET_INPUT_INVALID }
+              );
+            }
+            delete registry.bundles[rung[0].key];
+            console.log(
+              `[${new Date().toISOString()}] 🗑️  Presigned rung deleted for market ${marketId.slice(0, 12)}… (nonce ${nonceParam}, ${targets.length - 1} rung còn lại)`
+            );
+            outcome = { ok: true, deleted: 1, nonce: Number(nonceParam), remaining: targets.length - 1 };
           } else {
             let deleted = 0;
             for (const { key, bundle } of targets) {
@@ -407,7 +438,7 @@ export function createRequestHandler({
         // Response only after the mutation committed (guard passed).
         sendJson(res, 200, outcome);
       } catch (err) {
-        sendJson(res, statusForError(err), { ok: false, error: err.message });
+        sendJson(res, statusForError(err), errorPayload(err));
       }
       return;
     }
@@ -505,7 +536,13 @@ export function createRequestHandler({
             if (deadRung) {
               throw Object.assign(
                 new Error(
-                  `nonce ${incoming.nonce} đã hết hạn (bundle ${deadRung.key.slice(0, 22)}… ở trạng thái ${deadRung.bundle.status}) — lấy nonce mới rồi ký lại`
+                  deadRung.bundle.status === "invalid"
+                    // `invalid` là status NON_MERGEABLE DUY NHẤT không hàm ý nonce đã bị tiêu thụ: nó được
+                    // set khi verify NỘI DUNG bundle thất bại, TRƯỚC mọi lần broadcast ⇒ nonce còn nguyên
+                    // trên chain và chữ ký mới ở nonce đó vẫn hợp lệ sau khi xoá rung chặn. Mách "lấy nonce
+                    // mới" ở đây là chỉ sai đường (audit 2026-09-26).
+                    ? `nonce ${incoming.nonce} đang bị một rung cùng nonce chặn (bundle ${deadRung.key.slice(0, 22)}… ở trạng thái invalid) — nonce CHƯA bị tiêu thụ: xoá rung đó (nút 🗑 ở rung nonce ${incoming.nonce}, mục “Bundle trên server”) rồi lưu lại, chữ ký vẫn dùng được`
+                    : `nonce ${incoming.nonce} đã hết hạn (bundle ${deadRung.key.slice(0, 22)}… ở trạng thái ${deadRung.bundle.status}) — lấy nonce mới rồi ký lại`
                 ),
                 { code: NONCE_NOT_CLAIMABLE }
               );
@@ -582,7 +619,7 @@ export function createRequestHandler({
         // Response only after the mutation committed (guard passed).
         sendJson(res, 200, outcome);
       } catch (err) {
-        sendJson(res, statusForError(err), { ok: false, error: err.message });
+        sendJson(res, statusForError(err), errorPayload(err));
       }
       return;
     }

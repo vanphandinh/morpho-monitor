@@ -26,7 +26,7 @@ export function updatePresignWalletUI() {
     document.getElementById("presign-wallet-address").textContent = state.currentAccount;
     document.getElementById("btn-fetch-nonce").disabled = false;
     document.getElementById("btn-auto-gas").disabled = false;
-    if (state.presignedTiers.length > 0 && state.presignedNonce !== null && presignedGas.maxFeePerGas) {
+    if (state.presignedTiers.length > 0 && state.presignedNonce !== null && gasPairReady()) {
       document.getElementById("btn-sign-all").disabled = false;
     }
     updateAuthUI();
@@ -78,10 +78,18 @@ function hasLiveSignatures() {
     state.presignedWithdrawAll?.status === "signed";
 }
 
+/**
+ * Đọc sàn nonce on-chain (`pending`) và cập nhật `state.presignedNonce`.
+ *
+ * @returns {Promise<boolean>} true = ĐỌC ĐƯỢC (sàn đã cập nhật, không cần so giá trị cũ); false = chưa
+ *   kết nối ví hoặc RPC lỗi (đã hiện banner). `saveToServer` dùng giá trị này để không hứa "đã lấy lại
+ *   nonce on-chain" khi lần đọc thất bại, và để phân biệt "nonce đã bị tiêu thụ" với "rung cùng nonce
+ *   chỉ đang chặn" (audit 2026-09-26) — hai ca cần hai chỉ dẫn khác nhau.
+ */
 export async function fetchNonce() {
   if (!state.currentAccount) {
     showPresignError("Vui lòng kết nối ví trước.");
-    return;
+    return false;
   }
   try {
     document.getElementById("btn-fetch-nonce").disabled = true;
@@ -102,10 +110,12 @@ export async function fetchNonce() {
       invalidateSignatures("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
     }
     updateSignButton();
+    return true;
   } catch (err) {
     showPresignError("Lỗi lấy nonce: " + err.message);
     document.getElementById("btn-fetch-nonce").disabled = false;
     document.getElementById("btn-fetch-nonce").textContent = "🔢 Lấy Nonce";
+    return false;
   }
 };
 
@@ -198,7 +208,8 @@ export async function autoFillGas() {
  * (`parseFloat`) chấp nhận cả ba, nên từ chối chúng là hồi quy (audit D15–D20, 2026-09-26).
  *
  * @param {string} raw giá trị thô trong ô nhập
- * @returns {{ wei: bigint|null, error: string|null }} `wei = null` khi ô rỗng/0 (chưa thiết lập)
+ * @returns {{ wei: bigint|null, error: string|null }} `wei = null` khi ô TRỐNG hoặc input không hợp lệ; `0n` LÀ
+ *   giá trị hợp lệ (chủ động không tip, 2026-09-26) — chỉ trần phí 0 mới bị chặn, ở tầng caller.
  *   hoặc khi `error` khác null — không bao giờ trả về giá trị dở dang.
  */
 export function parseGasInput(raw) {
@@ -219,7 +230,51 @@ export function parseGasInput(raw) {
     return { wei: null, error: `"${text}" có quá 9 chữ số thập phân (wei là đơn vị nhỏ nhất).` };
   }
   const wei = parseUnits(normalized, 9);
-  return { wei: wei > 0n ? wei : null, error: null }; // 0 = chưa thiết lập (hành vi cũ)
+  // 2026-09-26: `0` là giá trị HỢP LỆ (chủ động không tip), KHÔNG còn bị hạ về `null`.
+  // Trước fix, "0" ở ô maxPriorityFeePerGas bị coi là "chưa thiết lập" ⇒ nút Ký khoá và guard báo
+  // "Vui lòng nhập gas" — trong khi tip 0 hợp lệ theo EIP-1559 và chính `autoFillGas` ghi ra "0"
+  // khi RPC trả priorityFee = 0. Ô TRỐNG mới là "chưa thiết lập"; cặp phí vô lý bị `gasPairError` chặn.
+  return { wei, error: null };
+}
+
+/**
+ * Kiểm tra CẶP phí ở tầng tĩnh (2026-09-26): hai tổ hợp không ký được / không thể lên bảng.
+ *
+ * 1. `maxFeePerGas = 0`: từ khi `parseGasInput` coi `0` là giá trị hợp lệ, chuỗi "0" ở ô maxFeePerGas đi
+ *    thẳng qua cổng định dạng — nhưng trần 0 dưới cả base fee ⇒ giao dịch KHÔNG BAO GIỜ vào bảng, còn
+ *    bundle đã ký thì tiêu mất nonce ⇒ claim kẹt. Tip 0 (không tip) hợp lệ; trần 0 thì không.
+ * 2. `maxPriorityFeePerGas > maxFeePerGas`: EIP-1559 không cho tip vượt trần. Cổng này PHẢI ở đây vì
+ *    không thể để viem lo: `assertRequest`/`assertTransactionEIP1559` ném `TipAboveFeeCapError` NGAY
+ *    TRONG vòng ký ⇒ tier rơi vào ❌ với thông báo tiếng Anh ở `#progress-text`, KHÔNG banner ở
+ *    `#presign-result` (banner cũ nằm nguyên), nút Ký vẫn bật ⇒ bấm lại lặp đúng lỗi đó (audit
+ *    2026-09-26). Biên `tip === trần` HỢP LỆ — đúng như viem (chỉ chặn khi `>`).
+ * @returns {string|null} thông báo lỗi (kèm số cụ thể) hoặc null khi cặp phí dùng được.
+ */
+function gasPairError(maxFeeWei, priorityWei) {
+  if (maxFeeWei === 0n) {
+    return "maxFeePerGas = 0: trần phí 0 nghĩa là giao dịch không bao giờ vào bảng — hãy đặt trần > 0 " +
+      "(maxPriorityFeePerGas = 0 vẫn hợp lệ nếu bạn muốn không tip).";
+  }
+  if (maxFeeWei !== null && priorityWei !== null && priorityWei > maxFeeWei) {
+    return `maxPriorityFeePerGas (${formatUnits(priorityWei, 9)} Gwei) lớn hơn maxFeePerGas ` +
+      `(${formatUnits(maxFeeWei, 9)} Gwei) — EIP-1559 không cho phép tip vượt trần (ví sẽ từ chối ký). ` +
+      "Hãy hạ tip hoặc nâng trần.";
+  }
+  return null;
+}
+
+/**
+ * Cặp phí đang giữ trong `presignedGas` có dùng được để ký không — CÙNG một luật với `gasPairError()`
+ * (một nguồn sự thật cho cả cổng chặn lẫn trạng thái nút, nên nút không thể mời bấm một lượt ký mà
+ * `signAllTiers`/`signWithdrawAll` chắc chắn từ chối). Cần TRỐNG ≠ 0: ô trống là "chưa thiết lập".
+ */
+function gasPairReady() {
+  // Chỉ cần TRẦN có giá trị: ô tip TRỐNG vẫn để nút mở như hành vi cũ — lượt bấm đó nhận đúng lời
+  // nhắc "Vui lòng nhập gas (hoặc nhấn Tự Động Gas)", hữu ích hơn một nút chết không giải thích
+  // (audit vòng 2, 2026-09-26). Cặp VÔ LÝ (trần 0, tip > trần) mới khoá nút, vì lượt ký chắc chắn bị
+  // cổng `gasPairError` từ chối — mời bấm chỉ tạo vòng lặp "bấm → banner → bấm".
+  return presignedGas.maxFeePerGas !== null &&
+    gasPairError(presignedGas.maxFeePerGas, presignedGas.maxPriorityFeePerGas) === null;
 }
 
 function readGasField(id) {
@@ -235,7 +290,9 @@ export function readGasInputs() {
   const priority = readGasField("presign-gas-priority");
   presignedGas.maxFeePerGas = maxFee.wei;
   presignedGas.maxPriorityFeePerGas = priority.wei;
-  const error = maxFee.error || priority.error;
+  // `gasPairError` chạy SAU lỗi định dạng: "0" hợp lệ ở tầng parse, chỉ bị chặn ở đây vì cặp phí vô lý
+  // (trần 0 không bao giờ vào bảng; tip > trần thì ví/viem từ chối ký) — khác ô TRỐNG = chưa thiết lập.
+  const error = maxFee.error || priority.error || gasPairError(maxFee.wei, priority.wei);
   if (error) showPresignError("Gas không hợp lệ: " + error);
   return error;
 }
@@ -258,7 +315,9 @@ export function onGasInputChange() {
   if (gasChanged) {
     invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
   }
-  const error = maxFee.error || priority.error;
+  // `gasPairError` chạy SAU lỗi định dạng: "0" hợp lệ ở tầng parse, chỉ bị chặn ở đây vì cặp phí vô lý
+  // (trần 0 không bao giờ vào bảng; tip > trần thì ví/viem từ chối ký) — khác ô TRỐNG = chưa thiết lập.
+  const error = maxFee.error || priority.error || gasPairError(maxFee.wei, priority.wei);
   // Hiện lỗi định dạng SAU invalidate để đây là thứ người dùng đọc cuối cùng (invalidate cũng ghi banner).
   if (error) showPresignError("Gas không hợp lệ: " + error);
   updateSignButton();
@@ -332,7 +391,9 @@ async function nonceStillSignable() {
 
 function updateSignButton() {
   const btn = document.getElementById("btn-sign-all");
-  if (state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas && state.presignedTiers.length > 0) {
+  // `gasPairReady()` (2026-09-26): `0n` falsy nên điều kiện cũ khoá nút ngay cả khi người dùng chủ động
+  // tip 0; trần 0 và tip > trần vẫn phải khoá (tx không bao giờ vào bảng / ví từ chối ký).
+  if (state.currentAccount && state.presignedNonce !== null && state.presignedTiers.length > 0 && gasPairReady()) {
     btn.disabled = false;
   } else {
     btn.disabled = true;
@@ -340,7 +401,7 @@ function updateSignButton() {
   // Enable/disable nút rút toàn bộ shares
   const btnAll = document.getElementById("btn-sign-withdraw-all");
   if (btnAll) {
-    btnAll.disabled = !(state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas);
+    btnAll.disabled = !(state.currentAccount && state.presignedNonce !== null && gasPairReady());
   }
 }
 
@@ -423,7 +484,9 @@ export async function signAllTiers() {
   // Read gas from input fields (user có thể đã chỉnh sửa) — chỉ ĐỌC, không invalidate
   // (D12: gọi `onGasInputChange()` ở đây từng xoá chữ ký các mốc vừa ký dù gas không đổi).
   const gasError = readGasInputs();
-  if (gasError || !presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+  // `=== null` chứ KHÔNG falsy: `0n` (không tip) là giá trị hợp lệ và `0n` là falsy trong JS
+  // (2026-09-26). Trần phí 0 đã bị chặn phía trên qua `gasError`.
+  if (gasError || presignedGas.maxFeePerGas === null || presignedGas.maxPriorityFeePerGas === null) {
     showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }
@@ -540,7 +603,9 @@ export async function signWithdrawAll() {
     return;
   }
   const gasError = onGasInputChange();
-  if (gasError || !presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+  // `=== null` chứ KHÔNG falsy: `0n` (không tip) là giá trị hợp lệ và `0n` là falsy trong JS
+  // (2026-09-26). Trần phí 0 đã bị chặn phía trên qua `gasError`.
+  if (gasError || presignedGas.maxFeePerGas === null || presignedGas.maxPriorityFeePerGas === null) {
     showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }
@@ -706,20 +771,35 @@ export async function saveToServer() {
       // (`NONCE_CONSUMED`, D20) và server từ chối rung đã tiêu thụ (`NONCE_NOT_CLAIMABLE`, D16 — mã
       // này chỉ tới được đây vì relay proxy chuyển tiếp `code`). Chữ ký vừa gửi không thể mine ⇒
       // lấy ngay nonce mới (kèm vô hiệu chữ ký cũ) để người dùng ký lại đúng một lần.
+      // Audit 2026-09-26: "server từ chối" KHÔNG đồng nghĩa "nonce đã bị tiêu thụ". Rung `invalid`
+      // (verify NỘI DUNG bundle thất bại — trước mọi lần broadcast) giữ nonce còn nguyên trên chain,
+      // nên `fetchNonce()` đọc lại ĐÚNG nonce cũ, chữ ký vẫn dùng được sau khi xoá rung chặn. Phải đọc
+      // nonce TRƯỚC/SAU để biết mình đang ở ca nào, thay vì hứa "đã lấy lại nonce mới" rồi để người
+      // dùng bấm Lưu lặp đúng 409 đó.
       const fromServer = result.code === "NONCE_NOT_CLAIMABLE";
+      const nonceBefore = state.presignedNonce;
+      const refreshed = await fetchNonce();
+      const nonceAdvanced = refreshed && state.presignedNonce !== nonceBefore;
+      const headline = !fromServer
+        ? "Nonce của chữ ký đã bị tiêu thụ — proxy từ chối lưu: "
+        : nonceAdvanced
+          ? "Rung của nonce này đã chết (nonce đã bị tiêu thụ) — server từ chối lưu: "
+          : "Server từ chối lưu: ";
+      const nonceNote = refreshed
+        ? (nonceAdvanced
+          ? `Đã lấy lại nonce on-chain (${state.presignedNonce}). Ký lại để dùng nonce mới.`
+          : `Nonce on-chain vẫn là ${state.presignedNonce} — nonce CHƯA bị tiêu thụ: xoá rung chặn (nút 🗑 ở rung đó, mục “Bundle trên server”) rồi bấm Lưu Lại, KHÔNG cần ký lại.`)
+        : "Không đọc lại được nonce on-chain — bấm “Lấy Nonce” rồi thử lại.";
       // Lấy lại sàn TRƯỚC khi báo: `fetchNonce()` tự vô hiệu chữ ký cũ và có banner riêng, nên
       // thông báo cuối cùng (thứ người dùng đọc) phải là thông báo nói rõ VÌ SAO bị từ chối.
-      await fetchNonce();
       // Nút lưu: chỉ bật lại khi CÒN chữ ký sống — nonce đổi thì `fetchNonce()` vừa vô hiệu hết, mời
       // bấm lại chỉ để nhận "không có giao dịch nào đã ký để lưu".
       document.getElementById("btn-save-server").disabled = !hasLiveSignatures();
       document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
       showPresignError(
-        (fromServer
-          ? "Rung của nonce này đã chết (nonce đã bị tiêu thụ) — server từ chối lưu: "
-          : "Nonce của chữ ký đã bị tiêu thụ — proxy từ chối lưu: ") +
+        headline +
         `${result.error}<br>` +
-        `<small>Đã lấy lại nonce on-chain (${state.presignedNonce}). Ký lại để dùng nonce mới.</small>`
+        `<small>${nonceNote}</small>`
       );
       fetchExistingBundle();
       refreshPresignOverview();
