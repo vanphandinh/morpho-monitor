@@ -83,9 +83,15 @@ async function signIn() {
     updateAuthUI();
     showPresignSuccess("✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.");
 
-    // Refresh existing bundle display if on presign tab
+    // Auth vừa chuyển từ "chưa" sang "có": MỌI mục auth-gated của tab Ký Trước giờ mới đọc được.
+    // Trước fix chỉ có ladder bundle được đọc ⇒ "Tổng Quan Presign (mọi market)" nằm `display:none`
+    // cho tới khi người dùng chuyển tab hoặc F5 (triệu chứng 2026-09-26: "phải refresh lại webapp
+    // mới xuất hiện"), vì chỉ `switchTab`/`init` mới gọi `refreshPresignOverview()`.
+    // Vẫn gate theo tab đang mở: nút xác thực nằm TRONG tab Ký Trước, và đứng ở tab khác thì việc
+    // đọc bundle là vô nghĩa (hợp đồng cũ vẫn giữ — xem `__tests__/webapp-bundle-visibility.test.mjs`).
     if (currentTab === "presign") {
       fetchExistingBundle();
+      refreshPresignOverview();
     }
   } catch (err) {
     showPresignError("Xác thực thất bại: " + err.message);
@@ -97,6 +103,11 @@ async function signIn() {
 
 function signOut() {
   clearSession();
+  // Đối xứng với `signIn()`: mất phiên ⇒ mọi mục auth-gated phải ẨN lại ngay, không để dữ liệu
+  // của phiên vừa hết nằm nguyên trên màn hình. Cả hai hàm tự early-return + ẩn khi chưa xác thực
+  // nên ở đây KHÔNG có request nào đi ra.
+  refreshPresignOverview();
+  fetchExistingBundle();
   showPresignSuccess("✅ Đã đăng xuất.");
 };
 

@@ -326,3 +326,33 @@ scenario), `purgeExpiredRungs` → LOW, `createProxyRequestHandler` → LOW. Hai
 thêm lưới catch quanh render) và bị ghim bởi test cũ + test mới. `detect-changes --scope all`:
 12 file, 21 symbol · risk **critical** (do các hub webapp `refreshPresignOverview`/`saveToServer`/
 `parseGasInput` + 2 flow `BroadcastEligible`), 17 flow · không `partial`/`truncated`.
+
+---
+
+## 10. Triệu chứng bổ sung (2026-09-26): Tổng Quan Presign không hiện sau khi xác thực ví
+
+Người dùng báo: "Tổng Quan Presign (mọi market) không xuất hiện sau khi xác thực ví mà phải refresh lại
+webapp mới xuất hiện".
+
+Đỏ-trước (`__tests__/webapp-auth-overview.test.mjs`, chạy trên cây trước fix, cùng harness thật):
+`AssertionError: xác thực xong phải đọc tổng quan NGAY, không đợi F5: expected 0 to be greater than 0`.
+
+Nguyên nhân: nút xác thực (`btn-sign-in`) nằm TRONG tab Ký Trước, nhưng `signIn()` sau khi lưu phiên chỉ gọi
+`fetchExistingBundle()` — **thiếu `refreshPresignOverview()`**. Mục `#presign-overview` (`webapp.html:312`)
+mang `style="display:none"` và chỉ được bật bởi `refreshPresignOverview()`, mà hàm đó chỉ được gọi từ
+`switchTab` và `init()` ⇒ đứng yên ở tab Ký Trước thì mục Tổng Quan im lặng cho tới khi chuyển tab hoặc F5.
+
+Fix: `signIn()` gọi thêm `refreshPresignOverview()` khi `currentTab === "presign"` — gate theo tab để giữ
+đúng hợp đồng mà D18 đã ghim ("đứng ở tab khác thì không đọc bundle", `__tests__/webapp-bundle-visibility.test.mjs`)
+và giữ nguyên trace 48 call của `webapp-flows` (bước `sign-in` trong scenario ở tab Rút tiền).
+
+Ca đối xứng CÙNG LỚP lỗi (sửa luôn, cùng file test): `signOut()` chỉ vẽ lại nút, không ai ẩn hai mục
+auth-gated ⇒ Tổng Quan và ladder nằm nguyên trên màn hình bằng dữ liệu của phiên vừa mất. Đỏ-trước:
+`AssertionError: mất phiên ⇒ ladder phải ẩn lại: expected 'block' to be 'none'`. Fix: `signOut()` gọi lại
+cùng hai hàm — cả hai tự early-return + ẩn khi chưa xác thực nên KHÔNG có request nào đi ra (test ghim số
+request không đổi trước/sau đăng xuất).
+
+Cổng sau fix: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` · oxlint 94 file `.mjs` ·
+`node --check: 92/92 target OK` · **45 file test, 596 passed | 7 skipped (603)**. GitNexus `impact`:
+`signIn`/`signOut` → UNKNOWN (đã xác nhận bằng text search: `onclick="signIn()"` `webapp.html:346`,
+`onclick="signOut()"` `webapp.html:349`, + scenario/test gọi qua `window`).
