@@ -242,3 +242,49 @@ describe("/bundle — nonce tươi tại thời điểm lưu", () => {
     expect(relays).toHaveLength(1);
   });
 });
+
+// ---- Relay /bundle: server từ chối ⇒ MÃ LỖI phải tới được client ----
+describe("relay /bundle — mã lỗi của server phải xuyên qua proxy", () => {
+  it("server trả 409 + code (D16 NONCE_NOT_CLAIMABLE) ⇒ proxy giữ nguyên `code` (đỏ-trước: code bị nuốt)", async () => {
+    // Vì sao quan trọng: webapp chỉ tự phục hồi (lấy lại nonce + vô hiệu chữ ký ở nonce đã chết) khi
+    // nhận được `code`. Relay nuốt mã ⇒ client chỉ còn chuỗi lỗi để đọc và người dùng kẹt với chữ ký
+    // chết + nút lưu vẫn bấm được.
+    const localCaptured = [];
+    const localHandler = createProxyRequestHandler({
+      markets: [{ id: MARKET_ID }],
+      lenderAddress: LENDER,
+      morphoBlueAddress: MORPHO,
+      client: makeChain({ pending: 7 }),
+      capturedTxs: localCaptured,
+      logger: makeLogger(),
+      // Server (webapp) từ chối đúng như D16: 409 + code riêng của nó.
+      fetchImpl: async () => ({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({
+          ok: false,
+          code: "NONCE_NOT_CLAIMABLE",
+          error: "nonce 7 đã hết hạn (bundle m@7 ở trạng thái expired) — lấy nonce mới rồi ký lại",
+        }),
+      }),
+    });
+    const localServer = http.createServer(localHandler);
+    await new Promise((resolve) => localServer.listen(0, "127.0.0.1", resolve));
+    const localPort = localServer.address().port;
+
+    try {
+      const signedTx = await signWithdrawTx({ nonce: 7 });
+      await postJson(`http://127.0.0.1:${localPort}/`, {
+        jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [signedTx],
+      });
+      expect(localCaptured, "capture phải thành công trước khi thử cổng lưu").toHaveLength(1);
+
+      const save = await postJson(`http://127.0.0.1:${localPort}/bundle`, bundleMeta(keccak256(signedTx)));
+      expect(save.status, "server từ chối ⇒ proxy vẫn trả lỗi gateway").toBe(502);
+      expect(save.json.error).toMatch(/Server rejected/);
+      expect(save.json.code, "mã của server phải tới được webapp").toBe("NONCE_NOT_CLAIMABLE");
+    } finally {
+      await new Promise((resolve) => localServer.close(resolve));
+    }
+  });
+});

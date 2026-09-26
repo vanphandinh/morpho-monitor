@@ -101,4 +101,26 @@ describe("B3 — nonce on-chain đã vượt qua thì KHÔNG được ký", () =
     expect(nonceBefore, "head phải là rung pending 2553").toBe("2553");
     expect(html, "rung expired vẫn phải hiển thị (lịch sử)").toMatch(/nonce-display">2550/);
   });
+
+  it("server từ chối rung đã chết (NONCE_NOT_CLAIMABLE, D16) ⇒ app cũng tự lấy lại nonce, không để chữ ký chết nằm lại", async () => {
+    // Mã này sinh ở SERVER (D16) và chỉ tới được browser vì relay proxy chuyển tiếp `code`
+    // (ghim ở ca cuối `__tests__/proxy-nonce-freshness.test.mjs`). Không có `code`, app chỉ còn
+    // chuỗi lỗi để đọc ⇒ người dùng kẹt với chữ ký đã chết + nút lưu vẫn mời bấm lại.
+    await app.window.signAllTiers(); // ký thật ở nonce hiện tại (13) để có chữ ký sống
+    expect(sends().length, "phải có chữ ký sống trước khi thử ca từ chối").toBe(1);
+    api.setBundle({
+      ok: false,
+      code: "NONCE_NOT_CLAIMABLE",
+      error: "nonce 13 đã hết hạn (bundle m1@13 ở trạng thái expired) — lấy nonce mới rồi ký lại",
+    });
+    rpc.setNonce(14);
+
+    await app.window.saveToServer();
+
+    expect(app.html("presign-result"), "báo đúng lý do server từ chối").toContain("server từ chối lưu");
+    expect(app.html("presign-result")).toContain("hết hạn");
+    expect(app.text("presign-nonce"), "tự đọc lại sàn on-chain").toBe("14");
+    // Chữ ký ở nonce đã chết bị vô hiệu (không còn tier ✅) — hết đường lưu lại rác.
+    expect(app.html("tier-list"), "chữ ký chết phải bị vô hiệu").not.toContain("✅");
+  });
 });

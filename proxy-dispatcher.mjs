@@ -653,8 +653,15 @@ export function createProxyRequestHandler({
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true, tiers: withdrawals.length, saved: true }));
           } else {
+            // Mã lỗi của server phải XUYÊN QUA relay (audit D15–D20): webapp dựa vào `code` để tự
+            // phục hồi (vd `NONCE_NOT_CLAIMABLE` của D16 ⇒ lấy lại nonce + vô hiệu chữ ký ở nonce đã
+            // chết). Trước fix, code bị nuốt ở đây nên client chỉ còn chuỗi lỗi để đọc.
             res.writeHead(502, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: "Server rejected: " + (postResult.error || "unknown") }));
+            res.end(JSON.stringify({
+              ok: false,
+              error: "Server rejected: " + (postResult.error || "unknown"),
+              ...(postResult.code ? { code: postResult.code } : {}),
+            }));
           }
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });

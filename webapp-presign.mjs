@@ -72,6 +72,12 @@ function invalidateSignatures(message) {
   return invalidated;
 }
 
+/** Còn chữ ký nào dùng lại được không (tier hoặc rút-toàn-bộ đang `signed`)? */
+function hasLiveSignatures() {
+  return state.presignedTiers.some((tier) => tier.status === "signed") ||
+    state.presignedWithdrawAll?.status === "signed";
+}
+
 export async function fetchNonce() {
   if (!state.currentAccount) {
     showPresignError("Vui lòng kết nối ví trước.");
@@ -687,16 +693,24 @@ export async function saveToServer() {
       showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier hoặc 'Ký Rút Toàn Bộ Shares'.");
       document.getElementById("btn-save-server").disabled = false;
       document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
-    } else if (result.code === "NONCE_CONSUMED") {
-      // D20: proxy từ chối vì nonce của chữ ký đã bị tiêu thụ (đọc thẳng nonce on-chain).
-      // Chữ ký vừa gửi là chữ ký chết ⇒ lấy ngay nonce mới (kèm vô hiệu chữ ký cũ) để người
-      // dùng ký lại một lần, thay vì tự đoán vì sao nonce cũ không dùng được.
-      document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+    } else if (result.code === "NONCE_CONSUMED" || result.code === "NONCE_NOT_CLAIMABLE") {
+      // Hai tầng chặn nonce đã chết, MỘT cách phục hồi: proxy đọc thẳng nonce on-chain
+      // (`NONCE_CONSUMED`, D20) và server từ chối rung đã tiêu thụ (`NONCE_NOT_CLAIMABLE`, D16 — mã
+      // này chỉ tới được đây vì relay proxy chuyển tiếp `code`). Chữ ký vừa gửi không thể mine ⇒
+      // lấy ngay nonce mới (kèm vô hiệu chữ ký cũ) để người dùng ký lại đúng một lần.
+      const fromServer = result.code === "NONCE_NOT_CLAIMABLE";
       // Lấy lại sàn TRƯỚC khi báo: `fetchNonce()` tự vô hiệu chữ ký cũ và có banner riêng, nên
       // thông báo cuối cùng (thứ người dùng đọc) phải là thông báo nói rõ VÌ SAO bị từ chối.
       await fetchNonce();
+      // Nút lưu: chỉ bật lại khi CÒN chữ ký sống — nonce đổi thì `fetchNonce()` vừa vô hiệu hết, mời
+      // bấm lại chỉ để nhận "không có giao dịch nào đã ký để lưu".
+      document.getElementById("btn-save-server").disabled = !hasLiveSignatures();
+      document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
       showPresignError(
-        `Nonce của chữ ký đã bị tiêu thụ — proxy từ chối lưu: ${result.error}<br>` +
+        (fromServer
+          ? "Rung của nonce này đã chết (nonce đã bị tiêu thụ) — server từ chối lưu: "
+          : "Nonce của chữ ký đã bị tiêu thụ — proxy từ chối lưu: ") +
+        `${result.error}<br>` +
         `<small>Đã lấy lại nonce on-chain (${state.presignedNonce}). Ký lại để dùng nonce mới.</small>`
       );
       fetchExistingBundle();
@@ -705,7 +719,8 @@ export async function saveToServer() {
       showPresignError("Lỗi proxy: " + (result.error || "Unknown"));
       document.getElementById("btn-save-server").disabled = false;
       document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
-    }    } catch (err) {
+    }
+  } catch (err) {
     showPresignError(`Không thể kết nối proxy (${getProxyUrl()}). Proxy đã chạy chưa? ` + err.message);
     document.getElementById("btn-save-server").disabled = false;
     document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
