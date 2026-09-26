@@ -1,7 +1,8 @@
 # Vòng 7 — Audit toàn diện + hai defect thật + drill đường tiền 3 tiến trình (2026-09-26)
 
 Repo: `morpho-monitor` · Nhánh: `feat/multi-market-monitor` · Cây làm việc trên `6dec4e2`
-(**68 commit chưa đẩy lên `origin/main` tại thời điểm audit**, nên CI của vòng 6 vẫn chưa từng chạy — xem §7.1).
+(**68 commit chưa đẩy lên `origin/main` tại thời điểm audit** — nhưng ngược với điều tôi tưởng lúc
+đó, CI **đã** chạy xanh trên chính nhánh này từ 2026-09-25; §8 đính chính bằng API).
 
 Vòng này khác sáu vòng trước ở một điểm: nó **không** bắt đầu bằng kế hoạch, mà bằng một audit
 đối kháng trên cây hiện tại, và kết luận của audit bị chính các bước sau đó **bác một phần**
@@ -211,12 +212,51 @@ Cổng lint còn tự bắt lỗi của chính vòng này: một `import { MAX_B
 
 ## 7. Còn mở (đọc để không tưởng là "sạch tuyệt đối")
 
-1. **CI chưa từng chạy — vòng này kết thúc bằng lần push ĐẦU TIÊN** (68 commit chưa đẩy ở thời
-   điểm audit). Mọi tuyên bố "CI sẽ bắt" trước lần push đó vẫn là suy luận; thứ đã chứng minh là
-   từng bước của nó chạy đúng ở local. Kết quả lần chạy đầu tiên chỉ xem được trên GitHub
-   Actions — không có cách nào xác nhận từ máy này.
+1. ~~**CI chưa từng chạy — vòng này kết thúc bằng lần push ĐẦU TIÊN**~~ **SAI — tự đính chính ở §8.**
+   Tôi suy từ `git rev-list --count origin/main..HEAD` (68) ra "chưa push gì cả", mà quên rằng đích
+   của lần push này là nhánh feature, không phải `main`. Sự thật (API công khai, §8): nhánh đã được
+   push và PR #1 đã mở TRƯỚC vòng 7; CI đã chạy 10 run cho nhánh này trước lần push của vòng 7, run
+   mới nhất cho `6dec4e2` kết thúc `success`.
+   Điều còn đúng: mọi tuyên bố "CI sẽ bắt" ở các vòng 5–6 là suy luận chứ không phải quan sát — nhưng
+   giờ nó **đã** được quan sát: SHA của vòng 7 (`95cba80`) xanh trên cả 2 run và 5/5 job (§8).
 2. **RPC/WSS thật, ví thật, ntfy live chưa được chạy trong vòng này**; drill dùng chain giả nên
    nó chứng minh *chuỗi logic + hợp đồng HTTP*, không chứng minh được mạng thật.
 3. `webapp-handler.mjs` vẫn giữ thuật toán merge ladder trong route handler — merge/dedup/409
    chỉ test được xuyên HTTP.
 4. Tài liệu vẫn phình (`docs/plans` ≈ 218 KB/11 file); vòng này thêm một file nữa.
+
+---
+
+## 8. Đính chính CI (sau push — bằng chứng từ GitHub API)
+
+Cả §7.1 của doc này lẫn §7.2 của doc vòng 6 (`2026-09-25-round6-plan-and-findings.md`) đều khẳng
+định "CI chưa từng chạy". Sau khi push, truy vấn API công khai của repo (không cần auth — repo
+public) cho thấy khẳng định đó **SAI**. Lệnh đã chạy:
+
+```text
+GET /repos/vanphandinh/morpho-monitor/actions/runs?branch=feat/multi-market-monitor
+  total_count = 12   (6 run do `push` + 6 run do `pull_request`)
+
+GET .../actions/runs/36176531698            # run #10, head_sha = 6dec4e2 (HEAD của vòng 6)
+  event=pull_request · created_at 2026-09-25T18:55:55Z · conclusion=success
+
+GET .../commits/6dec4e2/check-runs
+  total_count = 10 (2 run × 5 job) · job "image · build + smoke" success lúc 2026-09-25T18:57:21Z
+```
+
+Nghĩa là: PR #1 (`feat/multi-market-monitor` → `main`, còn **open**) đã tồn tại trước vòng 7, nhánh
+đã được push, và CI đã chạy xanh cho `6dec4e2` từ **trước** vòng này. Đây là lỗi suy luận của tôi ở
+§7.1/§7.2, không phải một điều kiện môi trường.
+
+CI cho chính vòng 7 (SHA `95cba80`, sau lần push đầu tiên của vòng):
+
+```text
+run #11  event=push           id 36218243697  created 2026-09-26T04:34:39Z  conclusion=success
+run #12  event=pull_request   id 36218245849  created 2026-09-26T04:34:42Z  conclusion=success
+  → 5 job/run: gate · ubuntu · node 20/22, gate · windows · node 20/22, image · build + smoke
+  → kiểm trực tiếp: 2 job gate đầu của run #12 (ubuntu/node20, windows/node20) success;
+    check-run "image · build + smoke" trên `95cba80` success lúc 2026-09-26T04:36:10Z
+```
+
+Điều này không làm yếu bản vá nào của vòng 7 — nó làm **chặt thêm**: cổng CI (4 job gate × 2 OS +
+image) giờ đã chạy trên đúng SHA của vòng 7 và xanh, thay vì chỉ là suy luận từ máy local.

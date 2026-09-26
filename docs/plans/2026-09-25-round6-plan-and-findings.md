@@ -155,6 +155,10 @@ chỉ vào name/inputs.
    Điều đã chứng minh là **từng bước** của nó chạy đúng ở local (kể cả `docker build` + boot từ image).
    YAML được kiểm bằng parser, không phải `actionlint`. Lần chạy thật đầu tiên sẽ là khi push nhánh
    tạo PR.
+   *(Đính chính lần 2, 2026-09-26 — bằng chứng GitHub API: vế "CI vẫn chưa từng chạy cho chúng" ở
+   trên cũng SAI. Nhánh ĐÃ được push và PR #1 đã mở trước vòng 7; run #10 (head `6dec4e2`) kết thúc
+   `success` lúc 2026-09-25T18:57Z, và `check-runs` của `6dec4e2` có 10 check (2 run × 5 job) với job
+   `image · build + smoke` success. Chi tiết + lệnh truy vấn: `docs/plans/2026-09-26-audit-round7-findings-and-fixes.md` §8.)*
 3. ~~**Một commit đỏ ở giữa lịch sử**~~ **ĐÃ GIẢI QUYẾT (rebase 2026-09-25, trước khi tạo PR).** Commit
    đỏ cũ và commit vá của nó (2 SHA riêng biệt trong lịch sử trước rebase) đã được **gộp thành một
    commit xanh `ee43de6`** kèm ghi chú REPAIR trong message. Kiểm chứng: `monitor.mjs` của commit gộp
