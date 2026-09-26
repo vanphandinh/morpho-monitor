@@ -317,7 +317,10 @@ describe("lưới hồi quy — trace đã đóng băng", () => {
   it("fixture không rỗng và chứa đúng số bước/lời gọi đã đo", () => {
     const frozen = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
     expect(frozen.steps).toHaveLength(19);
-    expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(46);
+    // 46 → 48 (chẩn đoán 2026-09-26): mỗi bước ký nay đọc lại nonce on-chain TRƯỚC khi ký
+    // (guard chống ký ở nonce đã chết), cộng 1 `eth_getTransactionCount` cho mỗi bước
+    // `sign-all-tiers` và `sign-withdraw-all`. Không có lời gọi nào bị mất.
+    expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(48);
   });
 
   it("nhãn cây là đường dẫn TƯƠNG ĐỐI — fixture không ghim đường dẫn của một máy", () => {

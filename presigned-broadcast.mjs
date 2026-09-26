@@ -24,6 +24,17 @@ export const RECEIPT_TIMEOUT_MS = 120_000;
 export const RECOVERY_THRESHOLD_MS = 180_000;
 
 /**
+ * Ân hạn mặc định trước khi dọn record `expired` (chẩn đoán 2026-09-26).
+ *
+ * Record `expired` là lịch sử TRƠ (nonce đã tiêu thụ, chữ ký không thể mine) nhưng trước fix không
+ * đường nào xoá chúng: phase-0 idle short-circuit ngay khi registry không còn `pending`/
+ * `broadcasting`, nên chúng tích tụ vĩnh viễn (artifact thật: `…@2550` expired + rỗng nằm nguyên
+ * hơn một ngày). Mặc định 1 giờ để người dùng còn kịp nhìn thấy chuyện gì đã xảy ra; env
+ * `PRESIGN_EXPIRED_RETENTION_MINUTES` ghi đè (0 = xoá ngay chu kỳ kế tiếp).
+ */
+export const DEFAULT_EXPIRED_RETENTION_MS = 60 * 60 * 1000;
+
+/**
  * Số block phải lùi trước khi đọc nonce làm bằng chứng nhả claim (audit vòng 2).
  * 2 block ≈ 24s — không đáng kể so với RECOVERY_THRESHOLD_MS, nhưng loại được ca
  * kết luận bị lật bởi reorg ở đỉnh chuỗi.
@@ -108,13 +119,16 @@ function isMinedReceipt(receipt) {
  * other bundle signed for it is dead. Terminal records are already history, and a
  * missing/invalid nonce expires nobody (fail closed).
  */
-function expireSameNonceSiblings(registry, claimId, claimNonce) {
+function expireSameNonceSiblings(registry, claimId, claimNonce, now = () => Date.now()) {
   if (!Number.isFinite(claimNonce)) return;
   for (const [id, other] of Object.entries(registry.bundles)) {
     if (id === claimId) continue;
     if (Number(other.nonce) !== claimNonce) continue;
     if (TERMINAL_STATUSES.has(other.status)) continue;
     other.status = "expired";
+    // Mốc để purge đo ân hạn (chẩn đoán 2026-09-26); record cũ thiếu field thì purge lùi về
+    // updatedAt/createdAt.
+    other.expiredAt = new Date(now()).toISOString();
   }
 }
 
@@ -201,13 +215,89 @@ async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRe
     bundle.reason = SUPERSEDED_REASON;
     bundle.terminalAt = new Date(now()).toISOString();
     delete bundle.rawTx; // never rebroadcast these bytes again
-    expireSameNonceSiblings(registry, claim.id, claimNonce);
+    expireSameNonceSiblings(registry, claim.id, claimNonce, now);
   });
   logger?.warn?.(`[presign] claim ${claim.id} released as ${SUPERSEDED_STATUS} (nonce ${claimNonce}): ${evidence} — the next rung may now be claimed; verify on-chain before deleting`);
   return { ...claim, superseded: true, diagnostic: evidence };
 }
 
-export async function broadcastEligible({ client, lenderAddress, filePath, snapshots, updateRegistry, verifyBundle, isEligible, now = () => Date.now(), logger = console }) {
+/**
+ * Dọn record `expired` đã quá ân hạn (chẩn đoán 2026-09-26).
+ *
+ * Vì sao cần: `expired` là lịch sử trơ — chữ ký ở nonce đó vĩnh viễn không mine được (`expired`
+ * chỉ được set khi on-chain pending nonce đã đi qua, hoặc nonce ≤ watermark). Nhưng trước fix không
+ * có đường nào xoá chúng: phase-0 idle short-circuit ngay khi registry không còn
+ * `pending`/`broadcasting`, nên record chết tích tụ mãi.
+ *
+ * An toàn: xoá record KHÔNG làm mất ký ức "nonce đã tiêu thụ" — hàm NÂNG `registry.consumedNonce`
+ * lên chính nonce bị xoá (audit A.2), nên một `pending` cùng nonce về sau vẫn bị expire thay vì
+ * được claim. Chỉ chạm `status === "expired"`; record thiếu mốc thời gian bị GIỮ LẠI (fail closed),
+ * nonce không hữu hạn cũng vậy.
+ *
+ * Không tốn RPC: chỉ đọc file, và chỉ lấy lock/ghi khi thật sự có record cần xoá.
+ *
+ * @param {object} deps
+ * @param {string} deps.filePath registry path
+ * @param {Function} deps.updateRegistry hàm ghi registry có lock (`presigned-store.mjs`) — DI như
+ *   phần còn lại của module để test/monitor truyền cùng một bản
+ * @returns {Promise<{ purged: number, keys: string[] }>}
+ */
+export async function purgeExpiredRungs({ filePath, updateRegistry, now = () => Date.now(), retentionMs = DEFAULT_EXPIRED_RETENTION_MS, logger = console } = {}) {
+  let registry;
+  try {
+    registry = readRegistry(filePath);
+  } catch {
+    return { purged: 0, keys: [] }; // không đọc được ⇒ không xoá gì (fail closed)
+  }
+  const t = now();
+  const victims = [];
+  for (const [key, bundle] of Object.entries(registry.bundles ?? {})) {
+    if (bundle?.status !== "expired") continue;
+    const nonce = Number(bundle.nonce);
+    if (!Number.isFinite(nonce)) continue; // nonce lạ ⇒ để người vận hành đối soát tay
+    const age = t - Date.parse(bundle.expiredAt ?? bundle.updatedAt ?? bundle.createdAt ?? "");
+    if (!Number.isFinite(age) || age < retentionMs) continue;
+    victims.push({ key, nonce });
+  }
+  if (victims.length === 0) return { purged: 0, keys: [] };
+
+  let keys;
+  try {
+    keys = await updateRegistry(filePath, (reg) => {
+      const purged = [];
+      for (const { key, nonce } of victims) {
+        const bundle = reg.bundles[key];
+        // Trạng thái đổi giữa hai lần đọc (chu kỳ/tiến trình khác vừa claim hoặc xoá) ⇒ bỏ qua,
+        // không xoá mù.
+        if (!bundle || bundle.status !== "expired") continue;
+        delete reg.bundles[key];
+        // Nâng mốc TRƯỚC khi record biến mất khỏi file — nếu không, nonce này "sống lại".
+        reg.consumedNonce = Math.max(Number(reg.consumedNonce) || -1, nonce, consumedWatermark(reg));
+        purged.push(key);
+      }
+      return purged;
+    });
+  } catch (err) {
+    // Purge là dọn dẹp BEST-EFFORT: lock bị process khác giữ (LOCK_STALE), registry hỏng giữa hai
+    // lần đọc… chỉ được TRÌ HOÃN việc dọn sang chu kỳ sau. Trước fix lỗi từ đây xuyên thẳng ra
+    // `broadcastEligible` (purge chạy trước cả nhánh idle) ⇒ một lượt dọn không lấy được lock giết
+    // cả chu kỳ 30s, kể cả khi registry idle — thứ trước đây không bao giờ ném (audit D15–D20).
+    logger?.warn?.(`[presign] purge expired rungs bỏ qua lượt này: ${err?.message || err}`);
+    return { purged: 0, keys: [] };
+  }
+  if (keys.length > 0) {
+    logger?.log?.(
+      `[presign] purged ${keys.length} expired rung(s) quá ân hạn ${Math.round(retentionMs / 60_000)} phút: ${keys.join(", ")}`
+    );
+  }
+  return { purged: keys.length, keys };
+}
+
+export async function broadcastEligible({ client, lenderAddress, filePath, snapshots, updateRegistry, verifyBundle, isEligible, now = () => Date.now(), logger = console, expiredRetentionMs = DEFAULT_EXPIRED_RETENTION_MS }) {
+  // Dọn record `expired` TRƯỚC nhánh idle (chẩn đoán 2026-09-26): registry chỉ còn record expired
+  // bị coi là idle nên trước fix không chu kỳ nào chạm tới chúng. Purge không RPC.
+  const purge = await purgeExpiredRungs({ filePath, updateRegistry, now, retentionMs: expiredRetentionMs, logger });
+
   // ---- Phase 0: pure idle check — no RPC, no lock (round-4 quota audit) ----
   // broadcastEligible chạy MỖI chu kỳ monitor (30s). Registry trống hoặc chỉ
   // còn history thì toàn bộ pipeline chỉ để đọc 1 nonce rồi kết luận không có
@@ -225,7 +315,8 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
   if (idle) {
     return {
       idle: true,
-      diagnostic: "registry idle — no pending bundle and no broadcasting claim; nonce read skipped",
+      purged: purge.purged,
+      diagnostic: `registry idle — no pending bundle and no broadcasting claim; nonce read skipped${purge.purged ? ` (purged ${purge.purged} expired rung(s))` : ""}`,
     };
   }
 
@@ -250,7 +341,11 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     for (const [, bundle] of entries) {
       if (bundle.status !== "pending") continue;
       const value = Number(bundle.nonce);
-      if (value < Number(nonce) || value <= consumedNonce) bundle.status = "expired";
+      if (value < Number(nonce) || value <= consumedNonce) {
+        bundle.status = "expired";
+        // Mốc để purge đo ân hạn (chẩn đoán 2026-09-26).
+        bundle.expiredAt = new Date(now()).toISOString();
+      }
     }
 
     // Only unmined claims reserve the nonce: a pending-nonce advance is NOT
@@ -429,7 +524,7 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
       delete bundle.rawTx; // raw bytes are no longer needed once terminal
       logger?.log?.(`[presign] broadcast ${bundle.status} market=${claim.marketId ?? claim.bundle?.marketId ?? claim.id} txHash=${txHash} tier=${claim.bundle.broadcastingTier} nonce=${Number.isFinite(claimNonce) ? claimNonce : nonce}`);
       // A mined receipt consumes THE CLAIM'S nonce: expire same-nonce siblings.
-      expireSameNonceSiblings(registry, claim.id, claimNonce);
+      expireSameNonceSiblings(registry, claim.id, claimNonce, now);
     });
   } catch (err) {
     // RPC ambiguity deliberately retains the durable broadcasting claim.

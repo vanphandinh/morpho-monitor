@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
+import { LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, PRESIGN_EXPIRED_RETENTION_MINUTES, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
 import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "./monitor-rules.mjs";
 import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
@@ -228,6 +228,9 @@ async function main() {
     broadcastEligible: (snapshots) => runPresignedBroadcast({
       client: publicClient, lenderAddress: LENDER_ADDRESS, filePath: PRESIGNED_FILE, snapshots,
       updateRegistry,
+      // Chẩn đoán 2026-09-26: dọn rung `expired` quá ân hạn (env PRESIGN_EXPIRED_RETENTION_MINUTES,
+      // 0 = ngay chu kỳ kế tiếp). Purge không RPC nên vẫn chạy khi registry idle.
+      expiredRetentionMs: PRESIGN_EXPIRED_RETENTION_MINUTES * 60_000,
       verifyBundle: (bundle, id) => verifyPresignedBundle(bundle, { morphoBlueAddress: MORPHO_BLUE_ADDRESS, lenderAddress: LENDER_ADDRESS, marketId: id }),
       isEligible: (snapshot) => shouldBroadcastPresigned(snapshot.market.liquidity, computeDrainThreshold(snapshot.position.supplyAssets, snapshot.suddenDrainMultiplier), snapshot.minLiquidityWei),
     }),

@@ -38,6 +38,7 @@ export function statusForError(err) {
   if (err?.code === MARKET_INPUT_INVALID) return 400;
   if (err?.code === MARKET_NOT_CONFIGURED) return 404;
   if (err?.code === ACTIVE_CLAIM_CONFLICT) return 409;
+  if (err?.code === NONCE_NOT_CLAIMABLE) return 409;
   // Stale cross-process lock: the registry cannot be read/written right now.
   if (err?.code === LOCK_STALE) return 503;
   return 500;
@@ -57,11 +58,29 @@ function sendJson(res, status, payload) {
 const CLIENT_FORBIDDEN_FIELDS = ["status", "txHash", "rawTx", "broadcastingAt", "broadcastingTier", "minedAt", "submittedAt", "terminalAt", "reason", "error"];
 
 /**
- * Statuses that are inert history: they hold no claim and a re-sign at the same
- * nonce may replace/merge them. `superseded` (audit R1) means the nonce was
- * consumed by another transaction, so the record can never mine.
+ * Statuses that are inert history: they hold no claim, so merging a new tier into
+ * them is meaningless — their nonce is consumed forever (`superseded` (audit R1)
+ * means another transaction took the slot) and the POST path now refuses it with
+ * NONCE_NOT_CLAIMABLE instead of replacing the record with a `pending` one.
  */
 const HISTORY_STATUSES = ["broadcasting", "submitted", "failed", "superseded"];
+
+/**
+ * Trạng thái KHÔNG được nhận thêm tier: nonce đã bị tiêu thụ vĩnh viễn
+ * (`submitted`/`failed`/`superseded`/`expired` — chữ ký ở nonce đó không bao giờ mine được nữa),
+ * nội dung bundle đã hỏng (`invalid`), hoặc đang có claim sống (`broadcasting` — bị chặn sớm bằng
+ * nhánh riêng bên dưới, có thông báo riêng).
+ *
+ * Trước fix (chẩn đoán 2026-09-26), `expired` không nằm trong tập này và cũng không nằm trong
+ * `HISTORY_STATUSES`, nên POST cùng nonce ghi đè rung đã chết thành `pending` — hồi sinh nó và nhét
+ * tier mới vào đúng "bundle nonce cũ". Rung RỖNG (`withdrawals: []`, đúng dạng `…@2550` trong
+ * `presigned.json` thật) còn lọt qua cả hai điều kiện của nhánh merge vì nhánh đó chỉ chạy khi
+ * `old.withdrawals.length > 0`. Test ghim: `__tests__/presigned-expired-rung.test.mjs`.
+ */
+const NON_MERGEABLE_STATUSES = new Set([...HISTORY_STATUSES, "expired", "invalid"]);
+
+/** Mã lỗi: nonce của bundle đích đã tiêu thụ/hết hạn nên không được ghi thêm tier vào đó. */
+export const NONCE_NOT_CLAIMABLE = "NONCE_NOT_CLAIMABLE";
 
 function sanitizePendingBundle(input) {
   const bundle = { ...input };
@@ -476,6 +495,19 @@ export function createRequestHandler({
                   `nonce ${incoming.nonce} đang được broadcast (claim ${liveClaim.key}) — chờ tx mine hoặc lấy nonce mới rồi ký lại`
                 ),
                 { code: ACTIVE_CLAIM_CONFLICT }
+              );
+            }
+
+            // Rung đã chết: nonce bị tiêu thụ vĩnh viễn ⇒ chữ ký mới ở nonce đó không thể mine.
+            // Trả 409 rõ nghĩa thay vì hồi sinh record thành `pending` và thêm tier vào bundle nonce
+            // cũ; registry không bị chạm (throw TRƯỚC mọi mutation).
+            const deadRung = sameIdentity.find(({ bundle }) => NON_MERGEABLE_STATUSES.has(bundle?.status));
+            if (deadRung) {
+              throw Object.assign(
+                new Error(
+                  `nonce ${incoming.nonce} đã hết hạn (bundle ${deadRung.key.slice(0, 22)}… ở trạng thái ${deadRung.bundle.status}) — lấy nonce mới rồi ký lại`
+                ),
+                { code: NONCE_NOT_CLAIMABLE }
               );
             }
 
