@@ -398,6 +398,9 @@ export function createFakeApi(fixtures = {}) {
   // `presign` là MUTABLE qua `setPresign()`: kịch bản ladder (rung expired + rung pending, chẩn
   // đoán 2026-09-26) cần đổi payload giữa hai lần đọc mà không phải nạp lại module.
   let presignFixture = presign;
+  // `overview` cũng MUTABLE qua `setOverview()`: cần dựng shape lạ để thử lưới lỗi khi DỰNG
+  // tổng quan (render ném) mà không phải nạp lại module (audit D15–D20, 2026-09-26).
+  let overviewFixture = overview;
   // `bundle` (phản hồi POST /api/bundle, tức /bundle của proxy) cũng MUTABLE: kịch bản
   // "proxy từ chối vì nonce đã tiêu thụ" (D20) cần đổi phản hồi giữa hai lần lưu.
   let bundleFixture = bundle;
@@ -421,7 +424,7 @@ export function createFakeApi(fixtures = {}) {
     }
     if (pathOnly === "/api/challenge") return jsonResponse(challenge);
     if (pathOnly === "/api/auth") return jsonResponse(auth);
-    if (pathOnly === "/api/overview") return jsonResponse(overview);
+    if (pathOnly === "/api/overview") return jsonResponse(overviewFixture);
     if (pathOnly === "/api/presign" && method === "DELETE") return jsonResponse(deleteTier);
     if (pathOnly === "/api/presign") return jsonResponse(presignFixture);
     if (pathOnly === "/api/bundle") {
@@ -444,6 +447,10 @@ export function createFakeApi(fixtures = {}) {
       remainingFailures.delete(path);
     },
     /** Đổi payload `GET /api/presign` cho các lần đọc sau (ladder khác). */
+    /** Đổi payload `GET /api/overview` cho các lần đọc sau (shape lạ ⇒ thử nhánh lỗi DỰNG tổng quan). */
+    setOverview: (next) => {
+      overviewFixture = next;
+    },
     setPresign: (next) => {
       presignFixture = next;
     },

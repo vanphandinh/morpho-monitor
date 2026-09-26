@@ -102,3 +102,20 @@ describe("hợp đồng retryTransient (hàm thuần dùng chung)", () => {
     expect(total).toBe(PRESIGN_FETCH_ATTEMPTS);
   });
 });
+
+describe("B3 — lỗi khi DỰNG tổng quan cũng phải hiện banner (đỏ-trước: ném ra ngoài, không banner)", () => {
+  it("payload tổng quan sai shape ⇒ banner + nút thử lại, không mất mục tổng quan", async () => {
+    // Lưới cũ bao cả phần render; D18 tách ra thì render rơi khỏi lưới ⇒ lỗi bị ném ra ngoài
+    // (unhandled rejection của handler inline) và người dùng chỉ thấy mục tổng quan trống.
+    api.setOverview({ ok: true, markets: { khong: "phai la mang" }, rounds: [] });
+    await app.window.refreshPresignOverview();
+
+    const info = app.html("presign-overview-info");
+    expect(info).toContain("Không dựng được tổng quan presign");
+    expect(info).toContain("refreshPresignOverview()"); // nút thử lại gọi lại chính hàm này
+
+    api.setOverview({ ok: true, markets: [], rounds: [] }); // trả shape lành cho phần còn lại
+    await app.window.refreshPresignOverview();
+    expect(app.html("presign-overview-info")).not.toContain("Không dựng được");
+  });
+});

@@ -41,7 +41,15 @@ export async function refreshPresignOverview() {
   }
   const data = outcome.data;
   if (!data.ok) { info.textContent = "Không tải được tổng quan presign."; return; }
-  renderPresignOverview(data.markets || [], data.rounds || []);
+  try {
+    renderPresignOverview(data.markets || [], data.rounds || []);
+  } catch (err) {
+    // Lưới cũ bao CẢ phần dựng HTML; khi tách ra, một lỗi render rơi khỏi lưới ⇒ handler inline chỉ
+    // còn unhandled rejection và mục tổng quan trống không lời giải thích (audit D15–D20).
+    info.innerHTML =
+      `<div class="banner error">⚠️ Không dựng được tổng quan presign (${esc(err.message)}).</div>` +
+      `<button class="btn-outline" onclick="refreshPresignOverview()" style="margin-top:6px">🔄 Thử lại</button>`;
+  }
 }
 
 function renderPresignOverview(markets, rounds) {
