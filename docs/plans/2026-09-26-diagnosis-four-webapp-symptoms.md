@@ -556,3 +556,75 @@ Trước khi sửa: `analyze --index-only` (index đang behind 3 commit) rồi `
 Bất biến đã giữ: không sửa `presignedNonce` theo ví; không thêm `eth_signTransaction` (MetaMask không hỗ trợ —
 người dùng đã chốt "chưa cần"); không đụng `presigned-broadcast.mjs`/registry/luật merge; relay `code` và các
 nhánh phục hồi D16/D20/D2 giữ nguyên; tab "Rút Tiền" không bị chạm.
+
+## 14. Nút xoá tier/rung quá to và không đồng đều (2026-09-26)
+
+### 14.1 Triệu chứng & cách đo
+
+Ảnh người dùng gửi: trong mục "Bundle Hiện Tại Trên Server", nút 🗑 (xoá CẢ RUNG) là một hộp viền rộng gần
+nửa hàng ở rung 2553 nhưng rộng hơn ở rung 2554, và cao gấp đôi nút ✕ (xoá MỘT tier).
+
+Loop Phase 1: `.freebuff/layout-loop.mjs` (throwaway, `.freebuff/` gitignored) — server **thật** trên cổng
+3939: `createRequestHandler` thật + `webapp.html` thật + toàn bộ module browser THẬT
+(`browserModuleNames()`/`readBrowserSource()`) + registry seed đúng cảnh trong ảnh: hai rung `pending` liên
+tiếp (2553 có tier 100 USDC + all-shares, 2554 chỉ all-shares). `rpcUrls: ["http://127.0.0.1:1"]` là cổng
+CHẾT có chủ ý — mục bundle đọc từ server (D18) nên phép đo không phụ thuộc mạng ngoài. Lưu ý: preview
+browser xoá `sessionStorage` mỗi lần reload (localStorage thì không), nên phải đăng nhập qua chính hàm của
+app — `import("/webapp-shell.mjs").saveSession("loop-token", Date.now()+3600000)` — rồi mới gọi
+`switchTab("presign")` + `fetchExistingBundle()`.
+
+| đo bằng `getBoundingClientRect()` (viewport 644×1355) | trước fix | sau fix |
+| --- | --- | --- |
+| 🗑 rung 2553 (`.row` TRẦN) | 255×51px = **49% hàng** | 28×22px = 5% |
+| 🗑 rung 2554 (`.row` TRẦN) | 324×51px = **63% hàng** | 28×22px = 5% |
+| ✕ tier (`.row.bundle-tier-row`) | 29×22px | 29×22px |
+| chiều cao hàng đầu rung | 80px | 35–39px |
+
+### 14.2 Nguyên nhân (đã chứng minh, không suy đoán)
+
+Rule nền `button { display:block; width:100%; padding:14px; margin:8px 0 }` trong `webapp.html` áp cho MỌI
+`<button>`. Hai rule bù duy nhất là theo NGỮ CẢNH container: `.tier-row .btn-remove` và
+`.bundle-tier-row .btn-remove` (đặc tả 0-2-0). Nút 🗑 của rung nằm trong `.row` TRẦN nên **không rule nào
+khớp** ⇒ rơi về mặc định ⇒ bị giãn theo bề rộng hàng (`.row { display:flex; justify-content:space-between }`)
+và hai rung lệch nhau vì bề rộng `.value` khác nhau; `padding:14px` + `margin:8px 0` làm hàng cao 80px.
+
+Bằng chứng biến-đơn (Phase 4): trên CHÍNH trang đã fix, xoá đúng MỘT rule `.btn-remove` khỏi CSSOM rồi đo
+lại ⇒ trở về đúng 255px (49%) / 324px (63%) / hàng 80px; chèn lại ⇒ 28/28px và hàng 35–39px. Một biến, cả
+hai chiều.
+
+### 14.3 Giả thuyết đã xếp hạng (Phase 3) — và cái đúng
+
+1. **Thiếu rule NỀN cho `.btn-remove`** ⇒ nút trong container không được scope rơi về mặc định `button`.
+   Dự đoán: chèn rule cỡ-nhỏ cho `.btn-remove` thì cả hai nút về ~28px và hàng về ~35px. **ĐÚNG** — và
+   chiều ngược (xoá rule) tái hiện đúng số cũ.
+2. Nội dung/emoji quyết định bề rộng (🗑 rộng hơn ✕). **Loại**: ✕ cùng `font-size:0.85rem` nhưng chỉ 29px.
+3. Markup sai (`class` sai, hoặc nút nằm ngoài container có style). **Loại**: `renderPresignBundle` phát đúng
+   `class="btn-outline btn-remove"` trong `.row`.
+4. `.row { justify-content: space-between }` kéo giãn flex item. **Loại**: `justify-content` không đổi bề rộng
+   item có `width:100%`; `computed width` đo được là `100%`, không phải "auto bị giãn".
+
+### 14.4 Fix + test hồi quy
+
+- `webapp.html`: thêm rule NỀN `.btn-remove { width:auto; flex:0 0 auto; align-self:center; padding:2px 8px;
+  margin:0; font-size:0.85rem; line-height:1.2 }` ngay sau `.btn-outline`; hai rule theo container giữ nguyên
+  (đặc tả cao hơn nên vẫn thắng khi cần chỉnh riêng).
+- Seam: DOM giả của harness KHÔNG có layout nên vitest không thể đo pixel. Seam đúng là
+  `__tests__/webapp-btn-remove-sizing.test.mjs`: tự giải CASCADE của chính `webapp.html` (đặc tả + thứ tự
+  khai báo) trên ĐÚNG ngữ cảnh container mà markup THẬT (`renderPresignBundle` qua harness) sinh ra — nút
+  thắng cascade phải là cỡ inline nhỏ, không được là mặc định `width:100%`/`padding:14px`. Test khoá luôn hai
+  giới hạn của model (không at-rule nào chạm `.btn-remove`; số nút quét được = số lần `btn-remove` xuất hiện
+  trong markup) để ngày ai thêm `@media` thì ĐỎ, không xanh giả.
+- Đỏ-trước (khôi phục `webapp.html` từ HEAD, cùng file test): **5 failed | 3 passed (8)** —
+  `width thắng cascade trong [div > div.row]: expected '100%' to be 'auto'`,
+  `margin thắng cascade trong [div.tier-row]: expected '8px 0' to be '0'`,
+  `expected undefined to be '0 0 auto'`, và ca "đồng đều" thấy 2 chữ ký khác nhau (`width:100%,
+  padding:14px` vs `width:auto, padding:2px 8px`). Sau fix: **8 passed**.
+- Phase 6: loop `.freebuff/layout-loop.mjs` + registry + log đã xoá, server 3939 đã tắt; đợt này KHÔNG thêm
+  tag `[DEBUG-*]` nào (probe bằng browser/DOM, không bằng log).
+
+### 14.5 Cổng cuối
+
+`npm run check` exit 0 — `Found 0 warnings and 0 errors.` · oxlint quét 96 file .mjs (95 tracked + file test
+mới) · `node --check: 94/94 target OK` · **47 file test, 631 passed | 7 skipped (638)** (nền: 46 file,
+623 | 7 → +8 ca). GitNexus `detect-changes --scope all`: 1 file chạm nhưng KHÔNG symbol nào trùng hunk (thay
+đổi thuần CSS, không đổi chữ ký hàm nào) — không `partial`/`truncated`.
