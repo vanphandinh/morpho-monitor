@@ -15,6 +15,7 @@ import {
   VERIFY_CONFIG_MISSING,
   VERIFY_CONFIG_MISMATCH,
   VERIFY_BUNDLE_INVALID,
+  NONCE_MISMATCH,
   MORPHO_WITHDRAW_ABI,
 } from "../presign-verify.mjs";
 
@@ -525,5 +526,81 @@ describe("mã lỗi verify — config vs nội dung (D2)", () => {
     expect(result.ok).toBe(true);
     expect(result.code).toBeUndefined();
     expect(result.decoded.assets).toBe(50_000_000000n);
+  });
+});
+
+/**
+ * Chẩn đoán 2026-09-26 — ví bỏ qua nonce dApp gửi (`eth_sendTransaction.nonce`).
+ *
+ * Nonce chỉ nằm trong BYTE đã ký: webapp không bao giờ giữ signedTx, nên tầng verify là nơi duy
+ * nhất biết chữ ký thật ở nonce nào. Trước fix, thông tin đó chỉ tồn tại dưới dạng CHUỖI
+ * (`tx nonce 7 !== bundle nonce 9`) ⇒ proxy không có gì để trả mã phục hồi, webapp chỉ còn
+ * "Lỗi proxy: …" và bấm Lưu lặp lại đúng lỗi đó. Các ca dưới đây ghim phần bằng chứng CÓ CẤU TRÚC
+ * (additive ở nhánh lỗi — nhánh thành công không đổi shape, broadcaster vẫn quyết định như cũ).
+ */
+describe("lệch nonce giữa chữ ký ví và bundle — bằng chứng có cấu trúc", () => {
+  it("verifyWithdrawCalldata: tx nonce 7 vs bundle nonce 9 ⇒ nonceMismatch { txNonce, bundleNonce }", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n, nonce: 7 });
+    const result = await verifyWithdrawCalldata(signedTx, {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID,
+      nonce: 9, amountWei: "50000000000",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code, "broadcaster vẫn thấy BUNDLE_INVALID").toBe(VERIFY_BUNDLE_INVALID);
+    expect(result.error).toMatch(/tx nonce 7 !== bundle nonce 9/);
+    expect(result.nonceMismatch).toEqual({ txNonce: 7, bundleNonce: 9 });
+  });
+
+  it("nhánh THÀNH CÔNG không có nonceMismatch (shape cũ giữ nguyên)", async () => {
+    const signedTx = await signWithdrawTx({ assets: 50_000_000000n, nonce: 9 });
+    const result = await verifyWithdrawCalldata(signedTx, {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID,
+      nonce: 9, amountWei: "50000000000",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.nonceMismatch).toBeUndefined();
+  });
+
+  it("verifyPresignedBundle: tier thứ hai lệch nonce ⇒ index + nonceMismatch của ĐÚNG tier đó", async () => {
+    // Ví tôn trọng nonce ở tier 1 nhưng tự chọn nonce ở tier 2 — đúng hình dạng "popup đầu OK,
+    // popup sau bỏ qua nonce" mà người dùng gặp với ví không cho đặt nonce.
+    const tierA = await signWithdrawTx({ assets: 100_000_000000n, nonce: 9 });
+    const tierB = await signWithdrawTx({ assets: 250_000_000000n, nonce: 7 });
+    const bundle = {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID, nonce: 9,
+      withdrawals: [
+        { amountWei: "100000000000", signedTx: tierA },
+        { amountWei: "250000000000", signedTx: tierB },
+      ],
+    };
+    const result = await verifyPresignedBundle(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe(VERIFY_BUNDLE_INVALID);
+    expect(result.index).toBe(1);
+    expect(result.nonceMismatch).toEqual({ txNonce: 7, bundleNonce: 9 });
+  });
+
+  it("bundle KHÔNG khai nonce + các tier ở nonce khác nhau ⇒ nonceMismatch.txNonces (danh sách)", async () => {
+    // Nhánh này chỉ tới được khi bundle không khai nonce (proxy luôn khai), nên đây là lưới an
+    // toàn cho caller khác: thiếu một nonce chuẩn để so thì vẫn phải báo được "các tier không
+    // cùng một nonce" thay vì chuỗi trần.
+    const tierA = await signWithdrawTx({ assets: 100_000_000000n, nonce: 9 });
+    const tierB = await signWithdrawTx({ assets: 250_000_000000n, nonce: 7 });
+    const bundle = {
+      morphoBlueAddress: MORPHO, lenderAddress: LENDER, marketId: MARKET_ID,
+      withdrawals: [
+        { amountWei: "100000000000", signedTx: tierA },
+        { amountWei: "250000000000", signedTx: tierB },
+      ],
+    };
+    const result = await verifyPresignedBundle(bundle);
+    expect(result.ok).toBe(false);
+    expect(result.nonceMismatch).toEqual({ txNonces: [9, 7] });
+  });
+
+  it("NONCE_MISMATCH là mã TẦNG HTTP (không phải mã verify của broadcaster)", () => {
+    expect(NONCE_MISMATCH).toBe("NONCE_MISMATCH");
+    expect(NONCE_MISMATCH).not.toBe(VERIFY_BUNDLE_INVALID);
+    expect(isConfigVerifyError(NONCE_MISMATCH)).toBe(false);
   });
 });

@@ -24,7 +24,7 @@ import http from "node:http";
 import { encodeFunctionData, keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { createProxyRequestHandler, createRpcDispatcher } from "../proxy-dispatcher.mjs";
-import { NONCE_CONSUMED, assertNonceNotConsumed, computeMarketId, MORPHO_WITHDRAW_ABI } from "../presign-verify.mjs";
+import { NONCE_CONSUMED, NONCE_MISMATCH, assertNonceNotConsumed, computeMarketId, MORPHO_WITHDRAW_ABI } from "../presign-verify.mjs";
 
 // Khoá test công khai (Hardhat account #0) — không phải ví thật, không có tiền.
 const TEST_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -286,5 +286,69 @@ describe("relay /bundle — mã lỗi của server phải xuyên qua proxy", () 
     } finally {
       await new Promise((resolve) => localServer.close(resolve));
     }
+  });
+});
+
+// ---- Ví bỏ qua nonce dApp gửi: proxy phải nói được chữ ký THẬT nằm ở nonce nào ----
+describe("ví bỏ qua nonce (NONCE_MISMATCH) — bằng chứng nonce của chữ ký ví", () => {
+  const resetChain = () => {
+    chain.state.down = false;
+    chain.state.pending = 7;
+    capturedTxs.length = 0;
+    relays.length = 0;
+  };
+
+  const capture = (signedTx) => postJson(`http://127.0.0.1:${port}/`, {
+    jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [signedTx],
+  });
+
+  it("GET /captured trả nonce THẬT của tx đã capture (+ nonceOnChain; entry cũ ⇒ null)", async () => {
+    // Đỏ-trước: chỉ có {hash, capturedAt}. Webapp không có cách nào biết ví đã ký ở nonce nào —
+    // nonce chỉ tồn tại trong byte đã ký mà browser không bao giờ giữ.
+    resetChain();
+    const signedTx = await signWithdrawTx({ nonce: 7 });
+    await capture(signedTx);
+    // Entry kiểu cũ (buffer dựng tay / bản ghi trước D20) không có nonce ⇒ phải serialize `null`,
+    // không được vắng trường (client đọc `undefined` rồi so sánh là cảnh báo giả).
+    capturedTxs.push({ hash: "0x" + "ab".repeat(32), signedTx: "0x00", capturedAt: "2026-01-01T00:00:00.000Z" });
+
+    const body = await (await fetch(`http://127.0.0.1:${port}/captured`)).json();
+    expect(body.txs[0]).toMatchObject({ hash: keccak256(signedTx), nonce: 7, nonceOnChain: 7 });
+    expect(body.txs[0]).not.toHaveProperty("signedTx");
+    expect(body.txs[1]).toMatchObject({ nonce: null, nonceOnChain: null });
+  });
+
+  it("bundle khai nonce 9 nhưng chữ ký nằm ở nonce 7 ⇒ 409 + code + hai số thật, KHÔNG relay", async () => {
+    // Đỏ-trước: 400 với chuỗi "Calldata verify failed: withdrawals[0]: tx nonce 7 !== bundle nonce 9",
+    // KHÔNG có `code` ⇒ webapp rơi nhánh chung và bấm Lưu lặp đúng lỗi đó.
+    resetChain();
+    const signedTx = await signWithdrawTx({ nonce: 7 }); // ví tự chọn nonce của nó
+    await capture(signedTx);
+    expect(capturedTxs).toHaveLength(1);
+
+    const save = await postJson(`http://127.0.0.1:${port}/bundle`, { ...bundleMeta(keccak256(signedTx)), nonce: 9 });
+    expect(save.status, save.text).toBe(409);
+    expect(save.json).toMatchObject({
+      ok: false,
+      code: NONCE_MISMATCH,
+      txNonce: 7,
+      bundleNonce: 9,
+      index: 0,
+    });
+    expect(save.json.error, "chuỗi lỗi cũ vẫn còn cho log").toMatch(/Calldata verify failed/);
+    expect(relays, "bundle không thể lưu ⇒ không được đẩy sang webapp").toHaveLength(0);
+    expect(capturedTxs, "chữ ký vẫn nằm trong buffer để ký lại/xoá").toHaveLength(1);
+  });
+
+  it("chữ ký ở ĐÚNG nonce khai (9, trên sàn 7) ⇒ vẫn relay — nonce cao không bị chặn", async () => {
+    // Ca chống sửa quá tay: cổng NONCE_MISMATCH không được biến "xếp hàng ở nonce cao" thành lỗi.
+    resetChain();
+    const signedTx = await signWithdrawTx({ nonce: 9 });
+    await capture(signedTx);
+    const save = await postJson(`http://127.0.0.1:${port}/bundle`, { ...bundleMeta(keccak256(signedTx)), nonce: 9 });
+    expect(save.status, save.text).toBe(200);
+    expect(save.json).toMatchObject({ ok: true, saved: true });
+    expect(relays).toHaveLength(1);
+    expect(capturedTxs, "lưu thành công thì buffer được dọn").toHaveLength(0);
   });
 });

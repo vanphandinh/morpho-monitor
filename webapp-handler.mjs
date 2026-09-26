@@ -343,6 +343,32 @@ export function createRequestHandler({
       return;
     }
 
+    // ---- API: GET /api/captured — proxy đã capture chữ ký nào (hash + nonce thật) ----
+    // Relay đúng khuôn POST /api/bundle (Bearer của phiên → Basic nội bộ), chỉ khác chiều: browser
+    // hỏi "chữ ký tôi vừa gửi nằm ở nonce nào". Đây là nguồn DUY NHẤT của bằng chứng đó — nonce
+    // chỉ tồn tại trong byte đã ký, mà browser không bao giờ giữ signedTx. Có đường này thì webapp
+    // phát hiện được ví bỏ qua nonce NGAY khi ký, thay vì để bước Lưu nổ 400 trần (chẩn đoán
+    // 2026-09-26). Không có state mới ở server: chỉ chuyển tiếp.
+    if (req.method === "GET" && pathname === "/api/captured") {
+      if (!verifyToken(req, LENDER_ADDRESS)) {
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+      try {
+        const authHeader = proxyPassword
+          ? "Basic " + Buffer.from(":" + proxyPassword).toString("base64")
+          : null;
+        const proxyResp = await fetchImpl(`${proxyUrl}/captured`, {
+          headers: authHeader ? { Authorization: authHeader } : {},
+        });
+        const result = await proxyResp.json();
+        sendJson(res, proxyResp.status, result);
+      } catch (err) {
+        sendJson(res, 502, { ok: false, error: "Proxy unreachable: " + err.message });
+      }
+      return;
+    }
+
     // ---- Block access to sensitive files ----
     const blockedPatterns = [/\.(json|env|log|tar)$/i];
     if (req.method === "GET" && blockedPatterns.some(p => p.test(pathname))) {

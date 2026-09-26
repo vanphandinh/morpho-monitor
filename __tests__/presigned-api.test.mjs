@@ -359,3 +359,59 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(resp.json.error).toMatch(/too large/i);
   });
 });
+
+// ---- GET /api/captured: relay bằng chứng nonce của chữ ký ví (chẩn đoán 2026-09-26) ----
+// Browser không bao giờ giữ signedTx, nên nonce thật của chữ ký chỉ đọc được từ proxy; nếu
+// webapp không có đường đọc, nó chỉ biết chữ ký SAI khi bước Lưu nổ 400.
+describe("GET /api/captured — relay sang proxy (Bearer → Basic nội bộ)", () => {
+  const withRelay = async (deps, run) => {
+    const relay = http.createServer(createRequestHandler({
+      presignedPath: registryPath,
+      markets,
+      content,
+      proxyUrl: "http://127.0.0.1:9999",
+      ...deps,
+    }));
+    await new Promise((resolve) => relay.listen(0, "127.0.0.1", resolve));
+    try {
+      await run(relay.address().port);
+    } finally {
+      await new Promise((resolve) => relay.close(resolve));
+    }
+  };
+
+  it("chuyển tiếp nguyên status + JSON của proxy, kèm Basic auth nội bộ", async () => {
+    const calls = [];
+    await withRelay({
+      proxyPassword: "proxy-secret",
+      fetchImpl: async (url, init = {}) => {
+        calls.push({ url: String(url), headers: init.headers || {} });
+        return {
+          status: 200,
+          json: async () => ({
+            count: 1,
+            txs: [{ hash: "0xabc", capturedAt: "2026-09-26T00:00:00.000Z", nonce: 9, nonceOnChain: 7 }],
+          }),
+        };
+      },
+    }, async (relayPort) => {
+      const resp = await fetch(`http://127.0.0.1:${relayPort}/api/captured`);
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toMatchObject({ count: 1, txs: [{ nonce: 9, nonceOnChain: 7 }] });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("http://127.0.0.1:9999/captured");
+      expect(calls[0].headers.Authorization, "proxy nội bộ phải nhận Basic, không phải Bearer của phiên")
+        .toBe("Basic " + Buffer.from(":proxy-secret").toString("base64"));
+    });
+  });
+
+  it("proxy không tới được ⇒ 502, không throw ra ngoài", async () => {
+    await withRelay({
+      fetchImpl: async () => { throw new Error("ECONNREFUSED"); },
+    }, async (relayPort) => {
+      const resp = await fetch(`http://127.0.0.1:${relayPort}/api/captured`);
+      expect(resp.status).toBe(502);
+      expect((await resp.json()).error).toMatch(/Proxy unreachable/);
+    });
+  });
+});

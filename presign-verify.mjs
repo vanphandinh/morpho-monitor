@@ -96,9 +96,11 @@ export function computeMarketId(marketParams) {
  * @param {string} [expected.sharesWei] - for all-shares tiers
  * @param {boolean} [expected.isAllShares]
  * @param {boolean} [expected.skipAmountChecks] - capture-time: only to/fn/onBehalf/receiver/market/from
- * @returns {Promise<{ ok: true, decoded: object } | { ok: false, error: string, code: string }>}
+ * @returns {Promise<{ ok: true, decoded: object } | { ok: false, error: string, code: string, nonceMismatch?: object }>}
  *   `code` là VERIFY_CONFIG_MISSING | VERIFY_CONFIG_MISMATCH | VERIFY_BUNDLE_INVALID
  *   (additive — chỉ xuất hiện ở nhánh lỗi; nhánh thành công không đổi shape).
+ *   `nonceMismatch` chỉ có ở nhánh lệch nonce: `{ txNonce, bundleNonce }` — bằng chứng có cấu trúc
+ *   để proxy trả mã NONCE_MISMATCH cho client (chẩn đoán 2026-09-26).
  */
 export async function verifyWithdrawCalldata(signedTx, expected) {
   if (!signedTx || typeof signedTx !== "string") {
@@ -131,6 +133,14 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
       ok: false,
       code: VERIFY_BUNDLE_INVALID,
       error: `tx nonce ${tx.nonce} !== bundle nonce ${expected.nonce}`,
+      // Bằng chứng có CẤU TRÚC cho caller (chẩn đoán 2026-09-26): chữ ký ví mang nonce khác nonce
+      // bundle khai. Chuỗi `error` vẫn là nguồn cho log/broadcaster; hai số dưới đây để proxy/webapp
+      // dựng thông báo phục hồi mà không phải parse chuỗi (parse chuỗi là chỗ sớm muộn lệch định dạng).
+      // ADDITIVE ở nhánh lỗi — nhánh thành công không đổi shape (broadcaster dựa vào shape cũ).
+      nonceMismatch: {
+        txNonce: tx.nonce == null ? null : Number(tx.nonce),
+        bundleNonce: Number(expected.nonce),
+      },
     };
   }
 
@@ -244,6 +254,17 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
 export const NONCE_CONSUMED = "NONCE_CONSUMED";
 
 /**
+ * Mã lỗi TẦNG HTTP (chẩn đoán 2026-09-26): chữ ký trong bundle mang nonce KHÁC nonce bundle khai —
+ * điển hình là ví bỏ qua nonce dApp gửi (`eth_sendTransaction.nonce`) và ký ở nonce riêng của nó.
+ *
+ * Vì sao là mã riêng chứ không phải chuỗi lỗi: webapp phải phân biệt được "ví ký sai nonce" (đổi
+ * hành vi ví rồi ký lại) với "bundle hỏng/config lệch" (D2) để chỉ ĐÚNG đường phục hồi. Đây là mã
+ * của PHẢN HỒI HTTP — tầng verify vẫn giữ `VERIFY_BUNDLE_INVALID` cho broadcaster (nhánh nào chết
+ * vẫn chết như cũ); proxy chỉ ĐỔI MÃ khi trả lỗi cho client.
+ */
+export const NONCE_MISMATCH = "NONCE_MISMATCH";
+
+/**
  * Nonce của tx ký sẵn có còn dùng được không? (chẩn đoán 2026-09-26, D20)
  *
  * Luật: chỉ CHẾT khi on-chain `pending` **vượt qua** nonce của tx — tx mine theo thứ tự nonce nên khi
@@ -305,7 +326,9 @@ export async function assertCaptureTx(signedTx, expected) {
 /**
  * Verify every withdrawal in a bundle against config + per-tier labels.
  *
- * @returns {Promise<{ ok: true } | { ok: false, error: string, index?: number, code: string }>}
+ * @returns {Promise<{ ok: true } | { ok: false, error: string, index?: number, code: string, nonceMismatch?: object }>}
+ *   `nonceMismatch` (additive, chẩn đoán 2026-09-26): `{ txNonce, bundleNonce }` khi một tier lệch
+ *   nonce, hoặc `{ txNonces: number[] }` khi các tier ký ở nhiều nonce khác nhau.
  *
  * Audit vòng 2 (D2): mọi nhánh lỗi mang thêm `code`
  * (VERIFY_CONFIG_MISSING / VERIFY_CONFIG_MISMATCH / VERIFY_BUNDLE_INVALID) để caller
@@ -356,14 +379,30 @@ export async function verifyPresignedBundle(bundle, config = {}) {
     });
     if (!result.ok) {
       // Propagate mã lỗi của tier (config vs nội dung) — broadcaster dựa vào đây.
-      return { ok: false, code: result.code, error: `withdrawals[${i}]: ${result.error}`, index: i };
+      // `nonceMismatch` đi kèm khi có: proxy/webapp dựng thông báo phục hồi bằng hai số thật
+      // (ADDITIVE — nhánh lỗi không có nó vẫn hợp lệ).
+      return {
+        ok: false,
+        code: result.code,
+        error: `withdrawals[${i}]: ${result.error}`,
+        index: i,
+        ...(result.nonceMismatch ? { nonceMismatch: result.nonceMismatch } : {}),
+      };
     }
     txNonces.push(result.decoded.nonce);
   }
 
   const unique = [...new Set(txNonces.map(Number))];
   if (unique.length > 1) {
-    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `inconsistent tx nonces: ${unique.join(", ")}` };
+    // Trộn nonce: ví tự tăng nonce giữa các popup (mỗi popup một nonce) ⇒ bundle không thể là
+    // MỘT rung của ladder. Cùng mã phục hồi NONCE_MISMATCH, nhưng không có một cặp số duy nhất để
+    // so — trả DANH SÁCH nonce tìm thấy để webapp nói đúng chuyện gì đã xảy ra.
+    return {
+      ok: false,
+      code: VERIFY_BUNDLE_INVALID,
+      error: `inconsistent tx nonces: ${unique.join(", ")}`,
+      nonceMismatch: { txNonces: unique },
+    };
   }
 
   return { ok: true };
