@@ -26,7 +26,7 @@ export function updatePresignWalletUI() {
     document.getElementById("presign-wallet-address").textContent = state.currentAccount;
     document.getElementById("btn-fetch-nonce").disabled = false;
     document.getElementById("btn-auto-gas").disabled = false;
-    if (state.presignedTiers.length > 0 && state.presignedNonce !== null && presignedGas.maxFeePerGas) {
+    if (state.presignedTiers.length > 0 && state.presignedNonce !== null && presignedGas.maxFeePerGas !== null && presignedGas.maxFeePerGas > 0n) {
       document.getElementById("btn-sign-all").disabled = false;
     }
     updateAuthUI();
@@ -198,7 +198,8 @@ export async function autoFillGas() {
  * (`parseFloat`) chấp nhận cả ba, nên từ chối chúng là hồi quy (audit D15–D20, 2026-09-26).
  *
  * @param {string} raw giá trị thô trong ô nhập
- * @returns {{ wei: bigint|null, error: string|null }} `wei = null` khi ô rỗng/0 (chưa thiết lập)
+ * @returns {{ wei: bigint|null, error: string|null }} `wei = null` khi ô TRỐNG hoặc input không hợp lệ; `0n` LÀ
+ *   giá trị hợp lệ (chủ động không tip, 2026-09-26) — chỉ trần phí 0 mới bị chặn, ở tầng caller.
  *   hoặc khi `error` khác null — không bao giờ trả về giá trị dở dang.
  */
 export function parseGasInput(raw) {
@@ -219,7 +220,26 @@ export function parseGasInput(raw) {
     return { wei: null, error: `"${text}" có quá 9 chữ số thập phân (wei là đơn vị nhỏ nhất).` };
   }
   const wei = parseUnits(normalized, 9);
-  return { wei: wei > 0n ? wei : null, error: null }; // 0 = chưa thiết lập (hành vi cũ)
+  // 2026-09-26: `0` là giá trị HỢP LỆ (chủ động không tip), KHÔNG còn bị hạ về `null`.
+  // Trước fix, "0" ở ô maxPriorityFeePerGas bị coi là "chưa thiết lập" ⇒ nút Ký khoá và guard báo
+  // "Vui lòng nhập gas" — trong khi tip 0 hợp lệ theo EIP-1559 và chính `autoFillGas` ghi ra "0"
+  // khi RPC trả priorityFee = 0. Ô TRỐNG mới là "chưa thiết lập".
+  return { wei, error: null };
+}
+
+/**
+ * Trần phí 0 KHÔNG bao giờ lên bảng (2026-09-26): từ khi `parseGasInput` coi `0` là giá trị hợp lệ,
+ * chuỗi "0" ở ô maxFeePerGas đi thẳng qua cổng định dạng — nhưng trần 0 dưới cả base fee ⇒ giao dịch
+ * không bao giờ vào bảng, còn bundle đã ký thì tiêu mất nonce ⇒ claim kẹt. Tip 0 (không tip) hợp lệ;
+ * trần 0 thì không. Ô TRỐNG là "chưa thiết lập" nên không đi qua đây.
+ * @returns {string|null} thông báo lỗi kèm số cụ thể, hoặc null khi trần phí dùng được.
+ */
+function zeroMaxFeeError(maxFeeWei) {
+  if (maxFeeWei === 0n) {
+    return "maxFeePerGas = 0: trần phí 0 nghĩa là giao dịch không bao giờ vào bảng — hãy đặt trần > 0 " +
+      "(maxPriorityFeePerGas = 0 vẫn hợp lệ nếu bạn muốn không tip).";
+  }
+  return null;
 }
 
 function readGasField(id) {
@@ -235,7 +255,9 @@ export function readGasInputs() {
   const priority = readGasField("presign-gas-priority");
   presignedGas.maxFeePerGas = maxFee.wei;
   presignedGas.maxPriorityFeePerGas = priority.wei;
-  const error = maxFee.error || priority.error;
+  // `zeroMaxFeeError` chạy SAU lỗi định dạng: "0" hợp lệ ở tầng parse, chỉ bị chặn ở đây vì trần 0
+  // không bao giờ vào bảng — khác ô TRỐNG = chưa thiết lập.
+  const error = maxFee.error || priority.error || zeroMaxFeeError(maxFee.wei);
   if (error) showPresignError("Gas không hợp lệ: " + error);
   return error;
 }
@@ -258,7 +280,9 @@ export function onGasInputChange() {
   if (gasChanged) {
     invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
   }
-  const error = maxFee.error || priority.error;
+  // `zeroMaxFeeError` chạy SAU lỗi định dạng: "0" hợp lệ ở tầng parse, chỉ bị chặn ở đây vì trần 0
+  // không bao giờ vào bảng — khác ô TRỐNG = chưa thiết lập.
+  const error = maxFee.error || priority.error || zeroMaxFeeError(maxFee.wei);
   // Hiện lỗi định dạng SAU invalidate để đây là thứ người dùng đọc cuối cùng (invalidate cũng ghi banner).
   if (error) showPresignError("Gas không hợp lệ: " + error);
   updateSignButton();
@@ -332,7 +356,9 @@ async function nonceStillSignable() {
 
 function updateSignButton() {
   const btn = document.getElementById("btn-sign-all");
-  if (state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas && state.presignedTiers.length > 0) {
+  // Trần 0 không bao giờ vào bảng nên vẫn phải khoá nút; còn `0n` là falsy trong JS nên điều kiện
+  // phải so `!== null` + `> 0n` thay vì để giá trị tự quyết (2026-09-26).
+  if (state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas !== null && presignedGas.maxFeePerGas > 0n && state.presignedTiers.length > 0) {
     btn.disabled = false;
   } else {
     btn.disabled = true;
@@ -340,7 +366,7 @@ function updateSignButton() {
   // Enable/disable nút rút toàn bộ shares
   const btnAll = document.getElementById("btn-sign-withdraw-all");
   if (btnAll) {
-    btnAll.disabled = !(state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas);
+    btnAll.disabled = !(state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas !== null && presignedGas.maxFeePerGas > 0n);
   }
 }
 
@@ -423,7 +449,9 @@ export async function signAllTiers() {
   // Read gas from input fields (user có thể đã chỉnh sửa) — chỉ ĐỌC, không invalidate
   // (D12: gọi `onGasInputChange()` ở đây từng xoá chữ ký các mốc vừa ký dù gas không đổi).
   const gasError = readGasInputs();
-  if (gasError || !presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+  // `=== null` chứ KHÔNG falsy: `0n` (không tip) là giá trị hợp lệ và `0n` là falsy trong JS
+  // (2026-09-26). Trần phí 0 đã bị chặn phía trên qua `gasError`.
+  if (gasError || presignedGas.maxFeePerGas === null || presignedGas.maxPriorityFeePerGas === null) {
     showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }
@@ -540,7 +568,9 @@ export async function signWithdrawAll() {
     return;
   }
   const gasError = onGasInputChange();
-  if (gasError || !presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+  // `=== null` chứ KHÔNG falsy: `0n` (không tip) là giá trị hợp lệ và `0n` là falsy trong JS
+  // (2026-09-26). Trần phí 0 đã bị chặn phía trên qua `gasError`.
+  if (gasError || presignedGas.maxFeePerGas === null || presignedGas.maxPriorityFeePerGas === null) {
     showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }

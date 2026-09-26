@@ -356,3 +356,46 @@ Cổng sau fix: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` · o
 `node --check: 92/92 target OK` · **45 file test, 596 passed | 7 skipped (603)**. GitNexus `impact`:
 `signIn`/`signOut` → UNKNOWN (đã xác nhận bằng text search: `onclick="signIn()"` `webapp.html:346`,
 `onclick="signOut()"` `webapp.html:349`, + scenario/test gọi qua `window`).
+
+---
+
+## 11. Ngữ nghĩa gas 0 (2026-09-26): `maxPriorityFeePerGas = 0` là giá trị HỢP LỆ
+
+Yêu cầu: "cho phép maxPriorityFeePerGas=0 trên webapp". Đây là đổi **ngữ nghĩa có chủ đích** (không chỉ
+là sửa lỗi): `0` = "chủ động không tip" là giá trị hợp lệ theo EIP-1559 và phải ký được; chỉ ô **TRỐNG**
+mới là "chưa thiết lập". Trần `maxFeePerGas = 0` thì ngược lại — KHÔNG bao giờ hợp lệ.
+
+Đỏ-trước (`__tests__/webapp-gas-decimals.test.mjs`, chạy thật trên cây trước fix: **4 failed | 3 passed**,
+exit 1): `parseGasInput("0")` → `{ wei: null }` thay vì `{ wei: 0n }`; test "ký với tip 0" và test
+"autoFillGas gặp RPC báo tip 0" cùng đỏ ở `ví không nhận được eth_sendTransaction nào`; test chặn trần 0
+đỏ vì chưa có thông báo nào chứa "không bao giờ vào bảng".
+
+Nguyên nhân: `parseGasInput` cố tình hạ `wei = 0n` về `null` ("0 = chưa thiết lập"), và **bốn** điểm sau
+đó kiểm gas bằng falsy — mà `0n` là falsy trong JS: `readGasInputs`/`onGasInputChange` (qua `wei = null`),
+`signAllTiers` (`!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas`),
+`signWithdrawAll` (cùng dạng), `updateSignButton` (+ nút rút-toàn-bộ) và `updatePresignWalletUI`. Điểm nhọn
+thực tế: `autoFillGas` ghi `formatUnits(priorityFee * 2n, 9)` — RPC trả `priorityFee = 0` ⇒ ô hiện đúng
+`"0"` ⇒ nút Ký bị khoá kèm "Vui lòng nhập gas" dù gas vừa lấy TỪ CHÍNH chain.
+
+Fix (`webapp-presign.mjs`):
+- `parseGasInput` trả `{ wei, error: null }` — `0n` là giá trị hợp lệ, ô trống vẫn `null`.
+- Thêm `zeroMaxFeeError(wei)`: trần 0 bị chặn với thông báo RIÊNG chứa `maxFeePerGas = 0` + "không bao giờ
+  vào bảng" (trần 0 dưới cả base fee ⇒ tx không vào bảng mà bundle đã ký vẫn tiêu nonce). Áp ở cả
+  `readGasInputs` và `onGasInputChange`.
+- Guard ký đổi sang `=== null` (0 hợp lệ cho tip); ba điểm UI đổi sang `!== null && > 0n`.
+- Placeholder hai ô (`webapp.html`) nói rõ: trần "phải > 0", tip "0 = không tip (hợp lệ)".
+
+Cổng sau fix: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` · `node --check: 92/92 target OK` ·
+**45 file test, 599 passed | 7 skipped (606)**; riêng `webapp-gas-decimals` 7/7. GitNexus `impact`:
+`updateSignButton` → **CRITICAL** (11 caller cùng module: signAllTiers/signWithdrawAll/fetchNonce/saveToServer/
+autoFillGas/onNonceStep/addTier/addPresetTier/removeTier/updateTierAmount/onGasInputChange),
+`parseGasInput` → **HIGH**, `readGasInputs`/`onGasInputChange`/`updatePresignWalletUI` → LOW,
+`signAllTiers`/`signWithdrawAll` → UNKNOWN (đã xác nhận bằng text search: `window.signAllTiers`/
+`window.signWithdrawAll` ở `webapp-app.mjs:404-405` + `onclick="signAllTiers()"`/`onclick="signWithdrawAll()"`
+`webapp.html:434,444`). Thay đổi ở các hub là **nới có kiểm soát**: mọi giá trị khác 0 giữ nguyên hành vi,
+`0n` chỉ mới được chấp nhận ở ô tip, còn trần 0 thêm một nhánh chặn.
+
+Tồn dư đã biết (không đổi trong lượt này): metadata `maxFeePerGas`/`maxPriorityFeePerGas` của bundle là
+thông tin hiển thị (proxy copy nguyên, `verify-presigned.mjs` chỉ in log, không tầng nào kiểm gas), và
+`buildPresignedBundle` đọc tươi từ ô (D14) — nên sửa ô thành 0 SAU khi đã ký rồi bấm lưu vẫn ghi metadata
+0 trong khi byte đã ký mang phí cũ (banner lỗi đã hiện; monitor broadcast đúng byte đã ký).

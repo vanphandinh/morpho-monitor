@@ -10,11 +10,13 @@
  * cùng — tham số `eth_sendTransaction` mà ví nhận được.
  */
 import { describe, it, expect, afterAll } from "vitest";
-import { loadWebapp } from "./helpers/webapp-harness.mjs";
+import { createFakeApi, createFakeRpc, loadWebapp } from "./helpers/webapp-harness.mjs";
 
 // Một lượt `loadWebapp` mỗi tiến trình: module browser là ESM cache theo URL, nạp lần hai trong cùng
 // tiến trình sẽ không evaluate lại (xem webapp-scenario.mjs).
-const app = await loadWebapp();
+const rpc = createFakeRpc(); // tay cầm RPC giả: ca "RPC báo tip 0" cần đổi phí giữa hai lần gọi
+const api = createFakeApi();
+const app = await loadWebapp({ rpc, api });
 const { parseGasInput } = await import("../webapp-presign.mjs");
 
 afterAll(() => app.restore());
@@ -50,8 +52,12 @@ describe("gas số nhỏ hàng thập phân (bug 4)", () => {
     expect(parseGasInput("50.").wei).toBe(50_000_000_000n);
     expect(parseGasInput("1e-7").error).toMatch(/không phải số Gwei hợp lệ/);
     expect(parseGasInput("0.0000000001").error).toMatch(/quá 9 chữ số thập phân/);
-    expect(parseGasInput("")).toEqual({ wei: null, error: null });
-    expect(parseGasInput("0")).toEqual({ wei: null, error: null });
+    expect(parseGasInput("")).toEqual({ wei: null, error: null }); // ô TRỐNG = chưa thiết lập
+    // 0 là GIÁ TRỊ HỢP LỆ (chủ động không tip) — audit 2026-09-26: trước fix nó bị coi là "chưa
+    // thiết lập" nên guard chặn ký với thông báo "Vui lòng nhập gas".
+    expect(parseGasInput("0")).toEqual({ wei: 0n, error: null });
+    expect(parseGasInput("0.0")).toEqual({ wei: 0n, error: null });
+    expect(parseGasInput("0,0")).toEqual({ wei: 0n, error: null });
   });
 
   it("ký với maxPriorityFeePerGas = 0.00000026 (260 wei) — không ném, tx mang đúng phí", async () => {
@@ -74,5 +80,31 @@ describe("gas số nhỏ hàng thập phân (bug 4)", () => {
     await app.window.signAllTiers();
     expect(app.takeCalls().some((c) => c.includes("eth_sendTransaction"))).toBe(false);
     expect(app.html("presign-result")).toContain("Gas không hợp lệ");
+  });
+
+  it("ký với maxPriorityFeePerGas = 0 (không tip) — KHÔNG bị chặn, tx mang đúng 0", async () => {
+    await primeSigning("50", "0");
+    await app.window.signAllTiers();
+    const params = lastSendParams();
+    expect(params.maxPriorityFeePerGas, "0 phải đi thẳng vào tx").toBe("0x0");
+    expect(params.maxFeePerGas).toBe("0xba43b7400"); // 50 Gwei
+    expect(app.html("presign-result"), "không được có banner chặn").not.toContain("Vui lòng nhập gas");
+  });
+
+  it("autoFillGas gặp RPC báo tip 0: ô hiện \"0\" và VẪN ký được (điểm nhọn cũ đã hết)", async () => {
+    rpc.setGas({ priorityFee: "0x0" });
+    await app.window.autoFillGas();
+    expect(app.value("presign-gas-priority"), "ô phải hiện đúng giá trị RPC trả").toBe("0");
+    await app.window.signAllTiers();
+    expect(lastSendParams().maxPriorityFeePerGas).toBe("0x0");
+    rpc.setGas({ priorityFee: "0x3b9aca00" }); // trả RPC giả về mặc định cho phần còn lại
+  });
+
+  it("maxFeePerGas = 0 bị CHẶN với thông báo riêng — trần phí 0 thì tx không bao giờ vào bảng", async () => {
+    await primeSigning("0", "1");
+    expect(app.window.readGasInputs()).toMatch(/không bao giờ vào bảng/);
+    await app.window.signAllTiers();
+    expect(app.takeCalls().some((c) => c.includes("eth_sendTransaction"))).toBe(false);
+    expect(app.html("presign-result")).toContain("maxFeePerGas = 0");
   });
 });
