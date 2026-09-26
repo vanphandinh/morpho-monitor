@@ -239,14 +239,19 @@ function switchTab(tab) {
   document.querySelector(`.tab[data-tab="${tab}"]`).classList.add("active");
   document.getElementById(`tab-${tab}`).classList.add("active");
 
-  // Khi chuyển sang tab Ký Trước, render presign data nếu đã có
-  if (tab === "presign" && state.marketData) {
-    renderPresignMarketInfo();
-    renderPresignPosition();
+  // Khi chuyển sang tab Ký Trước: bundle đã ký nằm ở SERVER (registry), không phụ
+  // thuộc RPC công cộng, nên đọc nó LUÔN — không còn `&& state.marketData` (chẩn đoán
+  // 2026-09-26: RPC lỗi ⇒ bấm tab nhiều lần vẫn 0 request /api/presign, thông tin
+  // bundle/tier "lúc hiện lúc không"). Phần render theo RPC mới cần `marketData`.
+  if (tab === "presign") {
     renderWalletCompatibility();
-    updatePresignWalletUI();
     fetchExistingBundle();
     refreshPresignOverview();
+    if (state.marketData) {
+      renderPresignMarketInfo();
+      renderPresignPosition();
+      updatePresignWalletUI();
+    }
   }
 };
 
@@ -353,6 +358,12 @@ async function init() {
   } catch (err) {
     document.getElementById("loading").style.display = "none";
     showError("Lỗi tải dữ liệu: " + err.message);
+  } finally {
+    // Bundle đã ký là dữ liệu SERVER — không phụ thuộc RPC công cộng. Đọc ngay cả
+    // khi nhánh RPC ở trên thất bại (chẩn đoán 2026-09-26), nếu không người dùng
+    // phải đoán xem mình đã ký gì và rung nào còn sống.
+    fetchExistingBundle();
+    refreshPresignOverview();
   }
 }
 
@@ -369,6 +380,8 @@ window.switchTab = switchTab;
 window.switchMarket = switchMarket;
 window.addProxyNetwork = addProxyNetwork;
 window.fetchNonce = fetchNonce;
+window.fetchExistingBundle = fetchExistingBundle;
+window.refreshPresignOverview = refreshPresignOverview;
 window.onNonceStep = onNonceStep;
 window.autoFillGas = autoFillGas;
 window.readGasInputs = readGasInputs;

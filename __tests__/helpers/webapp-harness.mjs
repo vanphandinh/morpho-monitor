@@ -160,6 +160,8 @@ function rpcError(id, code, message) {
  * @param {Map<string,{decimals:number,symbol:string}>} [fixtures.tokens] metadata ERC20 theo địa chỉ
  * @param {string|null} [fixtures.pendingNonce] giá trị `eth_getTransactionCount`
  * @param {boolean} [fixtures.txVisible] `eth_getTransactionByHash` trả tx thật hay `null`
+ * @param {string[]} [fixtures.failingMethods] phương thức luôn trả lỗi JSON-RPC — dùng để dựng
+ *   "RPC công cộng hỏng" (mặc định `[]`, không đổi hành vi của mọi kịch bản cũ)
  */
 export function createFakeRpc(fixtures = {}) {
   const {
@@ -176,6 +178,7 @@ export function createFakeRpc(fixtures = {}) {
     tokens = new Map(),
     pendingNonce = "0xb",
     txVisible = true,
+    failingMethods = [],
     // Phí gas RPC giả trả về. MUTABLE qua `setGas()` để kịch bản "bấm Tự Động Gas lần nữa"
     // có thể đổi phí giữa hai lần gọi (audit 2026-09-26, D14) — mặc định giữ nguyên hành vi cũ.
     priorityFee = "0x3b9aca00",
@@ -183,6 +186,9 @@ export function createFakeRpc(fixtures = {}) {
   } = fixtures;
   let gasPriority = priorityFee;
   let gasBaseFee = baseFee;
+  // Số nonce on-chain trả về là MUTABLE: kịch bản "nonce bị tiêu thụ trong lúc trang mở"
+  // (chẩn đoán 2026-09-26) cần đổi nó giữa hai lần gọi.
+  let nonce = pendingNonce;
 
   const calls = [];
 
@@ -252,12 +258,15 @@ export function createFakeRpc(fixtures = {}) {
 
   const handle = (req) => {
     const { method, params, id } = req;
+    if (failingMethods.includes(method)) {
+      return rpcError(id, -32000, `fake rpc: ${method} bị chặn (failingMethods)`);
+    }
     switch (method) {
       case "eth_chainId": return rpcResult(id, "0x1");
       case "eth_blockNumber": return rpcResult(id, "0x10");
       case "eth_call": return rpcResult(id, handleCall(params));
       case "eth_estimateGas": return rpcResult(id, "0x5208");
-      case "eth_getTransactionCount": return rpcResult(id, pendingNonce);
+      case "eth_getTransactionCount": return rpcResult(id, nonce);
       case "eth_gasPrice": return rpcResult(id, "0x3b9aca00");
       case "eth_maxPriorityFeePerGas": return rpcResult(id, gasPriority);
       case "eth_getBlockByNumber": return rpcResult(id, { ...blockFixture, baseFeePerGas: gasBaseFee });
@@ -288,6 +297,13 @@ export function createFakeRpc(fixtures = {}) {
     setGas: ({ priorityFee: nextPriority, baseFee: nextBaseFee } = {}) => {
       if (nextPriority != null) gasPriority = nextPriority;
       if (nextBaseFee != null) gasBaseFee = nextBaseFee;
+    },
+    /**
+     * Đổi nonce on-chain cho các lần gọi SAU — kịch bản "trang giữ nonce cũ, on-chain đã đi
+     * qua" (chẩn đoán 2026-09-26). Nhận hex string ("0xa") hoặc bigint/number.
+     */
+    setNonce: (next) => {
+      nonce = typeof next === "number" || typeof next === "bigint" ? `0x${BigInt(next).toString(16)}` : next;
     },
   };
 }
@@ -367,9 +383,21 @@ export function createFakeApi(fixtures = {}) {
     // trong phản hồi là kết quả merge). Truyền một object thì dùng đúng object đó.
     bundle = null,
     deleteTier = { ok: true, removed: "100 USDC", remaining: 1 },
+    /**
+     * Lỗi TẠM THỜI theo đường dẫn, mặc định TẮT (không đổi hành vi mọi kịch bản cũ):
+     * `{ "/api/presign": { status: 503, times: 1 } }` ⇒ `times` lần đầu trả `status` rồi mới
+     * trả fixture. Dùng để dựng "một lần 503 thoáng qua rồi tự lành" (chẩn đoán 2026-09-26).
+     */
+    failures = {},
   } = fixtures;
 
   const calls = [];
+  const remainingFailures = new Map(
+    Object.entries(failures).map(([path, spec]) => [path, { status: spec.status ?? 503, times: spec.times ?? 1 }])
+  );
+  // `presign` là MUTABLE qua `setPresign()`: kịch bản ladder (rung expired + rung pending, chẩn
+  // đoán 2026-09-26) cần đổi payload giữa hai lần đọc mà không phải nạp lại module.
+  let presignFixture = presign;
 
   const fetchImpl = async (url, init = {}) => {
     const method = (init.method ?? "GET").toUpperCase();
@@ -382,18 +410,41 @@ export function createFakeApi(fixtures = {}) {
       authorization: init.headers?.Authorization ?? init.headers?.authorization ?? null,
     });
     const pathOnly = String(url).split("?")[0];
+    const failure = remainingFailures.get(pathOnly);
+    if (failure && failure.times > 0) {
+      failure.times -= 1;
+      calls[calls.length - 1].failure = failure.status; // để test đếm được lần lỗi
+      return jsonResponse({ ok: false, error: "fake api: lỗi tạm thời" }, failure.status);
+    }
     if (pathOnly === "/api/challenge") return jsonResponse(challenge);
     if (pathOnly === "/api/auth") return jsonResponse(auth);
     if (pathOnly === "/api/overview") return jsonResponse(overview);
     if (pathOnly === "/api/presign" && method === "DELETE") return jsonResponse(deleteTier);
-    if (pathOnly === "/api/presign") return jsonResponse(presign);
+    if (pathOnly === "/api/presign") return jsonResponse(presignFixture);
     if (pathOnly === "/api/bundle") {
       return jsonResponse(bundle ?? { ok: true, tiers: requestBody?.tiers?.length ?? 0 });
     }
     return jsonResponse({ ok: false, error: `fake api: chưa hỗ trợ ${method} ${url}` }, 404);
   };
 
-  return { fetch: fetchImpl, calls };
+  return {
+    fetch: fetchImpl,
+    calls,
+    /** Số lần lỗi tạm thời còn lại của một đường dẫn (0 = đã lành). */
+    failuresLeft: (path) => remainingFailures.get(path)?.times ?? 0,
+    /** Bơm lỗi tạm thời cho các lần gọi SAU của một đường dẫn. */
+    failNext: (path, { status = 503, times = 1 } = {}) => {
+      remainingFailures.set(path, { status, times });
+    },
+    /** Xoá lỗi tạm thời đã bơm (trả đường dẫn về trạng thái lành). */
+    clearFailures: (path) => {
+      remainingFailures.delete(path);
+    },
+    /** Đổi payload `GET /api/presign` cho các lần đọc sau (ladder khác). */
+    setPresign: (next) => {
+      presignFixture = next;
+    },
+  };
 }
 
 /** Chuẩn hoá một lời gọi về dạng so sánh được (bỏ thứ tự, giữ nguyên nội dung). */

@@ -28,6 +28,16 @@ export const TX_VERIFY_DELAY_MS = 3000;
 export const CLAIM_RECOVERY_MS_FALLBACK = 180_000;
 
 /**
+ * Ngân sách thử lại khi app đọc bundle/tổng quan qua HTTP và gặp lỗi TẠM THỜI
+ * (chẩn đoán 2026-09-26 — "thông tin bundle/tier lúc hiện lúc không"): 503
+ * `LOCK_STALE`, 5xx, hoặc mạng chớp. 3 lần × 400ms đủ để một lần chớp qua đi mà
+ * người dùng vẫn thấy ngay khi lỗi là thật; lỗi CUỐI cùng luôn được hiển thị kèm
+ * nút thử lại (trước đây lỗi bị ẩn im lặng nên mục bundle biến mất không dấu vết).
+ */
+export const PRESIGN_FETCH_ATTEMPTS = 3;
+export const PRESIGN_FETCH_DELAY_MS = 400;
+
+/**
  * Format một giá trị WAD (1e18) thành chuỗi phần trăm.
  */
 export function wadToPercent(wad) {
@@ -95,6 +105,29 @@ export async function txVisibleOnChain(client, hash, {
     if (attempt < attempts - 1) await sleep(delayMs);
   }
   return false;
+}
+
+/**
+ * Gọi `attempt(i)` tối đa `attempts` lần khi kết quả nói lỗi là TẠM THỜI.
+ *
+ * Hợp đồng: `attempt` trả về object có `retry: true` khi lỗi có thể qua đi (503/5xx/mạng),
+ * ngược lại `retry` falsy ⇒ dừng ngay và trả chính kết quả đó. Hàm trả về kết quả của lần
+ * gọi CUỐI (kể cả khi vẫn lỗi) — người gọi quyết định hiển thị gì, hàm này không che lỗi.
+ * `attempt` ném ra ngoài ⇒ coi như lỗi không thử lại (người gọi tự bọc try/catch của mình).
+ */
+export async function retryTransient(attempt, {
+  attempts = PRESIGN_FETCH_ATTEMPTS,
+  delayMs = PRESIGN_FETCH_DELAY_MS,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const total = Math.max(1, attempts);
+  let last;
+  for (let i = 0; i < total; i++) {
+    last = await attempt(i);
+    if (!last || !last.retry) return last;
+    if (i < total - 1) await sleep(delayMs);
+  }
+  return last;
 }
 
 /**

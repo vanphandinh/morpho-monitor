@@ -6,7 +6,7 @@
  * không tồn tại nên không có vòng import.
  */
 
-import { broadcastingAgeMinutes, isClaimOverdue, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
+import { broadcastingAgeMinutes, isClaimOverdue, retryTransient, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
 import { esc, formatToken, row } from "./webapp-render.mjs";
 import { CLAIM_RECOVERY_MS, state } from "./webapp-state.mjs";
 import { clearSession, getAuthHeaders, isAuthenticated, showPresignError, showPresignSuccess, updateAuthUI } from "./webapp-shell.mjs";
@@ -20,14 +20,28 @@ export async function refreshPresignOverview() {
   if (!section || !info) return;
   if (!isAuthenticated()) { section.style.display = "none"; return; }
   section.style.display = "block";
-  try {
-    const resp = await fetch("/api/overview", { headers: { ...getAuthHeaders() } });
-    if (resp.status === 401) { section.style.display = "none"; return; }
-    if (!resp.ok) { info.textContent = "Không tải được tổng quan presign."; return; }
-    const data = await resp.json();
-    if (!data.ok) { info.textContent = "Không tải được tổng quan presign."; return; }
-    renderPresignOverview(data.markets || [], data.rounds || []);
-  } catch { info.textContent = "Lỗi mạng khi tải tổng quan presign."; }
+  const outcome = await retryTransient(async () => {
+    try {
+      const resp = await fetch("/api/overview", { headers: { ...getAuthHeaders() } });
+      if (resp.status === 401) return { unauthorized: true };
+      if (!resp.ok) return { retry: resp.status >= 500, failure: `HTTP ${resp.status}` };
+      return { data: await resp.json() };
+    } catch (err) {
+      return { retry: true, failure: `lỗi mạng: ${err.message}` };
+    }
+  });
+
+  if (outcome.unauthorized) { section.style.display = "none"; return; }
+  if (!outcome.data) {
+    // Trước fix: một lần lỗi là mục tổng quan biến mất. Nay nói rõ lý do + cho thử lại.
+    info.innerHTML =
+      `<div class="banner error">⚠️ Không tải được tổng quan presign (${esc(outcome.failure || "lỗi không rõ")}).</div>` +
+      `<button class="btn-outline" onclick="refreshPresignOverview()" style="margin-top:6px">🔄 Thử lại</button>`;
+    return;
+  }
+  const data = outcome.data;
+  if (!data.ok) { info.textContent = "Không tải được tổng quan presign."; return; }
+  renderPresignOverview(data.markets || [], data.rounds || []);
 }
 
 function renderPresignOverview(markets, rounds) {
@@ -94,23 +108,62 @@ export function renderPresignWithdrawAllInfo() {
 // ============================================================
 // PRESIGN: FETCH EXISTING BUNDLE
 // ============================================================
+/**
+ * Hiện lỗi đọc bundle KÈM nút thử lại (chẩn đoán 2026-09-26).
+ *
+ * Trước fix, một lần 503 thoáng qua (đúng mã `LOCK_STALE` của file lock) làm cả mục
+ * bundle biến mất im lặng: `if (!resp.ok) return;` và `catch { display = "none" }`.
+ * Người dùng thấy thông tin "lúc hiện lúc không" mà không có cách nào biết vì sao.
+ */
+function renderPresignFetchFailure(message) {
+  const section = document.getElementById("presign-existing");
+  const info = document.getElementById("presign-existing-info");
+  if (!section || !info) return;
+  info.innerHTML =
+    `<div class="banner error">⚠️ Không tải được bundle đã ký: ${esc(message)}</div>` +
+    `<button class="btn-outline" onclick="fetchExistingBundle()" style="margin-top:8px">🔄 Thử lại</button>`;
+  section.style.display = "block";
+}
+
+/**
+ * Đọc bundle đã ký của market hiện tại từ server.
+ *
+ * Lỗi TẠM THỜI (503/5xx/mạng chớp) được thử lại theo `retryTransient` — chẩn đoán
+ * 2026-09-26: lỗi thoáng qua từng ẩn im lặng cả mục bundle; nay hoặc tự lành sau vài
+ * trăm ms, hoặc hiện rõ nguyên nhân kèm nút thử lại. Lỗi 4xx (trừ 401) là lỗi thật —
+ * không thử lại, hiện luôn.
+ */
 export async function fetchExistingBundle() {
   if (!isAuthenticated()) {
     document.getElementById("presign-existing").style.display = "none";
     return;
   }
-  try {
-    const resp = await fetch(`/api/presign?market=${encodeURIComponent(state.marketId)}`, {
-      headers: { ...getAuthHeaders() },
-    });
-    if (resp.status === 401) {
-      clearSession();
-      updateAuthUI();
-      document.getElementById("presign-existing").style.display = "none";
-      return;
+  const outcome = await retryTransient(async () => {
+    try {
+      const resp = await fetch(`/api/presign?market=${encodeURIComponent(state.marketId)}`, {
+        headers: { ...getAuthHeaders() },
+      });
+      if (resp.status === 401) return { unauthorized: true };
+      if (!resp.ok) return { retry: resp.status >= 500, failure: `server trả HTTP ${resp.status}` };
+      return { data: await resp.json() };
+    } catch (err) {
+      // Mạng chớp (fetch ném) mới là lỗi tạm thời — thử lại rồi mới báo.
+      return { retry: true, failure: `lỗi mạng: ${err.message}` };
     }
-    if (!resp.ok) return;
-    const data = await resp.json();
+  });
+
+  if (outcome.unauthorized) {
+    clearSession();
+    updateAuthUI();
+    document.getElementById("presign-existing").style.display = "none";
+    return;
+  }
+  if (!outcome.data) {
+    renderPresignFetchFailure(outcome.failure || "lỗi không rõ");
+    return;
+  }
+  try {
+    const data = outcome.data;
     const ladder = Array.isArray(data.ladder) ? data.ladder : (data.exists ? [data] : []);
     if (!data.ok || ladder.length === 0) {
       document.getElementById("presign-existing").style.display = "none";
@@ -121,8 +174,12 @@ export async function fetchExistingBundle() {
     section.style.display = "block";
 
     // Multi-nonce ladder: mỗi rung là một bundle `marketId@nonce` riêng.
-    // Rung head = nonce thấp nhất của market này (rùng kế tiếp được broadcast).
-    const head = ladder[0];
+    // Rung head = rung HOẠT ĐỘNG đầu tiên (pending/broadcasting) — rung kế tiếp thật sự
+    // được broadcast. Ladder sắp theo nonce tăng dần nên rung thấp nhất có thể là
+    // `expired`/`submitted`: khi đó đánh dấu "kế tiếp" vào nó là nói sai (bug người dùng
+    // báo 2026-09-26: tưởng tier/nonce cũ còn là bundle hiện hành); nếu cả ladder là
+    // lịch sử trơ thì mới lùi về rung đầu.
+    const head = ladder.find((r) => r.status === "pending" || r.status === "broadcasting") ?? ladder[0];
 
     const rungHtml = (r, isHead) => {
       const badge = r.status === "pending"
@@ -163,7 +220,7 @@ export async function fetchExistingBundle() {
         `</div>${tierList}</div>`;
     };
 
-    const ladderHtml = ladder.map((r, i) => rungHtml(r, i === 0)).join("");
+    const ladderHtml = ladder.map((r) => rungHtml(r, r === head)).join("");
 
     document.getElementById("presign-existing-info").innerHTML = [
       `<div class="row"><span class="label">Bundle trên server (nonce tăng dần):</span></div>`,
@@ -193,9 +250,9 @@ export async function fetchExistingBundle() {
     }
     document.getElementById("presign-existing-info").innerHTML +=
       `<button class="btn-danger" onclick="deleteBundle()" style="margin-top:8px">🗑️ Xóa Mọi Bundle Của Market Này</button>`;
-  } catch {
-    // Server không reachable hoặc lỗi — bỏ qua
-    document.getElementById("presign-existing").style.display = "none";
+  } catch (err) {
+    // Không ném ra ngoài (handler inline) — nhưng KHÔNG ẩn im lặng nữa.
+    renderPresignFetchFailure(`lỗi hiển thị bundle: ${err.message}`);
   }
 }
 

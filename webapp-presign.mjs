@@ -266,6 +266,56 @@ function gasValuesChanged(nextMaxFee, nextPriority) {
   return presignedGas.maxFeePerGas !== nextMaxFee || presignedGas.maxPriorityFeePerGas !== nextPriority;
 }
 
+/**
+ * Chốt chặn TRƯỚC KHI KÝ: nonce sắp ký có còn là nonce on-chain sắp tới không?
+ *
+ * Vì sao cần (chẩn đoán 2026-09-26, triệu chứng "tier mới với nonce cao hơn tự động bị thêm
+ * vào bundle có nonce cũ"): trang giữ `state.presignedNonce` từ lần bấm "Lấy Nonce" trước,
+ * và KHÔNG bao giờ đọc lại trước khi ký. Nếu nonce đó đã bị tiêu thụ trong lúc trang mở (market
+ * khác rút trước, hoặc chính mình rút ở tab khác), chữ ký mới mang nonce ĐÃ CHẾT: server từ chối
+ * (409 `NONCE_NOT_CLAIMABLE`, D16) hoặc — trước D16 — nhét nó vào rung cũ. Người dùng thấy
+ * "tier mới nằm trong bundle nonce cũ" mà không hiểu vì sao. Nonce CAO HƠN sàn vẫn hợp lệ
+ * (xếp hàng có chủ đích qua nút ＋), nên chỉ chặn khi on-chain đã VƯỢT QUA nonce đang ký.
+ *
+ * Fail closed: không đọc được nonce on-chain thì không ký (chữ ký ở nonce mù còn tệ hơn việc
+ * bắt người dùng bấm ký lại). Sàn nonce được cập nhật để nút ＋ đưa thẳng lên nonce mới.
+ *
+ * @returns {Promise<boolean>} true = được ký; false = đã hiện banner và chặn
+ */
+async function nonceStillSignable() {
+  let onChain;
+  try {
+    onChain = await state.publicClient.getTransactionCount({
+      address: state.currentAccount,
+      blockTag: "pending",
+    });
+  } catch (err) {
+    showPresignError(`Không đọc lại được nonce on-chain trước khi ký: ${err.message} — bấm "Lấy Nonce" rồi thử lại.`);
+    return false;
+  }
+  // Sàn nonce luôn được đồng bộ: dù ký được hay không, giá trị cũ không còn đúng.
+  state.onChainPendingNonce = onChain;
+  setNonceStepperEnabled(true);
+  const current = state.presignedNonce === null ? null : BigInt(state.presignedNonce);
+  if (current !== null && onChain > current) {
+    // Nâng nonce lên đúng sàn on-chain: chữ ký cũ ở nonce đã chết thì vô hiệu hoá luôn
+    // (để người dùng ký lại đúng một lần), và BÁO RÕ. Không ký tiếp trong lượt này —
+    // người dùng phải chủ động bấm ký lại ở nonce mới.
+    const message =
+      `Nonce ${current} đã bị vượt qua (on-chain đang là ${onChain}) — nonce đó đã bị một giao dịch khác tiêu thụ, ` +
+      `chữ ký ở nonce này không thể lên bảng. Đã tự nâng nonce lên ${onChain}; ký lại để dùng nonce mới.`;
+    state.presignedNonce = onChain;
+    document.getElementById("presign-nonce").textContent = onChain;
+    invalidateSignatures(message);
+    showPresignError(message); // luôn có banner, kể cả khi không có chữ ký nào để vô hiệu
+    updateNonceStepperButtons();
+    updateSignButton();
+    return false;
+  }
+  updateNonceStepperButtons();
+  return true;
+}
+
 function updateSignButton() {
   const btn = document.getElementById("btn-sign-all");
   if (state.currentAccount && state.presignedNonce !== null && presignedGas.maxFeePerGas && state.presignedTiers.length > 0) {
@@ -368,6 +418,8 @@ export async function signAllTiers() {
     showPresignError("Vui lòng thêm ít nhất 1 mốc tiền hợp lệ.");
     return;
   }
+  // Nonce phải còn sống tại thời điểm ký (không đọc lại được ⇒ không ký).
+  if (!(await nonceStillSignable())) return;
   // Multi-nonce race check: nếu market khác đã có bundle HOẠT ĐỘNG cùng
   // nonce này thì market nào trigger trước sẽ broadcast, market còn lại
   // sẽ expired. Đây là pattern chủ đích (không biết trước market nào
@@ -478,6 +530,8 @@ export async function signWithdrawAll() {
     showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }
+  // Nonce phải còn sống tại thời điểm ký (không đọc lại được ⇒ không ký).
+  if (!(await nonceStillSignable())) return;
 
   // Re-fetch position để có supplyShares mới nhất
   try {
