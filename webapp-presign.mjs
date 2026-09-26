@@ -178,39 +178,77 @@ export async function autoFillGas() {
 // ca LỖI THẬT cùng hình dạng: gõ sai tên hàm. Khai báo tường minh giữ được
 // cả hai: inline `onchange=` vẫn tìm thấy qua `window`, còn `no-undef` lại
 // thành công cụ bắt typo thật.
-export function readGasInputs() {
-  const maxFeeVal = parseFloat(document.getElementById("presign-gas-maxfee").value);
-  const priorityVal = parseFloat(document.getElementById("presign-gas-priority").value);
-  if (!isNaN(maxFeeVal) && maxFeeVal > 0) {
-    presignedGas.maxFeePerGas = parseUnits(String(maxFeeVal), 9);
+/**
+ * Đọc một ô gas Gwei (chuỗi thô) thành wei — KHÔNG đi qua `Number`.
+ *
+ * Vì sao không dùng `parseFloat` + `parseUnits(String(...))` (đỏ-trước 2026-09-26,
+ * `__tests__/webapp-gas-decimals.test.mjs`): JS đổi số < 1e-6 sang ký hiệu khoa học
+ * (`String(parseFloat("0.00000026"))` = `"2.6e-7"`) và `parseUnits` từ chối ký hiệu đó ⇒ MỌI
+ * phí nhỏ hơn 0,000001 Gwei đều ném `InvalidDecimalNumberError` — kể cả giá trị do chính
+ * `autoFillGas` ghi ra (`formatUnits(260n, 9)` = `"0.00000026"`). Dấu phẩy thập phân kiểu VN
+ * (`0,00000026`) thì `parseFloat` cắt tại `,` thành `0` ⇒ ô bị coi như rỗng, im lặng.
+ *
+ * @param {string} raw giá trị thô trong ô nhập
+ * @returns {{ wei: bigint|null, error: string|null }} `wei = null` khi ô rỗng/0 (chưa thiết lập)
+ *   hoặc khi `error` khác null — không bao giờ trả về giá trị dở dang.
+ */
+export function parseGasInput(raw) {
+  const text = String(raw ?? "").trim();
+  if (text === "") return { wei: null, error: null };
+  // Dấu phẩy thập phân kiểu VN: chỉ đổi khi chuỗi KHÔNG có dấu chấm (tránh "1,000.5").
+  const normalized = text.includes(".") ? text : text.replace(",", ".");
+  const match = /^\d+(?:\.(\d+))?$/.exec(normalized);
+  if (!match) {
+    return { wei: null, error: `"${text}" không phải số Gwei hợp lệ — dùng dấu . hoặc , thập phân (không dùng số mũ).` };
   }
-  if (!isNaN(priorityVal) && priorityVal > 0) {
-    presignedGas.maxPriorityFeePerGas = parseUnits(String(priorityVal), 9);
+  if ((match[1] || "").length > 9) {
+    return { wei: null, error: `"${text}" có quá 9 chữ số thập phân (wei là đơn vị nhỏ nhất).` };
   }
+  const wei = parseUnits(normalized, 9);
+  return { wei: wei > 0n ? wei : null, error: null }; // 0 = chưa thiết lập (hành vi cũ)
 }
 
+function readGasField(id) {
+  return parseGasInput(document.getElementById(id).value);
+}
+
+/**
+ * Đọc cả hai ô gas vào `presignedGas`.
+ * @returns {string|null} thông báo lỗi định dạng (đã hiện banner) hoặc null.
+ */
+export function readGasInputs() {
+  const maxFee = readGasField("presign-gas-maxfee");
+  const priority = readGasField("presign-gas-priority");
+  presignedGas.maxFeePerGas = maxFee.wei;
+  presignedGas.maxPriorityFeePerGas = priority.wei;
+  const error = maxFee.error || priority.error;
+  if (error) showPresignError("Gas không hợp lệ: " + error);
+  return error;
+}
+
+/**
+ * `onchange` của hai ô gas: đọc giá trị mới, cập nhật `presignedGas`, và vô hiệu chữ ký
+ * nếu phí THỰC SỰ đổi.
+ * @returns {string|null} thông báo lỗi định dạng (đã hiện banner) hoặc null.
+ */
 export function onGasInputChange() {
-  const maxFeeVal = parseFloat(document.getElementById("presign-gas-maxfee").value);
-  const priorityVal = parseFloat(document.getElementById("presign-gas-priority").value);
-  // So TRƯỚC khi gán: so giá trị mới với giá trị ĐANG GIỮ. So SAU khi gán là so giá trị mới với
-  // chính nó ⇒ luôn false ⇒ bảo vệ vô hiệu (lỗi đã đỏ-trước trong quá trình sửa D12).
-  const gasChanged = gasValuesChanged(maxFeeVal, priorityVal);
-  if (!isNaN(maxFeeVal) && maxFeeVal > 0) {
-    presignedGas.maxFeePerGas = parseUnits(String(maxFeeVal), 9);
-  } else {
-    presignedGas.maxFeePerGas = null;
-  }
-  if (!isNaN(priorityVal) && priorityVal > 0) {
-    presignedGas.maxPriorityFeePerGas = parseUnits(String(priorityVal), 9);
-  } else {
-    presignedGas.maxPriorityFeePerGas = null;
-  }
+  const maxFee = readGasField("presign-gas-maxfee");
+  const priority = readGasField("presign-gas-priority");
+  // So TRƯỚC khi gán: so giá trị ĐÃ CHUẨN HOÁ (wei) với giá trị ĐANG GIỮ. So SAU khi gán là so giá
+  // trị mới với chính nó ⇒ luôn false ⇒ bảo vệ vô hiệu (lỗi đã đỏ-trước trong quá trình sửa D12).
+  const gasChanged = gasValuesChanged(maxFee.wei, priority.wei);
+  presignedGas.maxFeePerGas = maxFee.wei;
+  presignedGas.maxPriorityFeePerGas = priority.wei;
   // Reset signed state CHỈ khi gas thực sự đổi (D12: trước đây invalidate vô điều kiện, nên
   // `signWithdrawAll()` — gọi hàm này chỉ để đọc lại gas — tự xoá chữ ký vừa ký dù gas không đổi).
   if (gasChanged) {
     invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
   }
+  const error = maxFee.error || priority.error;
+  // Hiện lỗi định dạng SAU invalidate để đây là thứ người dùng đọc cuối cùng (invalidate cũng ghi banner).
+  if (error) showPresignError("Gas không hợp lệ: " + error);
   updateSignButton();
+  return error;
 }
 
 /**
@@ -220,21 +258,12 @@ export function onGasInputChange() {
  * đọc lại gas) tự xoá chữ ký các mốc vừa ký kèm báo "Gas đã thay đổi" dù gas không đổi.
  *
  * Ba trạng thái phải phân biệt được cho TỪNG ô: null (chưa có) ↔ có-giá-trị (khác giá trị cũ) ↔
- * có-giá-trị (bằng giá trị cũ). "Ô nhập rỗng/0" và "null" là khác nhau: 0 được parse thành 0n khi
- * có giá trị cũ — chỉ null mới là "chưa thiết lập".
+ * có-giá-trị (bằng giá trị cũ). `!==` trên `bigint|null` phân biệt đủ ba — giá trị đã được
+ * `parseGasInput` chuẩn hoá về wei TRƯỚC khi so, nên hàm này không còn `parseFloat`/`parseUnits`
+ * (đường gây lỗi `2.6e-7`).
  */
-function gasValuesChanged(maxFeeVal, priorityVal) {
-  if (presignedGas.maxFeePerGas === null && maxFeeVal > 0) return true;
-  if (presignedGas.maxFeePerGas !== null && !(maxFeeVal > 0)) return true;
-  if (presignedGas.maxFeePerGas !== null && maxFeeVal > 0) {
-    if (presignedGas.maxFeePerGas !== parseUnits(String(maxFeeVal), 9)) return true;
-  }
-  if (presignedGas.maxPriorityFeePerGas === null && priorityVal > 0) return true;
-  if (presignedGas.maxPriorityFeePerGas !== null && !(priorityVal > 0)) return true;
-  if (presignedGas.maxPriorityFeePerGas !== null && priorityVal > 0) {
-    if (presignedGas.maxPriorityFeePerGas !== parseUnits(String(priorityVal), 9)) return true;
-  }
-  return false;
+function gasValuesChanged(nextMaxFee, nextPriority) {
+  return presignedGas.maxFeePerGas !== nextMaxFee || presignedGas.maxPriorityFeePerGas !== nextPriority;
 }
 
 function updateSignButton() {
@@ -329,9 +358,9 @@ export async function signAllTiers() {
   }
   // Read gas from input fields (user có thể đã chỉnh sửa) — chỉ ĐỌC, không invalidate
   // (D12: gọi `onGasInputChange()` ở đây từng xoá chữ ký các mốc vừa ký dù gas không đổi).
-  readGasInputs();
-  if (!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
-    showPresignError("Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
+  const gasError = readGasInputs();
+  if (gasError || !presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+    showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }
   const validTiers = state.presignedTiers.filter(t => t.amount && parseFloat(t.amount) > 0);
@@ -444,9 +473,9 @@ export async function signWithdrawAll() {
     showPresignError("Vui lòng lấy nonce trước.");
     return;
   }
-  onGasInputChange();
-  if (!presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
-    showPresignError("Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
+  const gasError = onGasInputChange();
+  if (gasError || !presignedGas.maxFeePerGas || !presignedGas.maxPriorityFeePerGas) {
+    showPresignError(gasError ? "Gas không hợp lệ: " + gasError : "Vui lòng nhập gas (hoặc nhấn Tự Động Gas).");
     return;
   }
 
