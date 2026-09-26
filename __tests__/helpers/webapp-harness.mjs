@@ -176,7 +176,13 @@ export function createFakeRpc(fixtures = {}) {
     tokens = new Map(),
     pendingNonce = "0xb",
     txVisible = true,
+    // Phí gas RPC giả trả về. MUTABLE qua `setGas()` để kịch bản "bấm Tự Động Gas lần nữa"
+    // có thể đổi phí giữa hai lần gọi (audit 2026-09-26, D14) — mặc định giữ nguyên hành vi cũ.
+    priorityFee = "0x3b9aca00",
+    baseFee = "0x3b9aca00",
   } = fixtures;
+  let gasPriority = priorityFee;
+  let gasBaseFee = baseFee;
 
   const calls = [];
 
@@ -194,7 +200,7 @@ export function createFakeRpc(fixtures = {}) {
     stateRoot: fakeHash(94), receiptsRoot: fakeHash(95), miner: "0x" + "9".repeat(40),
     difficulty: "0x0", totalDifficulty: "0x0", extraData: "0x", size: "0x100",
     gasLimit: "0x1c9c380", gasUsed: "0x5208", timestamp: "0x60000000", transactions: [],
-    uncles: [], baseFeePerGas: "0x3b9aca00", mixHash: fakeHash(96),
+    uncles: [], baseFeePerGas: gasBaseFee, mixHash: fakeHash(96),
   };
 
   const txFixture = (hash) => ({
@@ -253,8 +259,8 @@ export function createFakeRpc(fixtures = {}) {
       case "eth_estimateGas": return rpcResult(id, "0x5208");
       case "eth_getTransactionCount": return rpcResult(id, pendingNonce);
       case "eth_gasPrice": return rpcResult(id, "0x3b9aca00");
-      case "eth_maxPriorityFeePerGas": return rpcResult(id, "0x3b9aca00");
-      case "eth_getBlockByNumber": return rpcResult(id, blockFixture);
+      case "eth_maxPriorityFeePerGas": return rpcResult(id, gasPriority);
+      case "eth_getBlockByNumber": return rpcResult(id, { ...blockFixture, baseFeePerGas: gasBaseFee });
       case "eth_getTransactionByHash": return rpcResult(id, txVisible ? txFixture(params?.[0]) : null);
       case "eth_getTransactionReceipt": return rpcResult(id, txVisible ? { transactionHash: params?.[0], status: "0x1", blockNumber: "0x10" } : null);
       default: return rpcError(id, -32601, `fake rpc: chưa hỗ trợ ${method}`);
@@ -271,7 +277,19 @@ export function createFakeRpc(fixtures = {}) {
     return jsonResponse(Array.isArray(body) ? responses : responses[0]);
   };
 
-  return { fetch: fetchImpl, calls };
+  return {
+    fetch: fetchImpl,
+    calls,
+    /**
+     * Đổi phí gas mà RPC giả trả về cho các lần gọi SAU (kịch bản D14: người dùng bấm
+     * "Tự Động Gas" lần nữa sau khi đã ký). Không truyền field nào ⇒ giữ nguyên giá trị cũ,
+     * nên ca âm ("phí KHÔNG đổi ⇒ phải GIỮ chữ ký") chạy được trên cùng một kịch bản.
+     */
+    setGas: ({ priorityFee: nextPriority, baseFee: nextBaseFee } = {}) => {
+      if (nextPriority != null) gasPriority = nextPriority;
+      if (nextBaseFee != null) gasBaseFee = nextBaseFee;
+    },
+  };
 }
 
 /**

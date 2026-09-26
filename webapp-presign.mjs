@@ -141,14 +141,27 @@ export async function autoFillGas() {
     ]);
     const baseFee = block.baseFeePerGas ?? 10_000_000_000n;
     // 2x multiplier để đảm bảo inclusion sau này
-    presignedGas.maxPriorityFeePerGas = priorityFee * 2n;
-    presignedGas.maxFeePerGas = (baseFee * 2n) + presignedGas.maxPriorityFeePerGas;
+    const nextPriority = priorityFee * 2n;
+    const nextMaxFee = (baseFee * 2n) + nextPriority;
+    // So TRƯỚC khi gán — cùng nguyên tắc với `gasValuesChanged()` ở onGasInputChange.
+    //
+    // Audit 2026-09-26 (D14): đây từng là đường DUY NHẤT ghi `presignedGas` mà không đi qua
+    // cổng vô hiệu chữ ký. Bấm "Tự Động Gas" lần nữa sau khi đã ký ⇒ phí trong ô nhập đổi,
+    // nhưng byte đã ký vẫn mang phí cũ và UI không nói gì — bundle lưu lên trộn nhiều mức phí,
+    // và tier chọn để broadcast (lớn nhất ≤ thanh khoản) có thể là tier phí cũ ⇒ tx không vào
+    // bảng ⇒ claim kẹt hết cửa sổ recovery. Phí KHÔNG đổi thì vẫn giữ chữ ký (không sửa quá tay).
+    const changed = presignedGas.maxFeePerGas !== nextMaxFee ||
+      presignedGas.maxPriorityFeePerGas !== nextPriority;
+    presignedGas.maxFeePerGas = nextMaxFee;
+    presignedGas.maxPriorityFeePerGas = nextPriority;
     // Fill input fields (user có thể chỉnh sửa sau)
     document.getElementById("presign-gas-maxfee").value =
       formatUnits(presignedGas.maxFeePerGas, 9);
     document.getElementById("presign-gas-priority").value =
       formatUnits(presignedGas.maxPriorityFeePerGas, 9);
     document.getElementById("btn-auto-gas").textContent = "✅ Đã lấy Gas";
+    // Sau khi ghi ra ô nhập, để thông báo của invalidate là thứ người dùng đọc cuối cùng.
+    if (changed) invalidateSignatures("Gas đã thay đổi. Vui lòng ký lại các giao dịch.");
     updateSignButton();
   } catch (err) {
     showPresignError("Lỗi lấy gas: " + err.message);

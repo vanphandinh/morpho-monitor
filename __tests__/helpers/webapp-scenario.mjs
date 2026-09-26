@@ -87,6 +87,7 @@ export async function runWebappScenario({
   provider: providerOptions = {},
   confirmResult = true,
   gasEditAfterSign = null,
+  autoGasAfterSign = null,
 } = {}) {
   const rpc = createFakeRpc({ pendingNonce: "0xb", ...rpcFixtures });
   const api = createFakeApi({ ...apiFixtures });
@@ -141,6 +142,17 @@ export async function runWebappScenario({
 
     // 5. Lưu bundle dạng NHIỀU TIER.
     await step("save-to-server-tiers", () => app.window.saveToServer());
+
+    // 5c. (tuỳ chọn, D14) Người dùng bấm "Tự Động Gas" LẦN NỮA sau khi đã ký, và RPC trả phí
+    //     MỚI (`autoGasAfterSign` mang giá trị mới; object rỗng = phí cũ ⇒ ca âm). `autoFillGas()`
+    //     ghi thẳng `presignedGas` + ô nhập nên trước đây chữ ký cũ sống sót trong khi byte đã ký
+    //     mang phí cũ — đúng lỗ hổng mà audit 2026-09-26 tìm ra.
+    if (autoGasAfterSign !== null) {
+      await step("auto-gas-after-sign", async () => {
+        rpc.setGas(autoGasAfterSign);
+        await app.window.autoFillGas();
+      });
+    }
 
     // 5b. (tuỳ chọn, ca dương D12) Người dùng sửa gas SAU KHI đã ký ⇒ onGasInputChange phải
     //     invalidate. Chỉ chạy khi phía gọi yêu cầu — trace chính giữ nguyên 19 bước.

@@ -221,6 +221,31 @@ describe("đường tiền — lưu bundle lên server", () => {
     expect(step.obs.signAllDisabled).toBe(false);
   });
 
+  it("D14: bấm Tự Động Gas SAU khi ký + phí ĐỔI ⇒ chữ ký phải bị vô hiệu (audit 2026-09-26)", () => {
+    // `autoFillGas()` là đường DUY NHẤT ghi `presignedGas` mà không đi qua cổng vô hiệu chữ ký:
+    // nó gán phí mới rồi mới ghi ra ô nhập, nên người dùng thấy phí MỚI trong khi byte đã ký vẫn
+    // mang phí CŨ — bundle lưu lên có thể trộn nhiều mức phí và không gì trong UI nói ra điều đó.
+    // Ở đây RPC giả trả phí mới (priority 2 gwei thay vì 1 gwei) giữa hai lần bấm.
+    const raised = runTrace(["--overrides", JSON.stringify({ autoGasAfterSign: { priorityFee: "0x77359400" } })]);
+    const step = raised.steps.find((entry) => entry.name === "auto-gas-after-sign");
+    expect(step, "trace phụ phải có bước auto-gas-after-sign").toBeTruthy();
+    expect(step.obs.gasPriority).toBe("4"); // phí mới THẬT SỰ vào ô nhập (điều kiện của ca này)
+    expect(step.obs.presignResult).toContain("Gas đã thay đổi");
+    expect(step.obs.tierList.match(/✅/g) ?? []).toHaveLength(0); // chữ ký đã ký về ⬜
+    expect(step.obs.signAllDisabled).toBe(false);
+  });
+
+  it("D14: bấm Tự Động Gas SAU khi ký nhưng phí KHÔNG đổi ⇒ GIỮ chữ ký (ca âm)", () => {
+    // Cổng so-sánh-phải-chạy-trước-khi-gán, không phải một lệnh invalidate vô điều kiện: nếu
+    // phí y hệt thì chữ ký vẫn còn nguyên, nút lưu vẫn bật. Đây là ca chống "sửa quá tay".
+    const same = runTrace(["--overrides", JSON.stringify({ autoGasAfterSign: {} })]);
+    const step = same.steps.find((entry) => entry.name === "auto-gas-after-sign");
+    expect(step, "trace phụ phải có bước auto-gas-after-sign").toBeTruthy();
+    expect(step.obs.gasPriority).toBe("2"); // phí không đổi
+    expect(step.obs.presignResult).not.toContain("Gas đã thay đổi");
+    expect(step.obs.tierList.match(/✅/g) ?? []).toHaveLength(2); // 2 mốc đã ký vẫn còn
+  });
+
   it("DELETE tier gửi kèm market + nonce + tier (thiếu nonce ⇒ server sửa nhầm rung)", () => {
     const deletes = apiOf(stepNamed("delete-tier"), "DELETE");
     expect(deletes).toHaveLength(1);
