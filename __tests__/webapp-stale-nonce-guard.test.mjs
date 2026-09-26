@@ -123,4 +123,42 @@ describe("B3 — nonce on-chain đã vượt qua thì KHÔNG được ký", () =
     // Chữ ký ở nonce đã chết bị vô hiệu (không còn tier ✅) — hết đường lưu lại rác.
     expect(app.html("tier-list"), "chữ ký chết phải bị vô hiệu").not.toContain("✅");
   });
+
+  it("server từ chối rung CÙNG NONCE nhưng nonce CHƯA tiêu thụ (rung `invalid`) ⇒ không hứa 'nonce mới', chữ ký giữ nguyên", async () => {
+    // Đỏ-trước (audit 2026-09-26, chạy thật trên cây trước fix): nhánh phục hồi D16 giả định
+    // "server từ chối ⇒ nonce đã chết". Sai với rung `invalid` (nội dung bundle hỏng — verify nội dung
+    // thất bại, chưa từng gửi tx nào): nonce vẫn sống, `fetchNonce()` đọc lại ĐÚNG nonce cũ nên KHÔNG
+    // vô hiệu chữ ký, nhưng banner vẫn bảo "Đã lấy lại nonce on-chain (N). Ký lại để dùng nonce mới"
+    // ⇒ nút Lưu vẫn mở, bấm lại nhận đúng 409 đó — vòng lặp không lối ra, kèm chỉ dẫn sai.
+    await app.window.signAllTiers(); // ký thật ở nonce 14 để có chữ ký sống
+    expect(sends().length, "phải có chữ ký sống trước khi thử ca từ chối").toBe(1);
+    const nonceBefore = app.text("presign-nonce");
+    api.setBundle({
+      ok: false,
+      code: "NONCE_NOT_CLAIMABLE",
+      error: "nonce 14 đang bị một rung cùng nonce chặn (bundle m1@14 ở trạng thái invalid) — nonce CHƯA bị tiêu thụ: xoá rung đó rồi lưu lại, chữ ký vẫn dùng được",
+    });
+    // KHÔNG `rpc.setNonce`: on-chain vẫn đúng nonce đang ký ⇒ nonce chưa bị tiêu thụ.
+
+    await app.window.saveToServer();
+
+    expect(app.text("presign-nonce"), "nonce không được coi là đã chết").toBe(nonceBefore);
+    expect(app.html("presign-result"), "phải nói rõ nonce còn sống").toMatch(/CHƯA bị tiêu thụ/);
+    expect(app.html("presign-result"), "không được hứa nonce mới khi nonce không đổi").not.toContain("nonce mới");
+    expect(app.html("tier-list"), "chữ ký vẫn dùng được sau khi xoá rung chặn").toContain("✅");
+    expect(app.env.elements.get("btn-save-server").disabled, "nút Lưu phải mở để thử lại sau khi xoá rung").toBe(false);
+
+    // Đường gỡ mà banner chỉ phải LÀM ĐƯỢC: xoá ĐÚNG rung chặn (nút 🗑 — audit vòng 2 phát hiện ✕
+    // theo tier không gỡ được record `invalid`) rồi lưu lại: chữ ký còn sống nên KHÔNG phải ký lại.
+    app.takeCalls();
+    await app.window.deleteRungFromBundle(14);
+    const del = app.takeCalls().map((raw) => JSON.parse(raw)).find((c) => c.method === "DELETE");
+    expect(del?.url, "phải xoá ĐÚNG rung đang chặn.").toContain("nonce=14");
+    expect(del?.url, "xoá CẢ rung ⇒ không kèm tier (khác đường xoá từng tier)").not.toContain("tier=");
+    expect(app.html("presign-result")).toContain("Đã xoá rung nonce 14");
+
+    api.setBundle(null); // server đã hết rung chặn ⇒ lần lưu này phải thành công
+    await app.window.saveToServer();
+    expect(app.html("presign-result"), "đường gỡ phải thật sự thông").toContain("Đã lưu");
+  });
 });

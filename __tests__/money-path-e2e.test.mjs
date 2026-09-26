@@ -101,7 +101,7 @@ function createFakeChain() {
 }
 
 /** Ký một tx `withdraw()` thật bằng khoá test — cùng ABI mà production verify. */
-function signWithdraw(marketParams) {
+function signWithdraw(marketParams, nonce = NONCE) {
   return account.signTransaction({
     to: MORPHO,
     data: encodeFunctionData({
@@ -109,7 +109,7 @@ function signWithdraw(marketParams) {
       functionName: "withdraw",
       args: [marketParams, AMOUNT_WEI, 0n, LENDER, LENDER],
     }),
-    nonce: NONCE,
+    nonce,
     chainId: 1,
     gas: 200_000n,
     maxFeePerGas: 30_000_000_000n,
@@ -260,5 +260,62 @@ describe("đường tiền xuyên 3 tiến trình (proxy → webapp → monitor)
     const idle = await runCycle();
     expect(idle.idle).toBe(true);
     expect(fakeChain.sent).toHaveLength(1);
+  });
+
+  it("khe GIỮA các mock: rung `invalid` bị server từ chối ⇒ `code` phải xuyên qua relay THẬT tới client", async () => {
+    // Vì sao ca này tồn tại (audit 2026-09-26): test relay giả định server ĐÃ có `code` trong body,
+    // test webapp giả lập API trả `code`, còn handler THẬT thì chỉ map code ⇒ HTTP status rồi BỎ code
+    // ⇒ ở production relay không có gì để chuyển và nhánh phục hồi của `saveToServer` không bao giờ
+    // chạy. Ca này chạy cả hai ĐẦU của chuỗi trên HTTP thật, không mock tầng nào.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "money-path-seam-"));
+    const registryPath2 = path.join(dir2, "presigned.json");
+    const DEAD_NONCE = NONCE + 2;
+    // Rung `invalid`: verify NỘI DUNG thất bại nên chưa từng broadcast ⇒ nonce CHƯA bị tiêu thụ.
+    const seeded = JSON.stringify({
+      version: 3,
+      consumedNonce: -1,
+      bundles: {
+        [bundleKey(MARKET_A, DEAD_NONCE)]: { marketId: MARKET_A, nonce: DEAD_NONCE, status: "invalid", withdrawals: [] },
+      },
+    }, null, 2);
+    fs.writeFileSync(registryPath2, seeded);
+
+    // Cặp tiến trình MỚI trỏ vào registry mới (đóng cặp cũ để không giữ cổng).
+    await new Promise((resolve) => webapp.server.close(resolve));
+    await new Promise((resolve) => proxy.server.close(resolve));
+    webapp = await startServer(createRequestHandler({ presignedPath: registryPath2, markets, content: "<html>seam</html>" }));
+    proxy = await startServer(createProxyRequestHandler({
+      markets,
+      lenderAddress: LENDER,
+      morphoBlueAddress: MORPHO,
+      client: fakeChain,
+      capturedTxs: [],
+      webappUrl: `http://127.0.0.1:${webapp.port}`,
+      logger: silentLogger,
+    }));
+    const rpcUrl = `http://127.0.0.1:${proxy.port}/`;
+    const proxyUrl = `http://127.0.0.1:${proxy.port}`;
+
+    const signed = await signWithdraw(MARKET_PARAMS_A, DEAD_NONCE);
+    const captured = await postJson(rpcUrl, { jsonrpc: "2.0", id: 9, method: "eth_sendRawTransaction", params: [signed] });
+    expect(captured.json.result, captured.text).toBe(keccak256(signed));
+
+    const save = await postJson(`${proxyUrl}/bundle`, {
+      tiers: [{ amount: "50", amountWei: AMOUNT_WEI.toString(), amountFormatted: "50 USDC", label: "50 USDC", txHash: keccak256(signed) }],
+      marketId: MARKET_A,
+      lenderAddress: LENDER,
+      morphoBlueAddress: MORPHO,
+      nonce: DEAD_NONCE,
+      gas: "200000",
+      maxFeePerGas: "30000000000",
+      maxPriorityFeePerGas: "1000000000",
+      loanToken: { symbol: "USDC", decimals: 6 },
+    });
+
+    expect(save.status, save.text).toBe(502);
+    expect(save.json.code, "mã lỗi của server phải tới được client (không bị nuốt ở handler)").toBe("NONCE_NOT_CLAIMABLE");
+    expect(save.json.error, "rung `invalid` ⇒ nonce còn sống, phải chỉ đúng đường gỡ").toMatch(/CHƯA bị tiêu thụ/);
+    expect(save.json.error).toMatch(/xoá rung/i);
+    expect(fs.readFileSync(registryPath2, "utf8"), "từ chối trước mọi mutation").toBe(seeded);
   });
 });

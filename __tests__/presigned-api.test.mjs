@@ -155,6 +155,27 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(missing.status).toBe(400);
   });
 
+  // AUDIT 2026-09-26: `?nonce=` KHÔNG kèm `tier` phải xoá ĐÚNG rung đó. Trước fix, nhánh này bỏ qua
+  // `nonce` và xoá MỌI rung của market — trái với chính comment của nó ("With nonce → only that
+  // ladder rung"), im lặng: client tưởng xoá đúng một rung lại mất cả bậc thang.
+  it("DELETE kèm nonce mà KHÔNG kèm tier xoá ĐÚNG rung; nonce không tồn tại → 400, registry nguyên vẹn", async () => {
+    seedRegistry({
+      [`${MARKET_A}@7`]: { marketId: MARKET_A, nonce: 7, status: "invalid", withdrawals: [] },
+      [`${MARKET_A}@8`]: { marketId: MARKET_A, nonce: 8, status: "pending", withdrawals: [{ label: "a8", amountWei: "20", signedTx: "0x02" }] },
+    });
+    const resp = await api("DELETE", `/api/presign?market=${MARKET_A}&nonce=7`);
+    expect(resp.status).toBe(200);
+    expect(resp.json).toMatchObject({ ok: true, deleted: 1, nonce: 7, remaining: 1 });
+    const stored = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+    expect(stored.bundles[`${MARKET_A}@7`], "rung được chỉ định phải bị xoá").toBeUndefined();
+    expect(stored.bundles[`${MARKET_A}@8`], "rung khác phải còn nguyên (đỏ-trước: bị xoá luôn)").toBeDefined();
+
+    const before = fs.readFileSync(registryPath, "utf8");
+    const missing = await api("DELETE", `/api/presign?market=${MARKET_A}&nonce=99`);
+    expect(missing.status).toBe(400);
+    expect(fs.readFileSync(registryPath, "utf8")).toBe(before);
+  });
+
   it("POST /api/presign strips client-supplied lifecycle fields", async () => {
     seedRegistry({});
     // verifyPresignedBundle sẽ fail trên signedTx giả, nhưng field lifecycle

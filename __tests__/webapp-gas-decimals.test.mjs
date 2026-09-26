@@ -100,6 +100,43 @@ describe("gas số nhỏ hàng thập phân (bug 4)", () => {
     rpc.setGas({ priorityFee: "0x3b9aca00" }); // trả RPC giả về mặc định cho phần còn lại
   });
 
+  it("tip > trần (5 > 1): chặn NGAY với thông báo rõ — không để viem ném TipAboveFeeCapError giữa vòng ký", async () => {
+    // Đỏ-trước (audit 2026-09-26, chạy thật trên cây trước fix): cổng cũ chỉ bắt `maxFeePerGas = 0`, còn
+    // CẶP phí vô lý thì lọt xuống vòng ký — viem ném `TipAboveFeeCapError`
+    // ("maxPriorityFeePerGas cannot be greater than maxFeePerGas") NGAY client-side (không có
+    // `eth_sendTransaction` nào): tier chuyển ❌ với thông báo tiếng Anh trong `#progress-text`, KHÔNG
+    // banner ở `#presign-result` (banner cũ nằm nguyên), nút Ký vẫn bật ⇒ bấm lại lặp đúng lỗi đó.
+    await primeSigning("1", "5");
+    expect(app.window.readGasInputs()).toMatch(/lớn hơn maxFeePerGas/);
+    expect(app.html("presign-result"), "banner phải nói rõ vì sao không ký").toContain("lớn hơn maxFeePerGas");
+    expect(app.env.elements.get("btn-sign-all").disabled, "nút Ký phải khoá khi cặp phí vô lý").toBe(true);
+    await app.window.signAllTiers();
+    expect(app.takeCalls().some((c) => c.includes("eth_sendTransaction")), "không được chạm ví").toBe(false);
+    expect(app.html("presign-result"), "không còn lỗi tiếng Anh của ví").not.toContain("cannot be greater than");
+    expect(app.text("progress-text"), "tier không được rơi vào ❌ Lỗi").not.toContain("❌ Lỗi tier");
+  });
+
+  it("tip = trần là biên HỢP LỆ (viem chỉ chặn khi tip > trần)", async () => {
+    await primeSigning("5", "5");
+    expect(app.window.readGasInputs()).toBe(null);
+    await app.window.signAllTiers();
+    const params = lastSendParams();
+    expect(params.maxFeePerGas).toBe("0x12a05f200"); // 5 Gwei
+    expect(params.maxPriorityFeePerGas).toBe("0x12a05f200");
+  });
+
+  it("ô tip TRỐNG vẫn MỞ nút Ký (bấm sẽ được NHẮC nhập gas) — chỉ cặp VÔ LÝ mới khoá nút", async () => {
+    // Audit vòng 2 (2026-09-26): bản đầu của cổng cặp phí đòi CẢ hai ô non-null, nên ô tip trống làm
+    // nút Ký chết không lời giải thích — trong khi hành vi cũ (bấm ⇒ "Vui lòng nhập gas (hoặc nhấn
+    // Tự Động Gas)") là lời nhắc HỮU ÍCH và không có rủi ro nào. Ô TRỐNG = "chưa thiết lập", khác
+    // hẳn cặp vô lý (trần 0 / tip > trần) — chỉ cặp vô lý mới khoá nút.
+    await primeSigning("50", "");
+    expect(app.env.elements.get("btn-sign-all").disabled, "ô trống không phải cặp vô lý").toBe(false);
+    await app.window.signAllTiers();
+    expect(app.takeCalls().some((c) => c.includes("eth_sendTransaction")), "không được ký khi thiếu gas").toBe(false);
+    expect(app.html("presign-result")).toContain("Vui lòng nhập gas");
+  });
+
   it("maxFeePerGas = 0 bị CHẶN với thông báo riêng — trần phí 0 thì tx không bao giờ vào bảng", async () => {
     await primeSigning("0", "1");
     expect(app.window.readGasInputs()).toMatch(/không bao giờ vào bảng/);

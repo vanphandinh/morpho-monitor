@@ -22,7 +22,7 @@ import { getWalletProviderName } from "./webapp-wallet.mjs";
 import { SERVER_LENDER_ADDRESS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 import { clearSession, getProxyUrl, hideError, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
-import { deleteBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
+import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
 import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
 import { setMaxAmount, withdrawAll, withdrawAmount } from "./webapp-withdraw.mjs";
 
@@ -405,6 +405,7 @@ window.signAllTiers = signAllTiers;
 window.signWithdrawAll = signWithdrawAll;
 window.saveToServer = saveToServer;
 window.deleteTierFromBundle = deleteTierFromBundle;
+window.deleteRungFromBundle = deleteRungFromBundle;
 window.deleteBundle = deleteBundle;
 window.setMaxAmount = setMaxAmount;
 window.withdrawAmount = withdrawAmount;

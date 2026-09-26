@@ -97,6 +97,33 @@ describe("rung expired không được hồi sinh (chẩn đoán 2026-09-26)", (
     expect(fs.readFileSync(registryPath, "utf8")).toBe(raw);
   });
 
+  it("A4 (audit 2026-09-26): rung `invalid` giữ nonce CHƯA tiêu thụ ⇒ 409 chỉ đúng đường gỡ (xoá rung), không mách 'hết hạn / lấy nonce mới'", async () => {
+    // `invalid` là status NON_MERGEABLE duy nhất KHÔNG hàm ý nonce đã bị tiêu thụ: nó được set khi
+    // verify NỘI DUNG bundle thất bại, TRƯỚC khi broadcast ⇒ nonce còn nguyên trên chain. Trước fix,
+    // thông báo dùng chung khuôn với `expired` ("nonce N đã hết hạn … lấy nonce mới rồi ký lại") ⇒
+    // người dùng bị mách lấy một nonce mới trong khi nonce hiện tại vẫn dùng được: cách gỡ thật là
+    // XOÁ rung chặn rồi lưu lại (chữ ký đã ký ở nonce đó vẫn hợp lệ).
+    const bad = await pendingBundle({
+      marketId: MARKET_ID_A, marketParams: MARKET_PARAMS_A, nonce: 7,
+      tiers: [{ amountWei: "100000000000", label: "old-100" }],
+    });
+    bad.status = "invalid";
+    bad.error = "calldata verify failed";
+    const raw = seed({ [bundleKey(MARKET_ID_A, 7)]: bad });
+
+    const incoming = await pendingBundle({
+      marketId: MARKET_ID_A, marketParams: MARKET_PARAMS_A, nonce: 7,
+      tiers: [{ amountWei: "50000000000", label: "new-50" }],
+    });
+    const resp = await postPresign(incoming);
+    expect(resp.status).toBe(409);
+    expect(resp.json.code).toBe("NONCE_NOT_CLAIMABLE");
+    expect(resp.json.error, "nonce còn sống ⇒ phải nói rõ").toMatch(/CHƯA bị tiêu thụ/);
+    expect(resp.json.error, "phải chỉ cách gỡ thật").toMatch(/xoá rung/i);
+    expect(resp.json.error, "rung `invalid` KHÔNG phải 'hết hạn'").not.toMatch(/hết hạn/);
+    expect(fs.readFileSync(registryPath, "utf8"), "thông báo đổi, registry không đổi").toBe(raw);
+  });
+
   it("A3 (ghim bất biến): nonce CAO HƠN ⇒ rung cũ nguyên trạng, rung mới chỉ có tier mới", async () => {
     const old = await pendingBundle({
       marketId: MARKET_ID_A, marketParams: MARKET_PARAMS_A, nonce: 7,

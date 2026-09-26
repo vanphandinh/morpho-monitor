@@ -225,6 +225,13 @@ export async function fetchExistingBundle() {
         `<span class="label" style="margin-left:12px">Trạng thái:</span>${badge}` +
         (isHead ? ' <span style="color:var(--text-dim);font-size:0.8rem">(nonce kế tiếp sẽ broadcast)</span>' : "") +
         ageLabel +
+        // Rung-level delete (audit 2026-09-26): cần cho đường gỡ của rung `invalid` — record cùng
+        // nonce chặn POST 409 `NONCE_NOT_CLAIMABLE` dù nonce CHƯA bị tiêu thụ, mà ✕ chỉ xoá MỘT
+        // tier (record vẫn nằm nguyên ⇒ nonce vĩnh viễn không lưu lại được). Rung đang
+        // `broadcasting` không hiện nút (API cũng từ chối bằng 409).
+        (rungEditable
+          ? ` <button class="btn-outline btn-remove" title="Xoá CẢ RUNG nonce ${esc(r.nonce)} khỏi server (mọi tier của rung này)" onclick="deleteRungFromBundle(${Number(r.nonce)})">🗑</button>`
+          : "") +
         `</div>${tierList}</div>`;
     };
 
@@ -299,6 +306,47 @@ export async function deleteTierFromBundle(nonce, index) {
     showPresignError("Không thể kết nối server: " + err.message);
   }
 };
+
+/**
+ * Xoá MỘT rung (nonce) khỏi server — khác `deleteTierFromBundle` (chỉ bỏ 1 tier, record vẫn nằm lại
+ * chặn nonce) và khác `deleteBundle` (xoá CẢ bậc thang của market).
+ *
+ * Vì sao cần (audit 2026-09-26): đường gỡ của rung `invalid` — record cùng nonce chặn POST bằng 409
+ * `NONCE_NOT_CLAIMABLE` dù nonce CHƯA bị tiêu thụ — là XOÁ rung rồi lưu lại. Trước đó UI chỉ có ✕ theo
+ * tier: xoá hết tier vẫn để record `invalid` nằm nguyên, nên người dùng chỉ còn cách xoá MỌI bundle của
+ * market — và hướng dẫn khôi phục vừa thêm trỏ vào một nút không tồn tại.
+ */
+export async function deleteRungFromBundle(nonce) {
+  if (!confirm(`Xóa cả rung nonce ${nonce} khỏi server?\n\nMọi tier của rung này cũng bị xoá.`)) return;
+
+  try {
+    // Kèm `nonce` mà KHÔNG kèm `tier`: API xoá đúng rung đó (nhánh rung-scoped của DELETE).
+    const resp = await fetch(`/api/presign?market=${encodeURIComponent(state.marketId)}&nonce=${encodeURIComponent(nonce)}`, {
+      method: "DELETE",
+      headers: { ...getAuthHeaders() },
+    });
+    if (resp.status === 401) {
+      clearSession();
+      updateAuthUI();
+      showPresignError("Phiên đăng nhập hết hạn. Vui lòng xác thực lại.");
+      return;
+    }
+    const result = await resp.json();
+    if (resp.status === 409) {
+      showPresignError("Rung này đang được broadcast (claim đang mở) nên không xoá được. Chờ receipt rồi thử lại.");
+      return;
+    }
+    if (result.ok) {
+      showPresignSuccess(`✅ Đã xoá rung nonce ${nonce} khỏi server. Bấm “Lưu Lên Server” để lưu lại chữ ký đang giữ.`);
+      fetchExistingBundle();
+      refreshPresignOverview();
+    } else {
+      showPresignError("Lỗi xoá rung: " + (result.error || "Unknown"));
+    }
+  } catch (err) {
+    showPresignError("Không thể kết nối server: " + err.message);
+  }
+}
 
 export async function deleteBundle() {
   if (!confirm("Bạn có chắc muốn xóa toàn bộ bundle đã ký trên server?\n\nHành động này không thể hoàn tác.")) return;
