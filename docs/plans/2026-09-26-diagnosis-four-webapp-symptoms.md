@@ -251,3 +251,78 @@ mới còn untracked, sau commit là 93/93 · `node --check: 91/91 target OK` ·
 UNKNOWN (gọi qua `onclick` trong `webapp.html:451` + scenario — đã xác nhận bằng text search),
 `assertNonceNotConsumed` → LOW, `createRpcDispatcher`/`createProxyRequestHandler` → LOW.
 `detect-changes --scope all`: 5 file, 19 symbol · risk **high** · 9 flow — không partial/truncated.
+
+---
+
+## 9. Audit hậu D15–D20 (2026-09-26) — 4 lỗi mới sinh, đã sửa kèm test đỏ-trước
+
+Yêu cầu: soát LẠI toàn bộ 6 commit của đợt (D15…D20) xem có sinh lỗi mới không. Cách làm: đọc lại
+từng nhánh mới trong diff, rồi dựng test đỏ-trước cho mọi nghi vấn — không kết luận bằng suy đoán.
+
+### 9.1 Đã soát và SẠCH (đọc code + luồng thật, không cần sửa)
+
+- **Cổng nonce D20 không chặn nhầm.** Proxy KHÔNG relay tx đã capture vào mempool (nhánh
+  `eth_sendRawTransaction` nuốt tx rồi trả hash), nên tại lúc ký `pending` chỉ nhích khi có tx THẬT
+  vào bảng ⇒ cổng không bao giờ từ chối chữ ký "tươi". Bậc thang nonce cao hơn vẫn qua đúng luật
+  (chỉ chặn khi pending VƯỢT QUA), và repo không có tính năng fee-bump/replacement nào đi qua proxy
+  (text search: chỉ có rebroadcast **đúng byte** ở monitor, đi RPC công cộng chứ không qua proxy).
+- **D18 đổi "rung head" chỉ chạm NHÃN + banner.** Nút xoá tier đã đi theo `nonce` của TỪNG rung
+  (`deleteTierFromBundle(r.nonce, idx)`) từ trước; không có đường nào phụ thuộc rung nào là head.
+- **D16 chỉ chặn cùng identity `(market, nonce)`.** Market khác / nonce khác không bị chạm; các trạng
+  thái bị chặn (`submitted`/`failed`/`superseded`/`expired`/`invalid`) đều là nonce/hồ sơ đã chết,
+  nên không mất đường lưu hợp lệ nào (nonce sống luôn nằm ở key khác).
+- **Kiểu dữ liệu/đường mới an toàn:** `matchTiersToCaptured` luôn trả `matchedHashes` khi `ok` (vòng
+  lặp ở cổng `/bundle` không thể ném vì field thiếu); `toNonceBigInt` chấp nhận number/bigint/hex/
+  chuỗi và fail-open khi không parse được; `expireSameNonceSiblings(..., now)` nhận hàm đồng hồ ở cả
+  hai call site; trace ghim 46→48 là **+2 `eth_getTransactionCount`** (guard đọc lại nonce trước khi
+  ký), không mất lời gọi nào.
+- **Rủi ro còn mở (đã biết, chấp nhận):** purge thêm 1 lần đọc registry mỗi chu kỳ 30s (không RPC);
+  cổng capture thêm 1 `eth_getTransactionCount(pending)` mỗi lần ký/lần lưu; cổng `/bundle` fail OPEN
+  khi RPC lỗi (cố ý — thiếu bằng chứng không phải bằng chứng nonce đã chết).
+
+### 9.2 Bốn lỗi MỚI SINH đã sửa
+
+1. **Mã lỗi chết ở relay proxy** (`proxy-dispatcher.mjs` + `webapp-presign.mjs`). Server từ chối
+   `/api/presign` (vd 409 `NONCE_NOT_CLAIMABLE` của D16) được relay thành 502 nhưng **nuốt `code`** ⇒
+   webapp chỉ còn chuỗi lỗi để đọc, không thể tự phục hồi: chữ ký ở nonce đã chết vẫn nằm ở trạng thái
+   "đã ký", nút lưu vẫn mời bấm lại, nonce không được làm mới. Đỏ-trước:
+   `AssertionError: mã của server phải tới được webapp: expected undefined to be 'NONCE_NOT_CLAIMABLE'`.
+   Fix: relay chuyển tiếp `code` nguyên trạng; `saveToServer` xử lý CHUNG `NONCE_CONSUMED` (proxy) và
+   `NONCE_NOT_CLAIMABLE` (server): báo rõ lý do, tự đọc lại nonce on-chain, vô hiệu chữ ký ở nonce đã
+   chết, và chỉ bật lại nút lưu khi còn chữ ký sống (`hasLiveSignatures()`).
+2. **Purge kéo cả chu kỳ monitor xuống** (`presigned-broadcast.mjs`). `purgeExpiredRungs` chạy TRƯỚC
+   nhánh idle và để lỗi lock xuyên thẳng ra ngoài ⇒ một lượt dọn không lấy được lock giết cả chu kỳ
+   30s, **kể cả khi registry idle** (trước D17 nhánh idle không bao giờ ném). Đỏ-trước:
+   `Error: Could not acquire lock after 50 attempts` (P7) và `broadcastEligible` ném thay vì trả
+   `{ idle: true }` (P8). Fix: purge là **best-effort** — bắt lỗi, `warn`, trả `{ purged: 0 }`, để lượt
+   sau dọn (record còn nguyên, không xoá mù).
+3. **`parseGasInput` từ chối dạng gõ thiếu số 0** (`webapp-presign.mjs`). `.5`, `,5`, `50.` — bản cũ
+   (`parseFloat`) chấp nhận cả ba, bản D15 từ chối. Đỏ-trước:
+   `AssertionError: expected null to be 500000000n`. Fix: chuẩn hoá `.5`→`0.5`, `50.`→`50.0` trước khi
+   khớp regex, **giữ nguyên regex** để `match[1]` vẫn là phần thập phân. (Bản sửa đầu tiên của tôi thêm
+   nhóm bắt buộc cho phần nguyên ⇒ `match[1]` thành phần nguyên ⇒ mất phép chặn >9 chữ số, `parseUnits`
+   âm thầm cắt bớt; test cũ bắt được ngay — đã trả lại regex cũ.)
+4. **Render tổng quan rơi khỏi lưới catch** (`webapp-presign-bundles.mjs`). D18 bọc `retryTransient`
+   quanh fetch nhưng để `renderPresignOverview` ngoài lưới ⇒ lỗi render thành unhandled rejection,
+   không banner (trước đây mọi lỗi đều hiện "Không tải được tổng quan"). Đỏ-trước:
+   `TypeError: (markets || []).map is not a function` xuyên ra khỏi `refreshPresignOverview`. Fix: bắt
+   quanh render ⇒ banner + nút thử lại, đúng hợp đồng "lỗi cuối cùng luôn được hiển thị".
+
+### 9.3 Cổng sau audit
+
+`npm run check` → exit 0: `Found 0 warnings and 0 errors.` ·
+`[lint] ✅ độ phủ: oxlint quét 93 file .mjs (git theo dõi 93 file)` ·
+`✅ node --check: 91/91 target OK (85 file .mjs + webapp.html no-inline-module)` ·
+**44 file test, 593 passed | 7 skipped (600)** (trước audit: 588/7 skipped — +5 test mới).
+Test đỏ-trước: 6 ca đỏ trên cây chưa fix, xanh sau fix
+(`__tests__/presigned-expired-purge.test.mjs` P7/P8, `__tests__/proxy-nonce-freshness.test.mjs` relay,
+`__tests__/webapp-stale-nonce-guard.test.mjs` D16, `__tests__/webapp-bundle-visibility.test.mjs` B3,
+`__tests__/webapp-gas-decimals.test.mjs`). `impact`: `parseGasInput` → **HIGH** (6 phụ thuộc:
+`readGasField`/`readGasInputs`/`onGasInputChange` → `signAllTiers`/`signWithdrawAll`/`saveToServer`),
+`refreshPresignOverview` → **CRITICAL** (6: `init`/`switchTab`/`saveToServer`/`deleteBundle`/
+`deleteTierFromBundle`), `saveToServer` → UNKNOWN (đã xác nhận bằng text search: `window.saveToServer` +
+scenario), `purgeExpiredRungs` → LOW, `createProxyRequestHandler` → LOW. Hai cảnh báo HIGH/CRITICAL đã
+đọc trước khi sửa; thay đổi ở cả hai đều **thuần bảo toàn** (chuẩn hoá thêm dạng nhập đã từng chạy;
+thêm lưới catch quanh render) và bị ghim bởi test cũ + test mới. `detect-changes --scope all`:
+12 file, 21 symbol · risk **critical** (do các hub webapp `refreshPresignOverview`/`saveToServer`/
+`parseGasInput` + 2 flow `BroadcastEligible`), 17 flow · không `partial`/`truncated`.
