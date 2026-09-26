@@ -66,3 +66,10 @@ ci-fixture/
 # Docker (image files, not config)
 # ============================================================
 *.tar
+
+# ============================================================
+# Cổng UI thật (`npm run ui:check`)
+# ============================================================
+# Ảnh chụp + số đo + log server của lần chạy gần nhất. Đây là bằng chứng để ĐỌC khi cổng đỏ, không
+# phải artifact của build — CI upload thư mục này khi job `ui` thất bại.
+test-results/
