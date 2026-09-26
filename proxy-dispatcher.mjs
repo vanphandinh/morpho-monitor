@@ -23,6 +23,7 @@ import {
   assertCaptureTx,
   assertNonceNotConsumed,
   computeMarketId,
+  NONCE_MISMATCH,
 } from "./presign-verify.mjs";
 import { requireConfiguredMarket } from "./market-config.mjs";
 
@@ -597,6 +598,28 @@ export function createProxyRequestHandler({
             marketId: requireConfiguredMarket(markets, meta.marketId),
           });
           if (!verified.ok) {
+            // Lệch nonce (chẩn đoán 2026-09-26): mã RIÊNG + hai số thật để webapp chỉ đúng đường
+            // phục hồi. Ca này trước fix chỉ là 400 với chuỗi "tx nonce M !== bundle nonce N":
+            // webapp không phân biệt được với bundle hỏng nên rơi vào nhánh "Lỗi proxy: …" chung,
+            // bấm Lưu lặp đúng 400 đó, còn chữ ký ví (ở nonce ví tự chọn) thì nằm nguyên trong
+            // buffer capture. Trả 409 như các cổng nonce khác (NONCE_CONSUMED / NONCE_NOT_CLAIMABLE).
+            if (verified.nonceMismatch) {
+              logger?.warn?.(
+                `[proxy] ❌ Từ chối lưu bundle ở nonce ${meta.nonce}: ${verified.error}`
+              );
+              // Một tier lệch ⇒ một cặp số; trộn nonce giữa các tier ⇒ danh sách nonce tìm thấy.
+              const { txNonce, txNonces, bundleNonce } = verified.nonceMismatch;
+              res.writeHead(409, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({
+                ok: false,
+                error: `Calldata verify failed: ${verified.error}`,
+                code: NONCE_MISMATCH,
+                bundleNonce: bundleNonce ?? meta.nonce,
+                ...(verified.index != null ? { index: verified.index } : {}),
+                ...(txNonces ? { txNonces } : { txNonce }),
+              }));
+              return;
+            }
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error: `Calldata verify failed: ${verified.error}` }));
             return;
@@ -681,10 +704,22 @@ export function createProxyRequestHandler({
         return;
       }
       res.writeHead(200, { "Content-Type": "application/json" });
-      // Không trả signedTx — chỉ metadata + hash để debug
+      // Không trả signedTx — chỉ metadata + hash để debug.
+      // `nonce`/`nonceOnChain` (chẩn đoán 2026-09-26): nonce của tx CHỈ nằm trong byte đã ký, mà
+      // webapp không bao giờ giữ signedTx ⇒ đây là nguồn DUY NHẤT để webapp dò xem ví có tôn trọng
+      // nonce nó gửi hay không. Trước fix hai trường này bị bỏ, nên "ví ký sai nonce" chỉ lộ ra ở
+      // bước Lưu dưới dạng 400 trần. Nonce là dữ liệu công khai on-chain, không phải bí mật.
       res.end(JSON.stringify({
         count: capturedTxs.length,
-        txs: capturedTxs.map(t => ({ hash: t.hash, capturedAt: t.capturedAt })),
+        // `Number(...)` chứ không trả nguyên giá trị: `readPendingNonce()` có thể là BigInt (client
+        // bọc/thử nghiệm), mà `JSON.stringify` ném "Do not know how to serialize a BigInt" — lỗi
+        // rơi SAU writeHead nên response không bao giờ kết thúc (test treo 5s thay vì đọc được JSON).
+        txs: capturedTxs.map(t => ({
+          hash: t.hash,
+          capturedAt: t.capturedAt,
+          nonce: t.nonce == null ? null : Number(t.nonce),
+          nonceOnChain: t.nonceOnChain == null ? null : Number(t.nonceOnChain),
+        })),
       }));
       return;
     }

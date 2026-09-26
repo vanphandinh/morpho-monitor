@@ -382,6 +382,14 @@ export function createFakeApi(fixtures = {}) {
     // Mặc định `null` ⇒ proxy giả trả ĐÚNG số tier mà body gửi lên (giống proxy thật, nơi số tier
     // trong phản hồi là kết quả merge). Truyền một object thì dùng đúng object đó.
     bundle = null,
+    /**
+     * `GET /api/captured` — bằng chứng nonce của chữ ký ví (proxy capture).
+     *
+     * Mặc định RỖNG: cây hiện tại coi "không có bằng chứng" là trung tính (không chặn ký, không
+     * chặn lưu) nên mọi test cũ giữ nguyên hành vi. Ca cần đo phải tự khai `txs` với `hash` +
+     * `nonce` (`fakeHash(n)` là hash mà ví giả trả cho lần ký thứ n).
+     */
+    captured = { ok: true, count: 0, txs: [] },
     deleteTier = { ok: true, removed: "100 USDC", remaining: 1 },
     /**
      * Lỗi TẠM THỜI theo đường dẫn, mặc định TẮT (không đổi hành vi mọi kịch bản cũ):
@@ -404,6 +412,9 @@ export function createFakeApi(fixtures = {}) {
   // `bundle` (phản hồi POST /api/bundle, tức /bundle của proxy) cũng MUTABLE: kịch bản
   // "proxy từ chối vì nonce đã tiêu thụ" (D20) cần đổi phản hồi giữa hai lần lưu.
   let bundleFixture = bundle;
+  // `captured` cũng MUTABLE: ca lệch nonce cần đổi bằng chứng GIỮA hai lần ký (ví đổi hành vi),
+  // hoặc dựng bằng chứng xuất hiện muộn cho preflight của bước Lưu.
+  let capturedFixture = captured;
 
   const fetchImpl = async (url, init = {}) => {
     const method = (init.method ?? "GET").toUpperCase();
@@ -425,6 +436,7 @@ export function createFakeApi(fixtures = {}) {
     if (pathOnly === "/api/challenge") return jsonResponse(challenge);
     if (pathOnly === "/api/auth") return jsonResponse(auth);
     if (pathOnly === "/api/overview") return jsonResponse(overviewFixture);
+    if (pathOnly === "/api/captured") return jsonResponse(capturedFixture);
     if (pathOnly === "/api/presign" && method === "DELETE") return jsonResponse(deleteTier);
     if (pathOnly === "/api/presign") return jsonResponse(presignFixture);
     if (pathOnly === "/api/bundle") {
@@ -457,6 +469,10 @@ export function createFakeApi(fixtures = {}) {
     /** Đổi phản hồi `POST /api/bundle` (proxy) cho các lần lưu sau — vd `{ ok: false, code: "NONCE_CONSUMED" }`. */
     setBundle: (next) => {
       bundleFixture = next;
+    },
+    /** Đổi bằng chứng `GET /api/captured` (nonce thật của chữ ký) cho các lần đọc sau. */
+    setCaptured: (next) => {
+      capturedFixture = next;
     },
   };
 }

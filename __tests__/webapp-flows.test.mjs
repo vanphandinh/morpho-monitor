@@ -81,7 +81,7 @@ describe("harness thật sự chạy (chốt chống xanh rỗng)", () => {
       "tab-withdraw", "set-max", "withdraw-amount", "withdraw-all",
     ]);
     const totalCalls = trace.steps.reduce((sum, step) => sum + step.calls.length, 0);
-    expect(totalCalls).toBeGreaterThanOrEqual(45); // đo được: 46
+    expect(totalCalls).toBeGreaterThanOrEqual(45); // đo được: 53 (46 + 5 lời gọi bằng chứng nonce, xem ca cuối)
     const sends = trace.steps.flatMap((step) => sendsOf(step));
     expect(sends.length).toBeGreaterThanOrEqual(5); // 2 tier + all-shares + rút theo số lượng + rút hết
   });
@@ -146,6 +146,26 @@ describe("đường tiền — ký sẵn: mỗi mốc một giao dịch trên d�
     expect(stepNamed("nonce-step-down-at-floor").obs.nonce).toBe("11"); // giảm ở sàn ⇒ giữ nguyên
     expect(stepNamed("nonce-step-down-at-floor").calls).toHaveLength(0); // và không gọi gì ra dây
     expect(stepNamed("nonce-step-up").obs.nonce).toBe("12");
+  });
+
+  it("bằng chứng nonce: mỗi lần ký đọc `/api/captured`; lời kết nói rõ đã xác minh đúng nonce", () => {
+    // Kịch bản khai bằng chứng khớp (fakeHash(1..3) ở nonce 12 — xem `webapp-scenario.mjs`), nên
+    // trace phải đi qua nhánh ĐÃ XÁC MINH. Đỏ-trước: không có lời gọi nào tới `/api/captured` và
+    // lời kết chỉ là "✅ Đã ký thành công 2/2 giao dịch".
+    const reads = trace.steps.flatMap((step) => callsOf(step))
+      .filter((call) => call.kind === "api" && call.url === "/api/captured");
+    expect(reads).toHaveLength(5);
+    for (const read of reads) expect(read.method).toBe("GET");
+    expect(stepNamed("sign-all-tiers").obs.progressText).toContain("proxy xác nhận đúng nonce 12");
+  });
+
+  it("hint nonce > sàn: ẩn khi đứng ở sàn, hiện kèm cách buộc ví sau khi bước lên", () => {
+    // Kịch bản: `fetch-nonce` đứng ĐÚNG sàn on-chain (11) ⇒ hint ẩn; `nonce-step-up` đưa lên 12
+    // ⇒ hint phải bật kèm chỉ dẫn buộc ví. Không bước nào sau đó hạ nonce nên hint ở lại tới hết
+    // trace — fixture ghim cả hai chiều của hợp đồng.
+    expect(stepNamed("fetch-nonce").obs.nonceHint).toBe("");
+    expect(stepNamed("nonce-step-up").obs.nonceHint).toContain("Customize transaction nonce");
+    expect(stepNamed("save-to-server-tiers").obs.nonceHint).toContain("nonce <b>12</b>");
   });
 
   it("txHash của từng mốc được ghi lại — proxy cần nó để ghép tx đã capture", () => {
@@ -320,7 +340,11 @@ describe("lưới hồi quy — trace đã đóng băng", () => {
     // 46 → 48 (chẩn đoán 2026-09-26): mỗi bước ký nay đọc lại nonce on-chain TRƯỚC khi ký
     // (guard chống ký ở nonce đã chết), cộng 1 `eth_getTransactionCount` cho mỗi bước
     // `sign-all-tiers` và `sign-withdraw-all`. Không có lời gọi nào bị mất.
-    expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(48);
+    // 48 → 53 (chẩn đoán 2026-09-26, bằng chứng nonce): 1 `GET /api/captured` cho MỖI tier đã ký
+    // (2 ở `sign-all-tiers`, 1 ở `sign-withdraw-all`) + 1 preflight trước MỖI lần lưu
+    // (`save-to-server-tiers`, `save-to-server-all-shares`). Đây là trao đổi có chủ đích: đổi 5
+    // request đọc thêm lấy việc biết chắc chữ ký nằm ở nonce nào thay vì để bước Lưu nổ 400.
+    expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(53);
   });
 
   it("nhãn cây là đường dẫn TƯƠNG ĐỐI — fixture không ghim đường dẫn của một máy", () => {

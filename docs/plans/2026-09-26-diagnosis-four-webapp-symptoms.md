@@ -483,3 +483,76 @@ Cổng sau vòng 2: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` 
 critical (các hub webapp + handler) · 27 flow · không `partial`/`truncated`. GitNexus `impact` vòng 2:
 `createRequestHandler` → LOW; `deleteBundle`/`deleteTierFromBundle` → UNKNOWN (đã xác nhận bằng text search:
 `window.deleteTierFromBundle`/`window.deleteBundle` `webapp-app.mjs:407-409`).
+
+## 13. Ký presign ở nonce CAO HƠN (2026-09-26): bằng chứng nonce của chữ ký ví
+
+### 13.1 Yêu cầu — và hướng đã bị TỪ CHỐI
+
+Người dùng muốn ký presign ở **nonce cao hơn sàn** (xếp hàng nhiều rung) và đính chính rõ: KHÔNG giải quyết
+việc ví bỏ qua nonce bằng cách **hạ webapp cho khớp hành vi ví** (đồng bộ `presignedNonce` theo nonce chữ ký
+đã capture). Stepper ± giữ nguyên ngữ nghĩa: sàn = nonce on-chain `pending`, mọi nonce CAO HƠN là hợp lệ —
+proxy cũng đã theo luật đó (D20: chỉ chặn khi `onChain > txNonce`). Vậy phần còn thiếu không phải là "cho
+phép ký cao", mà là **biết chắc chữ ký thật nằm ở nonce nào** và **nói đúng đường sửa khi ví không tôn trọng**.
+
+Triệu chứng khi ví bỏ qua nonce (MetaMask mobile): cổng capture D20 KHÔNG chặn (tx ở sàn vẫn hợp lệ), chữ ký
+vào buffer, rồi bước Lưu nhận **400 trần**: `Calldata verify failed: withdrawals[0]: tx nonce M !== bundle nonce N`
+— **không có `code`** ⇒ webapp rơi nhánh chung `Lỗi proxy: …`, tier vẫn ✅, nút Lưu vẫn mở, bấm lặp đúng 400 đó.
+Chain không bị đụng (không có gì được broadcast), nhưng người dùng bị kẹt không lối ra và không biết vì sao.
+
+### 13.2 Vì sao cần một đường đọc MỚI
+
+Nonce không nằm trong hash mà ví trả về — nó chỉ tồn tại trong **byte đã ký**, thứ browser không bao giờ giữ
+(`webapp-presign.mjs` chỉ nhận `keccak256(signedTx)` từ proxy). Nguồn duy nhất của bằng chứng là buffer capture
+ở proxy, nơi `eth_sendRawTransaction` đã lưu `nonce` + `nonceOnChain` cho MỌI tx (D20) — nhưng `GET /captured`
+chỉ trả `{hash, capturedAt}`. Không mở hai trường đó ra thì mọi cách phát hiện đều là đoán.
+
+### 13.3 Bốn mảnh của fix
+
+1. **Mở bằng chứng** — `GET /captured` trả thêm `nonce` + `nonceOnChain` mỗi tx (vẫn KHÔNG trả `signedTx`;
+   nonce là dữ liệu công khai on-chain), chuẩn hoá `Number(...)` vì `readPendingNonce()` có thể là BigInt
+   (`JSON.stringify` ném SAU `writeHead` ⇒ response treo — chính là ca làm test đỏ đầu tiên).
+2. **Relay `GET /api/captured`** (`webapp-handler.mjs`) — cùng khuôn `POST /api/bundle`: Bearer của phiên → Basic
+   nội bộ; proxy không tới được ⇒ 502. Không có state mới ở server.
+3. **Mã lỗi có cấu trúc** — tầng verify (`presign-verify.mjs`) trả thêm `nonceMismatch: { txNonce, bundleNonce }`
+   ở nhánh lệch nonce (và `{ txNonces: [...] }` khi các tier ở nhiều nonce) — **additive ở nhánh lỗi**, mã
+   `VERIFY_*` mà broadcaster dựa vào KHÔNG đổi. Proxy đổi nó thành **409 `{ code: "NONCE_MISMATCH", txNonce,
+   bundleNonce, index }`** (`NONCE_MISMATCH` là mã tầng HTTP, khai cạnh `NONCE_CONSUMED`).
+4. **Phía webapp** — sau MỖI `sendTransaction`, đọc `/api/captured` và so nonce THẬT với `state.presignedNonce`:
+   lệch ⇒ **DỪNG NGAY** (không đốt thêm popup), tier ❌ kèm hai số + cách sửa (MetaMask: Settings → Advanced →
+   “Customize transaction nonce”, đặt đúng nonce trong TỪNG popup; hoặc ví nhận nonce dApp), giữ nguyên nonce
+   đã chọn — KHÔNG tự hạ theo ví. `saveToServer()` preflight cùng bằng chứng trước khi POST (hết vòng lặp 400
+   trần) và có nhánh phục hồi riêng cho `NONCE_MISMATCH`. `#presign-nonce-hint` hiện thường trực khi
+   `presignedNonce > onChainPendingNonce` để nhắc TRƯỚC khi bấm Ký (advisory — không có cổng theo ví, đúng
+   quyết định 2026-09-24). Thiếu bằng chứng (`/api/captured` cũ/mạng lỗi) là TRUNG TÍNH: ký tiếp, proxy là chốt cuối.
+
+### 13.4 Đỏ-trước
+
+Chạy 4 file test mới/sửa trên cây KHÔNG có 5 file production (stash đúng 5 file đó):
+**13 failed | 69 passed (82)** — `presign-verify` 4 (thiếu `nonceMismatch`), `proxy-nonce-freshness` 2
+(`GET /captured` thiếu `nonce`; lệch nonce trả **400** thay vì **409**), `presigned-api` 2 (relay 404),
+`webapp-presign-nonce-readback` 5. Hai ca đắt nhất:
+
+- ca B: `AssertionError: lệch nonce ở tier đầu ⇒ KHÔNG ký tier tiếp theo: expected 2 to be 1` — cây cũ ký
+  tiếp tier sau và để tier sai nonce nhận ✅;
+- ca D: `expected '<div class="banner error">❌ Lỗi proxy…' not to contain 'Lỗi proxy:'` — đúng nhánh chung đã mô tả.
+
+Sau fix: `npm run check` exit 0 — `Found 0 warnings and 0 errors.` (oxlint quét 95 file: 94 tracked + file test
+mới chưa staged) · `node --check: 93/93 target OK (87 .mjs + webapp.html)` · **46 file test, 623 passed |
+7 skipped (630)** (nền: 45 file, 606 | 7 — thêm 17 ca). Trace đóng băng: 19 bước, **48 → 53 lời gọi**
+(+2 `/api/captured` ở `sign-all-tiers`, +1 ở `sign-withdraw-all`, +1 preflight mỗi lần lưu ×2), lời kết bước ký
+nay là `✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12`, và `nonceHint` ẩn ở sàn / hiện sau
+khi bước lên 12.
+
+### 13.5 GitNexus & phạm vi
+
+Trước khi sửa: `analyze --index-only` (index đang behind 3 commit) rồi `impact` — `verifyWithdrawCalldata`
+**CRITICAL** (11 impacted, 3 caller trực tiếp, 5 process), `verifyPresignedBundle` **HIGH** (7/4/4),
+`createProxyRequestHandler`/`createRequestHandler`/`fetchNonce` **LOW**, `stepNonce` **LOW**.
+`signAllTiers`/`signWithdrawAll`/`saveToServer`/`onNonceStep` → **UNKNOWN** đã xác nhận bằng text search
+(`window.*` `webapp-app.mjs` + `onclick=` `webapp.html`) — không đổi chữ ký hàm. `detect-changes --scope all`:
+**13 file, 22 symbol, 35 process, risk critical**, không `partial`/`truncated`; các flow tiền bị chạm có tên
+(`SignAllTiers → RenderTierList`, `SaveToServer → ParseGasInput`, `CreateProxyRequestHandler → …`).
+
+Bất biến đã giữ: không sửa `presignedNonce` theo ví; không thêm `eth_signTransaction` (MetaMask không hỗ trợ —
+người dùng đã chốt "chưa cần"); không đụng `presigned-broadcast.mjs`/registry/luật merge; relay `code` và các
+nhánh phục hồi D16/D20/D2 giữ nguyên; tab "Rút Tiền" không bị chạm.

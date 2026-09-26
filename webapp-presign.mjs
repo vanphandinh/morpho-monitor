@@ -8,7 +8,7 @@
 
 import { encodeFunctionData, formatUnits, parseUnits } from "viem";
 import { mainnet } from "viem/chains";
-import { stepNonce } from "./webapp-logic.mjs";
+import { retryTransient, stepNonce } from "./webapp-logic.mjs";
 import { MORPHO_ABI, MORPHO_BLUE, state } from "./webapp-state.mjs";
 import { clearSession, getAuthHeaders, getProxyUrl, isAuthenticated, showPresignError, showPresignSuccess, updateAuthUI } from "./webapp-shell.mjs";
 import { fetchExistingBundle, refreshPresignOverview, renderPresignWithdrawAllInfo } from "./webapp-presign-bundles.mjs";
@@ -105,6 +105,7 @@ export async function fetchNonce() {
     // dưới sàn — xem stepNonce trong webapp-logic.mjs).
     state.onChainPendingNonce = state.presignedNonce;
     setNonceStepperEnabled(true);
+    updateNonceHint();
     // Nonce mới → chữ ký cũ (cùng nonce cũ) không còn hợp lệ
     if (prevNonce !== null && prevNonce !== state.presignedNonce) {
       invalidateSignatures("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
@@ -144,6 +145,7 @@ export function onNonceStep(delta) {
   // Nonce mới → chữ ký cũ (ký ở nonce cũ) không còn hợp lệ.
   invalidateSignatures("Nonce đã thay đổi. Vui lòng ký lại các giao dịch.");
   updateNonceStepperButtons();
+  updateNonceHint();
   updateSignButton();
 };
 
@@ -369,6 +371,7 @@ async function nonceStillSignable() {
   // Sàn nonce luôn được đồng bộ: dù ký được hay không, giá trị cũ không còn đúng.
   state.onChainPendingNonce = onChain;
   setNonceStepperEnabled(true);
+  updateNonceHint();
   const current = state.presignedNonce === null ? null : BigInt(state.presignedNonce);
   if (current !== null && onChain > current) {
     // Nâng nonce lên đúng sàn on-chain: chữ ký cũ ở nonce đã chết thì vô hiệu hoá luôn
@@ -382,6 +385,7 @@ async function nonceStillSignable() {
     invalidateSignatures(message);
     showPresignError(message); // luôn có banner, kể cả khi không có chữ ký nào để vô hiệu
     updateNonceStepperButtons();
+    updateNonceHint();
     updateSignButton();
     return false;
   }
@@ -403,6 +407,120 @@ function updateSignButton() {
   if (btnAll) {
     btnAll.disabled = !(state.currentAccount && state.presignedNonce !== null && gasPairReady());
   }
+}
+
+// ============================================================
+// PRESIGN: BẰNG CHỨNG NONCE CỦA CHỮ KÝ (proxy capture)
+// ============================================================
+/**
+ * Đọc danh sách tx proxy đã capture (hash + nonce THẬT của chữ ký ví).
+ *
+ * Vì sao cần: nonce KHÔNG nằm trong hash mà ví trả về — nó chỉ tồn tại trong byte đã ký, thứ
+ * browser không bao giờ giữ. Proxy là nơi duy nhất thấy nó (lưu lúc `eth_sendRawTransaction`), nên
+ * `GET /api/captured` (đã lọc bỏ `signedTx`) là nguồn duy nhất để biết ví có tôn trọng
+ * `state.presignedNonce` hay không (chẩn đoán 2026-09-26).
+ *
+ * Trả `null` khi CHƯA có bằng chứng (mạng lỗi, 401, proxy chưa có route, entry kiểu cũ): thiếu bằng
+ * chứng KHÔNG phải bằng chứng sai — người gọi quyết định, và bước Lưu vẫn có cổng nonce ở proxy.
+ * Đọc là read-only nên 401 ở đây không được tự đăng xuất người dùng (chỉ POST mới có nhánh đó).
+ */
+async function readCapturedTxs() {
+  const outcome = await retryTransient(async () => {
+    try {
+      const resp = await fetch("/api/captured", { headers: { ...getAuthHeaders() } });
+      if (!resp.ok) return { retry: resp.status >= 500, failure: `HTTP ${resp.status}` };
+      const data = await resp.json();
+      return { data: Array.isArray(data?.txs) ? data.txs : null };
+    } catch (err) {
+      return { retry: true, failure: `lỗi mạng: ${err.message}` };
+    }
+  });
+  return outcome?.data ?? null;
+}
+
+/** Nonce THẬT của chữ ký có hash này theo proxy; `null` = proxy chưa có bằng chứng cho hash đó. */
+function capturedNonceOf(txs, txHash) {
+  if (!txs || !txHash) return null;
+  const want = String(txHash).toLowerCase();
+  const entry = txs.find((tx) => String(tx?.hash || "").toLowerCase() === want);
+  return entry?.nonce == null ? null : Number(entry.nonce);
+}
+
+/**
+ * Lời nhắc khi `presignedNonce` đứng TRÊN sàn on-chain: nonce cao chỉ vào được bảng nếu ví CHỊU
+ * đặt nonce. Không chặn gì (không có cổng preflight theo ví — quyết định 2026-09-24) — chỉ nói
+ * trước, để lần ký đầu tiên không đến bất ngờ.
+ */
+function updateNonceHint() {
+  const el = document.getElementById("presign-nonce-hint");
+  if (!el) return;
+  const floor = state.onChainPendingNonce;
+  const current = state.presignedNonce;
+  if (floor === null || current === null || Number(current) <= Number(floor)) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  el.style.display = "block";
+  el.innerHTML =
+    `<div class="banner warn">⚠️ Đang ký ở nonce <b>${current}</b> (sàn on-chain ${floor}, +${Number(current) - Number(floor)}). ` +
+    `Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, ` +
+    `rồi đặt đúng nonce <b>${current}</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. ` +
+    `Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>`;
+}
+
+/** Thông báo lệch nonce dùng đúng HAI SỐ (không suy đoán) + đường sửa. */
+function nonceMismatchMessage({ actual, requested, label }) {
+  return (
+    `Ví đã ký ở <b>nonce ${actual}</b>, không phải <b>nonce ${requested}</b> bạn đã chọn` +
+    (label ? ` (${label})` : "") +
+    ` — ví bỏ qua nonce do webapp gửi. Chữ ký này không thể lưu vào rung nonce ${requested} nên CHƯA có gì được gửi lên server. ` +
+    `Cách sửa: bật cho phép đặt nonce trong ví (MetaMask: Settings → Advanced → “Customize transaction nonce”) rồi ký lại, ` +
+    `đặt đúng nonce ${requested} trong TỪNG popup; hoặc dùng ví nhận nonce do dApp gửi.`
+  );
+}
+
+/**
+ * Đánh dấu các tier có chữ ký ở SAI nonce là ❌ — để ✅ không nói dối và nút Lưu không mời bấm
+ * lại đúng lỗi đó. Tier đã đánh dấu sẽ bị `buildPresignedBundle` bỏ qua (status !== "signed").
+ * @returns {boolean} true nếu có ít nhất một chữ ký bị đánh dấu
+ */
+function markNonceMismatchTiers(txHashes, { requested, actual }) {
+  const wanted = new Set((txHashes || []).filter(Boolean).map((h) => String(h).toLowerCase()));
+  if (wanted.size === 0) return false;
+  let touched = false;
+  for (const tier of state.presignedTiers) {
+    if (!tier.txHash || !wanted.has(String(tier.txHash).toLowerCase())) continue;
+    tier.status = "error";
+    tier.error = `ví ký ở nonce ${actual}, không phải ${requested}`;
+    tier.nonceMismatch = { requested, actual };
+    touched = true;
+  }
+  if (state.presignedWithdrawAll?.txHash && wanted.has(String(state.presignedWithdrawAll.txHash).toLowerCase())) {
+    state.presignedWithdrawAll.status = "error";
+    state.presignedWithdrawAll.error = `ví ký ở nonce ${actual}, không phải ${requested}`;
+    state.presignedWithdrawAll.nonceMismatch = { requested, actual };
+    touched = true;
+  }
+  if (touched) renderTierList();
+  return touched;
+}
+
+/**
+ * So nonce THẬT của từng chữ ký trong bundle (proxy capture) với nonce bundle sẽ khai.
+ * @returns {Promise<Array<{label: string, txHash: string, actual: number}>>} rỗng = khớp / chưa có bằng chứng
+ */
+async function findBundleNonceMismatches(bundle) {
+  const txs = await readCapturedTxs();
+  if (!txs) return [];
+  const mismatches = [];
+  for (const tier of bundle.tiers) {
+    const actual = capturedNonceOf(txs, tier.txHash);
+    if (actual !== null && Number(actual) !== Number(bundle.nonce)) {
+      mismatches.push({ label: tier.label, txHash: tier.txHash, actual });
+    }
+  }
+  return mismatches;
 }
 
 // ============================================================
@@ -529,6 +647,8 @@ export async function signAllTiers() {
 
   const total = validTiers.length;
   let signed = 0;
+  // Số tier không đọc được bằng chứng nonce (proxy cũ/mạng lỗi) — dùng cho lời kết trung thực.
+  let unverified = 0;
 
   for (let i = 0; i < state.presignedTiers.length; i++) {
     const tier = state.presignedTiers[i];
@@ -563,6 +683,28 @@ export async function signAllTiers() {
 
       // Ghi nhận hash (proxy đã capture signed tx)
       tier.txHash = txHash;
+
+      // Bằng chứng nonce (chẩn đoán 2026-09-26): ví có ký ĐÚNG nonce mình gửi không? Nonce không
+      // nằm trong hash — chỉ proxy đọc được từ byte đã ký. Lệch ⇒ DỪNG NGAY: ký tiếp các tier còn
+      // lại chỉ đắp thêm chữ ký không lưu được, còn để ✅ trên tier này là nói dối.
+      const actualNonce = capturedNonceOf(await readCapturedTxs(), txHash);
+      if (actualNonce !== null && Number(actualNonce) !== Number(state.presignedNonce)) {
+        tier.status = "error";
+        tier.error = `ví ký ở nonce ${actualNonce}, không phải ${state.presignedNonce}`;
+        tier.nonceMismatch = { requested: Number(state.presignedNonce), actual: actualNonce };
+        renderTierList();
+        progressText.textContent = `❌ Ví ký ở nonce ${actualNonce}, không phải nonce ${state.presignedNonce} — đã dừng ký`;
+        showPresignError(nonceMismatchMessage({
+          actual: actualNonce,
+          requested: state.presignedNonce,
+          label: `${tier.amount} ${state.loanToken.symbol}`,
+        }));
+        isSigningInProgress = false;
+        document.getElementById("btn-sign-all").disabled = false;
+        return;
+      }
+      if (actualNonce === null) unverified++;
+
       tier.amountWei = assets.toString();
       tier.status = "signed";
       signed++;
@@ -581,7 +723,10 @@ export async function signAllTiers() {
   }
 
   progressFill.style.width = "100%";
-  progressText.textContent = `✅ Đã ký thành công ${signed}/${total} giao dịch`;
+  progressText.textContent = `✅ Đã ký thành công ${signed}/${total} giao dịch` +
+    (unverified > 0
+      ? " (chưa xác minh được nonce — proxy sẽ kiểm khi lưu)"
+      : ` — proxy xác nhận đúng nonce ${state.presignedNonce}`);
   document.getElementById("btn-save-server").disabled = false;
   document.getElementById("btn-sign-all").disabled = false;
   isSigningInProgress = false;
@@ -656,6 +801,26 @@ export async function signWithdrawAll() {
       account: state.currentAccount,
     });
 
+    // Bằng chứng nonce — cùng luật với `signAllTiers`: ví ký sai nonce thì chữ ký này không thể
+    // lưu ở rung nonce đã chọn, nên đánh dấu lỗi NGAY và không để nút Lưu mời bấm.
+    const actualNonce = capturedNonceOf(await readCapturedTxs(), txHash);
+    if (actualNonce !== null && Number(actualNonce) !== Number(state.presignedNonce)) {
+      state.presignedWithdrawAll = {
+        status: "error",
+        error: `ví ký ở nonce ${actualNonce}, không phải ${state.presignedNonce}`,
+        nonceMismatch: { requested: Number(state.presignedNonce), actual: actualNonce },
+      };
+      btn.textContent = "🔄 Ký Rút Toàn Bộ Shares";
+      statusEl.innerHTML =
+        `<span style="color:var(--red)">❌ Ví ký ở nonce ${actualNonce}, không phải nonce ${state.presignedNonce} — chưa ký được.</span>`;
+      showPresignError(nonceMismatchMessage({
+        actual: actualNonce,
+        requested: state.presignedNonce,
+        label: "Rút toàn bộ shares",
+      }));
+      return;
+    }
+
     state.presignedWithdrawAll = {
       sharesWei: shares.toString(),
       txHash: txHash,
@@ -728,6 +893,25 @@ export async function saveToServer() {
     return;
   }
 
+  // Preflight nonce (chẩn đoán 2026-09-26): nếu chữ ký THẬT không cùng nonce bundle sẽ khai thì
+  // proxy chắc chắn từ chối (409 NONCE_MISMATCH) — chặn ở đây để lời giải thích nằm trong tay
+  // webapp kèm SỐ THẬT, thay vì đẩy một POST chắc chắn hỏng rồi hiện chuỗi "Lỗi proxy: …".
+  // Thiếu bằng chứng (proxy cũ/mạng lỗi) KHÔNG chặn: cổng nonce ở proxy vẫn là chốt cuối.
+  const mismatches = await findBundleNonceMismatches(bundle);
+  if (mismatches.length > 0) {
+    markNonceMismatchTiers(mismatches.map((m) => m.txHash), {
+      requested: Number(bundle.nonce),
+      actual: mismatches[0].actual,
+    });
+    document.getElementById("btn-save-server").disabled = true;
+    showPresignError(nonceMismatchMessage({
+      actual: mismatches.map((m) => m.actual).join(", "),
+      requested: bundle.nonce,
+      label: mismatches.map((m) => m.label).join(", "),
+    }));
+    return;
+  }
+
   document.getElementById("btn-save-server").disabled = true;
   document.getElementById("btn-save-server").textContent = "⏳ Đang gửi đến proxy...";
 
@@ -760,6 +944,32 @@ export async function saveToServer() {
       // Ladder trên server vừa thay đổi (merge vào rung cũ hoặc thêm rung mới)
       // — refresh cả overview lẫn rung đang hiển thị, nếu không UI giữ state cũ
       // tới lần chuyển tab tiếp theo.
+      fetchExistingBundle();
+      refreshPresignOverview();
+    } else if (result.code === "NONCE_MISMATCH") {
+      // Proxy nói rõ chữ ký THẬT nằm ở nonce nào (409 + `txNonce`/`bundleNonce`/`index`, hoặc
+      // `txNonces` khi các tier ở nhiều nonce khác nhau). Trước fix đây là chuỗi nằm trong
+      // `result.error` và webapp rơi xuống nhánh "Lỗi proxy: …" chung — người dùng bấm Lưu lặp
+      // đúng lỗi đó mà không biết phải sửa gì. Đánh dấu ❌ đúng các chữ ký không thể lưu và khoá
+      // Lưu: muốn lưu phải sửa ví (cho đặt nonce) rồi ký lại — KHÔNG tự hạ nonce theo ví.
+      const actuals = Array.isArray(result.txNonces)
+        ? result.txNonces.join(", ")
+        : String(result.txNonce ?? "?");
+      const requested = result.bundleNonce ?? bundle.nonce;
+      const faulty = Array.isArray(result.txNonces)
+        // Trộn nonce: không tier nào ghép được thành MỘT rung ở nonce đã chọn.
+        ? bundle.tiers.map((t) => t.txHash)
+        : (result.index != null && bundle.tiers[result.index]
+          ? [bundle.tiers[result.index].txHash]
+          : bundle.tiers.map((t) => t.txHash));
+      markNonceMismatchTiers(faulty, { requested: Number(requested), actual: actuals });
+      showPresignError(nonceMismatchMessage({
+        actual: actuals,
+        requested,
+        label: result.index != null ? bundle.tiers[result.index]?.label : null,
+      }));
+      document.getElementById("btn-save-server").disabled = true;
+      document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
       fetchExistingBundle();
       refreshPresignOverview();
     } else if (result.error?.includes("No captured transactions")) {

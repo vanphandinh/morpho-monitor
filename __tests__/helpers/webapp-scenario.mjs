@@ -64,6 +64,9 @@ function observe(app) {
     gasPriority: app.value("presign-gas-priority"),
     nonceDecDisabled: app.env.elements.get("btn-nonce-dec")?.disabled ?? null,
     signAllDisabled: app.env.elements.get("btn-sign-all")?.disabled ?? null,
+    // Lời nhắc "nonce > sàn" (chẩn đoán 2026-09-26): chụp cả trạng thái ẩn (chuỗi rỗng khi đứng ở
+    // sàn) để fixture ghim được cả hai chiều của hợp đồng.
+    nonceHint: app.html("presign-nonce-hint"),
   };
 }
 
@@ -90,7 +93,18 @@ export async function runWebappScenario({
   autoGasAfterSign = null,
 } = {}) {
   const rpc = createFakeRpc({ pendingNonce: "0xb", ...rpcFixtures });
-  const api = createFakeApi({ ...apiFixtures });
+  // Bằng chứng nonce của proxy capture (chẩn đoán 2026-09-26): kịch bản ký ở nonce 12 (sàn 11) với
+  // 3 giao dịch (2 tier + all-shares) — hash do ví giả trả là deterministic (fakeHash(1..3)).
+  // Khai sẵn để trace đi qua nhánh ĐÃ XÁC MINH, thay vì nhánh "chưa có bằng chứng": fixture đóng
+  // băng nhờ đó ghim cả lời kết "proxy xác nhận đúng nonce" lẫn các lời gọi `GET /api/captured`.
+  const api = createFakeApi({
+    captured: {
+      ok: true,
+      count: 3,
+      txs: [1, 2, 3].map((n) => ({ hash: fakeHash(n), nonce: 12, nonceOnChain: 11 })),
+    },
+    ...apiFixtures,
+  });
   const provider = createFakeProvider(providerOptions);
 
   const app = await loadWebapp({
