@@ -167,7 +167,7 @@ trong `__tests__/webapp-flows.test.mjs`.
 
 ---
 
-## 6. Cổng cuối (đo trên cây sau cả 4 commit)
+## 6. Cổng cuối (đo trên cây sau cả 4 commit của đợt chẩn đoán)
 
 ```text
 npm run check
@@ -190,10 +190,13 @@ symbol · critical — **không** lần nào `partial`/`truncated`.
 
 ## 7. Còn mở (đọc để không tưởng là "sạch tuyệt đối")
 
-1. **Proxy chưa kiểm nonce on-chain khi capture tx.** Guard mới ở phía browser chặn ký ở nonce đã
-   chết, nhưng một client khác (script tự viết, ví tự thêm nonce) vẫn có thể POST một tx ký ở nonce
-   đã tiêu thụ; server chỉ từ chối nếu rung tương ứng đã `expired`/`invalid`. Kiểm `nonce ≥
-   eth_getTransactionCount(pending)` ở proxy là lớp phòng thủ kế tiếp.
+1. ~~**Proxy chưa kiểm nonce on-chain khi capture tx.**~~ **Đã đóng sau khi hồ sơ này viết: D20**
+   (commit `docs`/`fix` riêng, `__tests__/proxy-nonce-freshness.test.mjs`) — proxy đọc
+   `eth_getTransactionCount(pending)` của lender và từ chối chữ ký ở nonce đã tiêu thụ tại **cả hai**
+   cửa: `eth_sendRawTransaction` (JSON-RPC error về ví) và `POST /bundle` (409 `NONCE_CONSUMED`,
+   không relay). Luật giống D19: chỉ chặn khi on-chain **vượt qua** nonce của tx; nonce cao hơn vẫn
+   hợp lệ (xếp hàng có chủ đích); không đọc được nonce ⇒ fail OPEN + warn vì thiếu bằng chứng không
+   phải bằng chứng nonce đã chết, và D16/D17 vẫn dọn phía sau. Xem §8.
 2. **Một rung = một phát.** Nhiều tier trong cùng một rung là các phương án thay thế; tx đầu tiên
    mine ⇒ mọi sibling cùng nonce `expired`, các tier còn lại của chính rung đó không bao giờ được
    broadcast. Muốn cả bậc thang đều có cơ hội thì mỗi tier phải nằm ở một nonce riêng (thay đổi
@@ -205,3 +208,46 @@ symbol · critical — **không** lần nào `partial`/`truncated`.
 5. **Triệu chứng "lúc hiện lúc không" chưa được chứng minh trên môi trường thật** (RPC công cộng
    hỏng thật, `LOCK_STALE` thật). Harness tất định đã tái hiện đúng hai cơ chế; nếu còn ca khác thì
    cần HAR/log có timestamp từ máy người dùng.
+
+---
+
+## 8. Bổ sung sau hồ sơ: D20 — cổng nonce on-chain ở proxy
+
+Mở từ §7.1. Bằng chứng đỏ-trước (chạy thật trên cây TRƯỚC fix, cùng đoạn code trong
+`__tests__/proxy-nonce-freshness.test.mjs`):
+
+```text
+on-chain pending = 8, tx nonce = 7
+kết quả eth_sendRawTransaction: 0x9c82f75a43ce9aee4b543db4bf5cbbda143ab5e6760e18f69687802a09953abf   ← KHÔNG phải Error
+buffer capture: 1 {"hash":"0x9c82f75a…","nonce":null}
+đúng hash ký? true
+```
+
+Tức trước fix **không cổng nào ở proxy hỏi nonce**: chữ ký ở nonce đã chết vào thẳng buffer, rồi
+`/bundle` ghép nó vào registry. Sau fix, cùng ca đó trả
+`nonce 7 đã bị tiêu thụ (on-chain pending 8) — chữ ký ở nonce này không thể mine; lấy nonce mới rồi
+ký lại` + buffer rỗng; `/bundle` trả 409 `NONCE_CONSUMED` và **không** relay sang webapp.
+
+Ba điểm thiết kế đáng ghi:
+
+1. **Chỉ chặn khi on-chain VƯỢT QUA nonce của tx.** Nonce cao hơn là bậc thang có chủ đích — nếu
+   chặn cả trường hợp đó thì mất tính năng xếp hàng nhiều rung.
+2. **Fail OPEN khi không đọc được nonce** (RPC lỗi/không hỗ trợ) + warn, khác với browser (D19) fail
+   CLOSED. Lý do: ở proxy, "không đọc được" là thiếu bằng chứng chứ không phải bằng chứng nonce đã
+   chết; chặn ở đây làm người dùng mất các chữ ký đã ký mà lỗi RPC chỉ là nhất thời, còn D16/D17 vẫn
+   dọn được rồi. Ở browser, không ký thì chỉ tốn một cú bấm.
+3. **Evidence dùng lại được:** entry capture ghi `nonce` + `nonceOnChain`, nên cổng `/bundle` không
+   cần parse lại tx, và buffer dựng tay (test cũ) vẫn chạy được nhờ fallback `meta.nonce`
+   (`verifyPresignedBundle` đã ghim `tx.nonce === bundle.nonce` trước đó).
+
+Webapp cũng được nối vào vòng này: `saveToServer` gặp `code === "NONCE_CONSUMED"` thì báo rõ lý do
+proxy từ chối, **tự đọc lại nonce on-chain** (kèm vô hiệu chữ ký chết) và refresh ladder — người dùng
+bấm ký lại một lần là xong.
+
+Cổng của commit D20: `npm run check` → "Found 0 warnings and 0 errors." ·
+`[lint] ✅ độ phủ: oxlint quét 93 file .mjs (git theo dõi 92 file, phạm vi ".")` — lúc đo file test
+mới còn untracked, sau commit là 93/93 · `node --check: 91/91 target OK` ·
+**44 file test, 588 passed | 7 skipped (595)**. `impact`: `saveToServer` →
+UNKNOWN (gọi qua `onclick` trong `webapp.html:451` + scenario — đã xác nhận bằng text search),
+`assertNonceNotConsumed` → LOW, `createRpcDispatcher`/`createProxyRequestHandler` → LOW.
+`detect-changes --scope all`: 5 file, 19 symbol · risk **high** · 9 flow — không partial/truncated.

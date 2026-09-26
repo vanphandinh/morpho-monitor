@@ -687,12 +687,25 @@ export async function saveToServer() {
       showPresignError("Proxy chưa nhận được signed tx. Hãy ký lại các tier hoặc 'Ký Rút Toàn Bộ Shares'.");
       document.getElementById("btn-save-server").disabled = false;
       document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+    } else if (result.code === "NONCE_CONSUMED") {
+      // D20: proxy từ chối vì nonce của chữ ký đã bị tiêu thụ (đọc thẳng nonce on-chain).
+      // Chữ ký vừa gửi là chữ ký chết ⇒ lấy ngay nonce mới (kèm vô hiệu chữ ký cũ) để người
+      // dùng ký lại một lần, thay vì tự đoán vì sao nonce cũ không dùng được.
+      document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+      // Lấy lại sàn TRƯỚC khi báo: `fetchNonce()` tự vô hiệu chữ ký cũ và có banner riêng, nên
+      // thông báo cuối cùng (thứ người dùng đọc) phải là thông báo nói rõ VÌ SAO bị từ chối.
+      await fetchNonce();
+      showPresignError(
+        `Nonce của chữ ký đã bị tiêu thụ — proxy từ chối lưu: ${result.error}<br>` +
+        `<small>Đã lấy lại nonce on-chain (${state.presignedNonce}). Ký lại để dùng nonce mới.</small>`
+      );
+      fetchExistingBundle();
+      refreshPresignOverview();
     } else {
       showPresignError("Lỗi proxy: " + (result.error || "Unknown"));
       document.getElementById("btn-save-server").disabled = false;
       document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
-    }
-  } catch (err) {
+    }    } catch (err) {
     showPresignError(`Không thể kết nối proxy (${getProxyUrl()}). Proxy đã chạy chưa? ` + err.message);
     document.getElementById("btn-save-server").disabled = false;
     document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";

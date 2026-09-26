@@ -18,6 +18,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import { createFakeApi, createFakeRpc, DEFAULT_MARKET_ID, loadWebapp } from "./helpers/webapp-harness.mjs";
 
 const rpc = createFakeRpc(); // RPC lành: init đọc được market/position
+const workingRpcFetch = rpc.fetch; // giữ bản lành để khôi phục sau ca "RPC nonce hỏng"
 const api = createFakeApi();
 const app = await loadWebapp({ rpc, api });
 
@@ -65,6 +66,19 @@ describe("B3 — nonce on-chain đã vượt qua thì KHÔNG được ký", () =
     await app.window.signAllTiers();
     expect(sends(), "thiếu bằng chứng nonce ⇒ không ký").toEqual([]);
     expect(app.html("presign-result")).toContain("Không đọc lại được nonce on-chain");
+    rpc.fetch = workingRpcFetch; // trả RPC về bình thường cho các ca sau
+  });
+
+  it("proxy từ chối vì nonce đã tiêu thụ ⇒ app báo rõ và tự lấy lại nonce mới (D20)", async () => {
+    // Cổng nonce ở proxy trả 409 `NONCE_CONSUMED` (xem __tests__/proxy-nonce-freshness.test.mjs).
+    api.setBundle({ ok: false, code: "NONCE_CONSUMED", error: "nonce 12 đã bị tiêu thụ (on-chain pending 13)" });
+    rpc.setNonce(13);
+
+    await app.window.saveToServer();
+
+    expect(app.html("presign-result"), "báo đúng lý do proxy từ chối").toContain("đã bị tiêu thụ");
+    expect(app.html("presign-result")).toContain("proxy từ chối lưu");
+    expect(app.text("presign-nonce"), "tự đọc lại sàn on-chain").toBe("13");
   });
 
   it("dấu 'nonce kế tiếp' thuộc rung đang sống, không phải rung đã chết (đỏ-trước: 2550)", async () => {

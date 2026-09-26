@@ -21,6 +21,7 @@ import {
   resolveBundleServerUrl,
   clearMatchedCaptured,
   assertCaptureTx,
+  assertNonceNotConsumed,
   computeMarketId,
 } from "./presign-verify.mjs";
 import { requireConfiguredMarket } from "./market-config.mjs";
@@ -63,6 +64,26 @@ export function createRpcDispatcher({
   const log = (msg) => logger?.log?.(msg);
   const assertConfiguredMarket = (marketId) => requireConfiguredMarket(markets, marketId);
 
+  /**
+   * Nonce on-chain `pending` của lender (D20), `null` khi không đọc được.
+   *
+   * Proxy là nơi duy nhất thấy CẢ signed tx LẪN trạng thái nonce on-chain, nên đây là chỗ đúng để
+   * từ chối chữ ký ở nonce đã chết. Không đọc được ⇒ trả `null` + warn (caller fail OPEN: thiếu bằng
+   * chứng không phải bằng chứng nonce đã chết — và D16/D17 vẫn dọn được phía sau).
+   */
+  async function readPendingNonce() {
+    try {
+      const value = await client.getTransactionCount({ address: lenderAddress, blockTag: "pending" });
+      return value ?? null;
+    } catch (err) {
+      warn(
+        `[proxy] ⚠️  không đọc được nonce on-chain của ${String(lenderAddress).slice(0, 10)}…: ${err.message} — ` +
+        `bỏ qua kiểm nonce (fail open; registry vẫn bị D16/D17 dọn phía sau)`
+      );
+      return null;
+    }
+  }
+
   async function handleRpc(method, params) {
     switch (method) {
       // === THE CAPTURE ===
@@ -84,6 +105,18 @@ export function createRpcDispatcher({
           warn(`[proxy] ❌ Từ chối capture: market ${capturedMarketId} không được cấu hình`);
           throw err;
         }
+        // D20: từ chối chữ ký ở nonce đã tiêu thụ NGAY TẠI PROXY. Trước fix, nonce không được hỏi
+        // ở đây: một client khác (script tự viết, ví tự thêm nonce, tab cũ) vẫn capture được chữ ký
+        // ở nonce đã chết, rồi /bundle ghép nó vào registry (lúc đó chỉ còn D16/D17 dọn sau).
+        const onChainPendingNonce = await readPendingNonce();
+        const nonceCheck = assertNonceNotConsumed({
+          txNonce: check.decoded.nonce,
+          onChainPendingNonce,
+        });
+        if (!nonceCheck.ok) {
+          warn(`[proxy] ❌ Từ chối capture ở nonce đã tiêu thụ: ${nonceCheck.error}`);
+          return new Error(nonceCheck.error);
+        }
         const txHash = keccak256(signedTx); // real tx hash — dùng để match tier sau này
         if (capturedTxs.length >= MAX_CAPTURED_TXS) {
           capturedTxs.shift();
@@ -92,9 +125,12 @@ export function createRpcDispatcher({
           hash: txHash,
           signedTx,
           capturedAt: new Date().toISOString(),
+          nonce: check.decoded.nonce,          // D20: bằng chứng dùng lại ở cổng /bundle
+          nonceOnChain: onChainPendingNonce,   // nguyên trạng lúc capture (null = không đọc được)
         });
         log(
-          `[proxy] 📝 Captured signed tx #${capturedTxs.length}: ${txHash.slice(0, 10)}... (from ${check.from.slice(0, 10)}...)`
+          `[proxy] 📝 Captured signed tx #${capturedTxs.length}: ${txHash.slice(0, 10)}... (from ${check.from.slice(0, 10)}..., ` +
+          `nonce=${check.decoded.nonce ?? "?"}, on-chain pending=${onChainPendingNonce ?? "không đọc được"})`
         );
         return txHash;
       }
@@ -348,7 +384,7 @@ export function createRpcDispatcher({
     }
   }
 
-  return { handleRpc, capturedTxs, blockFallback };
+  return { handleRpc, capturedTxs, blockFallback, readPendingNonce };
 }
 
 /**
@@ -564,6 +600,29 @@ export function createProxyRequestHandler({
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: false, error: `Calldata verify failed: ${verified.error}` }));
             return;
+          }
+
+          // D20: cổng nonce thứ hai — giữa capture và lưu, nonce có thể bị tiêu thụ (market khác rút
+          // trước, hoặc một tx khác chiếm mất nonce). Đọc MỘT lần cho cả bundle: mọi tier trong một
+          // bundle dùng CÙNG một nonce (`verifyPresignedBundle` đã ghim `tx.nonce === bundle.nonce`).
+          const nonceAtSave = await dispatcher.readPendingNonce();
+          const capturedByHash = new Map(
+            capturedTxs.map((tx) => [tx.hash?.toLowerCase(), tx])
+          );
+          for (const hash of matched.matchedHashes) {
+            const entry = capturedByHash.get(hash?.toLowerCase());
+            const gate = assertNonceNotConsumed({
+              // Thiếu nonce ghi lúc capture (buffer dựng tay) ⇒ dùng meta: verify ở trên đã đối chiếu
+              // chính `meta.nonce` với từng tx trong bundle.
+              txNonce: entry?.nonce ?? meta.nonce,
+              onChainPendingNonce: nonceAtSave,
+            });
+            if (!gate.ok) {
+              logger?.warn?.(`[proxy] ❌ Từ chối lưu bundle: ${gate.error}`);
+              res.writeHead(409, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ ok: false, error: gate.error, code: gate.code }));
+              return;
+            }
           }
 
           // Luôn dùng WEBAPP_URL — không bao giờ tin meta.serverUrl (SSRF)

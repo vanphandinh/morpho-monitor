@@ -238,6 +238,55 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
 }
 
 /**
+ * Mã lỗi: unique tính bằng số nhưng nonce của tx đã bị tiêu thụ (on-chain pending đã vượt qua). Dùng
+ * bởi cổng nonce ở proxy (D20) — bundle làm từ chữ ký này không bao giờ mine được.
+ */
+export const NONCE_CONSUMED = "NONCE_CONSUMED";
+
+/**
+ * Nonce của tx ký sẵn có còn dùng được không? (chẩn đoán 2026-09-26, D20)
+ *
+ * Luật: chỉ CHẾT khi on-chain `pending` **vượt qua** nonce của tx — tx mine theo thứ tự nonce nên khi
+ * nonce thấp hơn đã bị một giao dịch khác dùng thì tx này không bao giờ vào bảng. Nonce CAO HƠN
+ * on-chain vẫn hợp lệ: đó là xếp hàng có chủ đích (bậc thang nonce của webapp).
+ *
+ * Thiếu bằng chứng (RPC lỗi, không hỗ trợ, giá trị không parse được) ⇒ `{ ok: true, checked: false }`
+ * — hàm này không tự quyết định fail open/closed, caller quyết định. Proxy fail OPEN và warn (thiếu
+ * bằng chứng không phải bằng chứng nonce đã chết; D16/D17 phía sau vẫn dọn được), browser fail CLOSED
+ * (`nonceStillSignable()` — ở đó không ký còn rẻ hơn ký ra chữ ký chết).
+ *
+ * @param {object} input
+ * @param {number|bigint|string} input.txNonce nonce trong signed tx (thập phân hoặc hex)
+ * @param {number|bigint|string|null} input.onChainPendingNonce `eth_getTransactionCount(pending)`
+ * @returns {{ ok: true, checked: boolean } | { ok: false, code: string, error: string }}
+ */
+export function assertNonceNotConsumed({ txNonce, onChainPendingNonce } = {}) {
+  const txValue = toNonceBigInt(txNonce);
+  const chainValue = toNonceBigInt(onChainPendingNonce);
+  if (txValue === null || chainValue === null) return { ok: true, checked: false };
+  if (chainValue > txValue) {
+    return {
+      ok: false,
+      code: NONCE_CONSUMED,
+      error:
+        `nonce ${txValue} đã bị tiêu thụ (on-chain pending ${chainValue}) — chữ ký ở nonce này không thể ` +
+        `mine; lấy nonce mới rồi ký lại`,
+    };
+  }
+  return { ok: true, checked: true };
+}
+
+/** Nonce → BigInt, chấp nhận number/bigint/hex/chuỗi thập phân; null nếu không parse được. */
+function toNonceBigInt(value) {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Gate eth_sendRawTransaction capture: sender must be lender + Morpho withdraw shape.
  * Does not require amountWei/sharesWei labels (unknown until /bundle metadata).
  * Reuses verifyWithdrawCalldata (single ECDSA recover).

@@ -398,6 +398,9 @@ export function createFakeApi(fixtures = {}) {
   // `presign` là MUTABLE qua `setPresign()`: kịch bản ladder (rung expired + rung pending, chẩn
   // đoán 2026-09-26) cần đổi payload giữa hai lần đọc mà không phải nạp lại module.
   let presignFixture = presign;
+  // `bundle` (phản hồi POST /api/bundle, tức /bundle của proxy) cũng MUTABLE: kịch bản
+  // "proxy từ chối vì nonce đã tiêu thụ" (D20) cần đổi phản hồi giữa hai lần lưu.
+  let bundleFixture = bundle;
 
   const fetchImpl = async (url, init = {}) => {
     const method = (init.method ?? "GET").toUpperCase();
@@ -422,7 +425,7 @@ export function createFakeApi(fixtures = {}) {
     if (pathOnly === "/api/presign" && method === "DELETE") return jsonResponse(deleteTier);
     if (pathOnly === "/api/presign") return jsonResponse(presignFixture);
     if (pathOnly === "/api/bundle") {
-      return jsonResponse(bundle ?? { ok: true, tiers: requestBody?.tiers?.length ?? 0 });
+      return jsonResponse(bundleFixture ?? { ok: true, tiers: requestBody?.tiers?.length ?? 0 });
     }
     return jsonResponse({ ok: false, error: `fake api: chưa hỗ trợ ${method} ${url}` }, 404);
   };
@@ -443,6 +446,10 @@ export function createFakeApi(fixtures = {}) {
     /** Đổi payload `GET /api/presign` cho các lần đọc sau (ladder khác). */
     setPresign: (next) => {
       presignFixture = next;
+    },
+    /** Đổi phản hồi `POST /api/bundle` (proxy) cho các lần lưu sau — vd `{ ok: false, code: "NONCE_CONSUMED" }`. */
+    setBundle: (next) => {
+      bundleFixture = next;
     },
   };
 }
