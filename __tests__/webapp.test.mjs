@@ -1,100 +1,43 @@
 /**
- * Unit tests for pure computation logic from webapp.html.
+ * Test cho logic thuần của webapp.
  *
- * These functions mirror the browser code in webapp.html <script type="module">.
- * They're duplicated here for unit testing since browser ESM can't be
- * directly imported by vitest (Node.js).
+ * Audit A.1b: các hàm dưới đây nay nằm trong `webapp-logic.mjs` — CHÍNH module mà
+ * browser tải (`webapp-app.mjs` import từ `./webapp-logic.mjs`). Trước đây file
+ * này phải NHÂN BẢN chúng ("mirror"), nên test có thể xanh trong khi code chạy
+ * thật đã khác — đúng lớp lỗi mà audit A.1 muốn diệt.
  *
- * When editing webapp.html logic, update both the HTML and this test file.
+ * Phần cuối file ghim hợp đồng giữa HTML ↔ module ↔ route: một `onclick` gọi hàm
+ * không tồn tại vẫn parse hợp lệ và chỉ chết lúc người dùng bấm nút.
  */
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import {
+  CLAIM_RECOVERY_MS_FALLBACK,
+  TX_VERIFY_ATTEMPTS,
+  TX_VERIFY_DELAY_MS,
+  wadToPercent,
+  shortenAddr,
+  broadcastingAgeMinutes,
+  isClaimOverdue,
+  txVisibleOnChain,
+  computeSupplyAssets,
+  computeBorrowAssets,
+  computeLiquidity,
+  computeUtilization,
+  computeMaxWithdraw,
+  validateWithdraw,
+  stepNonce,
+} from "../webapp-logic.mjs";
+// Audit P2.8: hai bản wadToPercent/shortenAddr tồn tại vì browser không import
+// được shared.mjs; test này là lưới an toàn chống chúng lệch nhau.
+import { wadToPercent as sharedWadToPercent, shortenAddress } from "../shared.mjs";
+// Audit P5: `webapp-app.mjs` đã tách thành các module luồng, nên khẳng định kiểu
+// "webapp có/không có X" phải đọc TOÀN BỘ closure module browser (suy từ đồ thị
+// import), không ghim vào một file. Ghim file là cách chắc chắn nhất để mỗi lần
+// code chuyển nhà lại có một test đỏ giả — đúng thứ đã xảy ra ở P2.7.
+import { browserModuleNames, browserSources, readBrowserSource, webappSource } from "./helpers/browser-modules.mjs";
 
-// ============================================================
-// Mirror of webapp.html pure functions
-// ============================================================
-
-/**
- * Format a WAD-scaled value (1e18) as a percentage string.
- * Mirrors webapp.html line 345-347.
- */
-function wadToPercent(wad) {
-  return (Number(wad) / 1e16).toFixed(2) + "%";
-}
-
-/**
- * Shorten an Ethereum address for display.
- * Mirrors webapp.html line 349-351.
- */
-function shortenAddr(addr) {
-  if (!addr) return "N/A";
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-/**
- * Compute supply assets from shares.
- * Mirrors webapp.html line 454-456.
- *
- * assets = (shares * totalSupplyAssets) / totalSupplyShares
- */
-function computeSupplyAssets(shares, totalSupplyAssets, totalSupplyShares) {
-  if (totalSupplyShares === 0n) return 0n;
-  return (shares * totalSupplyAssets) / totalSupplyShares;
-}
-
-/**
- * Compute borrow assets from shares.
- * Mirrors webapp.html line 507-509.
- */
-function computeBorrowAssets(shares, totalBorrowAssets, totalBorrowShares) {
-  if (totalBorrowShares === 0n) return 0n;
-  return (shares * totalBorrowAssets) / totalBorrowShares;
-}
-
-/**
- * Compute market liquidity.
- * Mirrors webapp.html line 458-460.
- */
-function computeLiquidity(totalSupplyAssets, totalBorrowAssets) {
-  const liquidity = totalSupplyAssets - totalBorrowAssets;
-  return liquidity < 0n ? 0n : liquidity;
-}
-
-/**
- * Compute utilization (WAD-scaled).
- * Mirrors webapp.html line 463-465.
- */
-function computeUtilization(totalBorrowAssets, totalSupplyAssets) {
-  if (totalSupplyAssets === 0n) return 0n;
-  return (totalBorrowAssets * BigInt(1e18)) / totalSupplyAssets;
-}
-
-/**
- * Compute the max withdrawable amount.
- * MAX = min(supplyAssets, liquidity)
- * Mirrors the MAX button logic in webapp.html.
- */
-function computeMaxWithdraw(supplyAssets, liquidity) {
-  return supplyAssets < liquidity ? supplyAssets : liquidity;
-}
-
-/**
- * Validate withdraw input (client-side check before on-chain tx).
- * Mirrors the validation logic added to webapp.html withdrawAmount().
- *
- * Returns { valid: boolean, error: string | null }
- */
-function validateWithdraw({ assets, supplyAssets, liquidity }) {
-  if (assets === 0n) {
-    return { valid: false, error: "Số lượng rút không thể bằng 0." };
-  }
-  if (assets > supplyAssets) {
-    return { valid: false, error: "Số lượng vượt quá số dư có thể rút." };
-  }
-  if (assets > liquidity) {
-    return { valid: false, error: "Thanh khoản market không đủ." };
-  }
-  return { valid: true, error: null };
-}
+const readSource = (name) => fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
 // ============================================================
 // Tests: wadToPercent
@@ -267,61 +210,420 @@ describe("webapp: validateWithdraw()", () => {
   const liquidity = 500_000000n; // 500 USDC available
 
   it("passes valid withdrawal (assets ≤ supply and ≤ liquidity)", () => {
-    const result = validateWithdraw({
-      assets: 300_000000n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: 300_000000n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(true);
-    expect(result.error).toBeNull();
+    expect(result.reason).toBeNull();
   });
 
   it("rejects zero amount", () => {
-    const result = validateWithdraw({
-      assets: 0n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: 0n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(false);
-    expect(result.error).toContain("0");
+    expect(result.reason).toBe("zero");
   });
 
   it("rejects amount exceeding supply assets", () => {
-    const result = validateWithdraw({
-      assets: supply + 1n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: supply + 1n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(false);
-    expect(result.error).toContain("số dư");
+    expect(result.reason).toBe("over_balance");
   });
 
   it("rejects amount exceeding liquidity", () => {
-    const result = validateWithdraw({
-      assets: liquidity + 1n,
-      supplyAssets: supply,
-      liquidity,
-    });
+    const result = validateWithdraw({ assets: liquidity + 1n, supplyAssets: supply, liquidity });
     expect(result.valid).toBe(false);
-    expect(result.error).toContain("Thanh khoản");
+    expect(result.reason).toBe("over_liquidity");
   });
 
   it("rejects when both supply and liquidity exceeded", () => {
     // asset > both: supply check fires first
-    const result = validateWithdraw({
-      assets: supply + 1n,
-      supplyAssets: supply,
-      liquidity: 1_000000n,
-    });
+    const result = validateWithdraw({ assets: supply + 1n, supplyAssets: supply, liquidity: 1_000000n });
     expect(result.valid).toBe(false);
+    expect(result.reason).toBe("over_balance");
   });
 
   it("allows exact max (assets == supplyAssets == liquidity)", () => {
-    const result = validateWithdraw({
-      assets: 500_000000n,
-      supplyAssets: 500_000000n,
-      liquidity: 500_000000n,
-    });
+    const result = validateWithdraw({ assets: 500_000000n, supplyAssets: 500_000000n, liquidity: 500_000000n });
     expect(result.valid).toBe(true);
+  });
+
+  it("không có vị thế và nhập 0 ⇒ 'zero', không phải 'over_balance'", () => {
+    // Rút 0 với supply 0: 0 > 0 là false, nên phải rơi xuống nhánh zero.
+    const result = validateWithdraw({ assets: 0n, supplyAssets: 0n, liquidity: 0n });
+    expect(result.reason).toBe("zero");
+  });
+});
+
+describe("webapp: stepNonce() — stepper nonce presign, sàn là nonce on-chain (2026-09-25)", () => {
+  it("tăng (+1) tự do — rung tương lai là hợp lệ", () => {
+    expect(stepNonce(7, 7, 1)).toBe(8);
+    expect(stepNonce(7, 7, 3)).toBe(10);
+  });
+
+  it("giảm (-1) tại sàn ⇒ kẹp về sàn, không bao giờ xuống dưới on-chain", () => {
+    expect(stepNonce(7, 7, -1)).toBe(7);
+    expect(stepNonce(7, 7, -5)).toBe(7);
+  });
+
+  it("giảm ở trên sàn ⇒ lùi đúng 1 bậc", () => {
+    expect(stepNonce(9, 7, -1)).toBe(8);
+    expect(stepNonce(8, 7, -1)).toBe(7); // chạm sàn rồi dừng
+  });
+
+  it("base null (chưa lấy nonce) ⇒ null — stepper không được chỉnh khi chưa có sàn", () => {
+    expect(stepNonce(null, 7, 1)).toBe(null);
+  });
+
+  it("sàn null (chưa fetch on-chain) ⇒ null — fail closed", () => {
+    expect(stepNonce(7, null, 1)).toBe(null);
+    expect(stepNonce(7, null, -1)).toBe(null);
+  });
+
+  it("không nhận delta lạ (0 hoặc thiếu) ⇒ giữ nguyên giá trị", () => {
+    expect(stepNonce(7, 7, 0)).toBe(7);
+    expect(stepNonce(7, 7)).toBe(7);
+  });
+
+  it("base dưới sàn (ví đổi tài khoản, state cũ) ⇒ trả đúng sàn", () => {
+    expect(stepNonce(5, 9, 1)).toBe(10);
+    expect(stepNonce(5, 9, -1)).toBe(9);
+  });
+});
+
+describe("claim age hiển thị cho claim đang broadcasting (R1)", () => {
+  const now = Date.parse("2026-09-24T12:00:00.000Z");
+  const ago = (ms) => new Date(now - ms).toISOString();
+
+  it("tính số phút từ broadcastingAt", () => {
+    expect(broadcastingAgeMinutes(ago(90_000), now)).toBe(1);
+    expect(broadcastingAgeMinutes(ago(3_600_000), now)).toBe(60);
+    expect(broadcastingAgeMinutes(ago(0), now)).toBe(0);
+  });
+
+  it("thiếu/không hợp lệ mốc thời gian ⇒ null (không vẽ tuổi giả)", () => {
+    expect(broadcastingAgeMinutes(null, now)).toBe(null);
+    expect(broadcastingAgeMinutes(undefined, now)).toBe(null);
+    expect(broadcastingAgeMinutes("không-phải-ngày", now)).toBe(null);
+  });
+
+  it("chỉ claim đang broadcasting mới có tuổi", () => {
+    expect(broadcastingAgeMinutes(ago(120_000), now)).toBe(2); // hàm thuần: caller giới hạn theo status
+    expect(isClaimOverdue({ status: "pending", broadcastingAt: ago(600_000) }, now)).toBe(false);
+    expect(isClaimOverdue({ status: "submitted", broadcastingAt: ago(600_000) }, now)).toBe(false);
+  });
+
+  it("quá ngưỡng recovery (180s) ⇒ báo quá hạn; đúng ngưỡng thì chưa", () => {
+    const M = CLAIM_RECOVERY_MS_FALLBACK;
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(M) }, now)).toBe(false);
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: ago(M + 1) }, now)).toBe(true);
+    expect(isClaimOverdue({ status: "broadcasting", broadcastingAt: null }, now)).toBe(false);
+  });
+
+  it("ngưỡng do server inject (CFG.claimRecoveryMs) phải được tôn trọng", () => {
+    // webapp-app.mjs truyền CLAIM_RECOVERY_MS của chính nó vào tham số thứ ba.
+    const r = { status: "broadcasting", broadcastingAt: ago(200_000) };
+    expect(isClaimOverdue(r, now)).toBe(true); // mặc định 180s
+    expect(isClaimOverdue(r, now, 600_000)).toBe(false); // server cấu hình 10 phút
+  });
+});
+
+describe("webapp-app — xác minh tx của tab Rút Tiền (R4)", () => {
+  // Ví trỏ RPC về proxy ⇒ tx bị capture, không bao giờ lên chain, nhưng ví vẫn
+  // trả hash nên UI cũ báo "thành công". Hàm này chỉ CẢNH BÁO (best-effort):
+  // false cũng là kết quả đúng khi tx chưa lan truyền kịp.
+  const spies = () => {
+    const sleeps = [];
+    return { sleeps, sleep: async (ms) => { sleeps.push(ms); } };
+  };
+
+  it("thấy tx ở lần thử đầu ⇒ true và không sleep", async () => {
+    const { sleeps, sleep } = spies();
+    let calls = 0;
+    const client = { getTransaction: async () => { calls++; return { hash: "0xabc" }; } };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(true);
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("throw rồi mới có tx ⇒ true (RPC lỗi tạm thời không kết luận là mất tx)", async () => {
+    const { sleeps, sleep } = spies();
+    let calls = 0;
+    const client = {
+      getTransaction: async () => {
+        calls++;
+        if (calls === 1) throw new Error("timeout");
+        return { hash: "0xabc" };
+      },
+    };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(true);
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([TX_VERIFY_DELAY_MS]);
+  });
+
+  it("tx không bao giờ xuất hiện ⇒ false sau đúng `attempts` lần gọi", async () => {
+    const { sleeps, sleep } = spies();
+    let calls = 0;
+    const client = { getTransaction: async () => { calls++; return null; } };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(false);
+    expect(calls).toBe(TX_VERIFY_ATTEMPTS);
+    expect(sleeps).toEqual([TX_VERIFY_DELAY_MS, TX_VERIFY_DELAY_MS, TX_VERIFY_DELAY_MS]);
+  });
+
+  it("mọi lần thử đều throw ⇒ false, không ném ra ngoài", async () => {
+    const { sleep } = spies();
+    let calls = 0;
+    const client = { getTransaction: async () => { calls++; throw new Error("RPC chết"); } };
+    await expect(txVisibleOnChain(client, "0xabc", { sleep })).resolves.toBe(false);
+    expect(calls).toBe(TX_VERIFY_ATTEMPTS);
+  });
+
+  it("tôn trọng attempts/delayMs khi được inject", async () => {
+    const { sleeps, sleep } = spies();
+    const client = { getTransaction: async () => null };
+    await expect(txVisibleOnChain(client, "0xabc", { attempts: 2, delayMs: 10, sleep })).resolves.toBe(false);
+    expect(sleeps).toEqual([10]);
+  });
+});
+
+describe("webapp-app — contract xoá tier theo rung (R2)", () => {
+  // Code UI nằm ở module browser (audit A.1) nên kiểm hợp đồng tĩnh trên TOÀN BỘ
+  // webapp (P5: phần xoá rung nay ở webapp-presign-bundles.mjs): nút ✕ PHẢI gọi
+  // kèm nonce, và URL DELETE phải gửi market+nonce+tier. Không có nonce, API đã
+  // guard (F3) sẽ trả 400 cho market có ladder — người dùng không xoá được tier nào.
+  const webapp = webappSource();
+
+  it("mọi nút ✕ đều gọi deleteTierFromBundle kèm (nonce, index)", () => {
+    const onclickCalls = [...webapp.matchAll(/onclick="deleteTierFromBundle\(([^"]*)\)"/g)].map((m) => m[1]);
+    expect(onclickCalls.length).toBeGreaterThan(0);
+    for (const args of onclickCalls) expect(args.split(",").length).toBe(2);
+  });
+
+  it("URL DELETE gửi kèm market + nonce + tier", () => {
+    expect(webapp).toContain("/api/presign?market=${encodeURIComponent(state.marketId)}&nonce=${encodeURIComponent(nonce)}&tier=${index}");
+  });
+
+  it("rung đang broadcasting không hiện nút xoá (API trả 409)", () => {
+    expect(webapp).toContain('r.status !== "broadcasting"');
+  });
+
+  it("doWithdraw gọi xác minh và render note cảnh báo capture", () => {
+    expect(webapp).toContain("txVisibleOnChain(state.publicClient, hash)");
+    expect(webapp).toContain('id="tx-verify-note"');
+    // Kết quả xác minh của lần rút cũ không được ghi đè banner của lần rút mới.
+    expect(webapp).toContain("verifyToken !== txVerifyToken");
+    // Cảnh báo phải nêu rõ nguyên nhân (ví trỏ RPC về proxy ⇒ chỉ được capture).
+    expect(webapp).toContain("ghi lại (capture)");
+  });
+});
+
+describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai là UI chết lặng)", () => {
+  const html = readSource("webapp.html");
+  const app = readSource("webapp-app.mjs");
+  const logic = readSource("webapp-logic.mjs");
+  const server = readSource("webapp-server.mjs");
+  const handlerSrc = readSource("webapp-handler.mjs");
+  // P5: mọi khẳng định về "webapp" đọc toàn bộ closure module browser, không ghim file.
+  const webapp = webappSource();
+
+  it("MỌI hàm được gọi từ thuộc tính on* trong HTML đều là thuộc tính của window trong module", () => {
+    const attr = /\son(?:click|change|input|keydown|keyup|submit|blur|focus)="([^"]*)"/g;
+    const called = new Set();
+    for (const [, body] of html.matchAll(attr)) {
+      for (const m of body.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) called.add(m[1]);
+    }
+    // Chốt chống regex hỏng: HTML có ~18 handler, đừng để test xanh vì match rỗng.
+    expect(called.size).toBeGreaterThanOrEqual(15);
+    const missing = [...called].filter((name) => !new RegExp(`window\\.${name}\\s*=`).test(app));
+    expect(missing).toEqual([]);
+  });
+
+  it("webapp-logic.mjs là hàm THUẦN: không chạm DOM/window (nên import được trong test)", () => {
+    expect(logic).not.toMatch(/\bdocument\b|\bwindow\b|localStorage|navigator/);
+  });
+
+  it("A.1b: module browser import logic từ module chung, KHÔNG còn bản sao cục bộ", () => {
+    const LOGIC = "webapp-logic.mjs";
+    const SHARED_FNS = [
+      "wadToPercent", "shortenAddr", "broadcastingAgeMinutes", "isClaimOverdue",
+      "txVisibleOnChain", "computeSupplyAssets", "computeBorrowAssets", "computeLiquidity",
+      "computeUtilization", "computeMaxWithdraw", "validateWithdraw", "stepNonce",
+    ];
+    // P5: kiểm trên TỪNG module browser (chỉ webapp-logic.mjs được định nghĩa chúng).
+    const others = browserModuleNames().filter((name) => name !== LOGIC);
+    expect(others.length).toBeGreaterThanOrEqual(6); // chốt chống danh sách rỗng
+    for (const file of others) {
+      const source = readBrowserSource(file);
+      for (const name of SHARED_FNS) {
+        expect(source, `${file} định nghĩa lại ${name}`).not.toMatch(new RegExp("function " + name + "(?![A-Za-z0-9_$])"));
+      }
+    }
+    // ...và mỗi hàm chung phải thực sự được import ở đâu đó (không phải code chết).
+    const imported = new Set();
+    for (const file of others) {
+      for (const line of readBrowserSource(file).split("\n")) {
+        if (!line.startsWith("import {")) continue;
+        const list = line.slice(line.indexOf("{") + 1, line.indexOf("}"));
+        const spec = line.slice(line.indexOf('from "') + 6, line.lastIndexOf('"'));
+        if (spec !== "./" + LOGIC) continue;
+        for (const n of list.split(",").map((x) => x.trim()).filter(Boolean)) imported.add(n);
+      }
+    }
+    expect(SHARED_FNS.filter((name) => !imported.has(name))).toEqual([]);
+  });
+
+  it("server đọc + truyền module logic, handler phục vụ route của nó", () => {
+    expect(server).toContain("webapp-logic.mjs");
+    // P2.7: handler không còn so khớp exact-path mà phục vụ MỌI module qua route
+    // map `scriptSources` (khoá là tên file trần, không slash). Route sai ⇒ import
+    // của app trả 404 và UI chết lặng; xem webapp-app-serve.test.mjs cho hành vi HTTP.
+    expect(handlerSrc).toContain('"webapp-logic.mjs"');
+    expect(handlerSrc).toContain("scriptSources");
+  });
+
+  // Audit P2.7: server phải đọc và truyền CẢ module render/wallet qua `scripts`,
+  // nếu không thì import trong webapp-app.mjs trả 404 và UI chết lặng. Handler
+  // phục vụ chúng qua route map tổng quát (`scriptSources`), không hard-code tên.
+  it("P2.7: server đọc + truyền module render/wallet qua scripts", () => {
+    for (const name of ["webapp-render.mjs", "webapp-wallet.mjs"]) {
+      expect(server).toContain(name);
+    }
+    expect(handlerSrc).toContain("scriptSources");
+  });
+
+  // Audit vòng 5: các test trên chỉ ghim TỪNG CẶP (app import file / server truyền
+  // file). Không có gì ghim bất biến BA CHIỀU: mọi `./x.mjs` mà module browser
+  // import phải (a) tồn tại, (b) có khoá trong route map của server/handler, và
+  // (c) mọi bare specifier phải có trong importmap của webapp.html. Lệch một trong
+  // ba thì browser nhận 404/SyntaxError và CẢ UI chết lặng (đồ thị import là
+  // all-or-nothing), trong khi mọi test khác — kể cả `node --check` — vẫn xanh.
+  it("vòng 5: đồ thị module browser khép kín — import ⊆ route map, bare ⊆ importmap", () => {
+    const wiring = `${server}\n${handlerSrc}`;
+    const importMap = JSON.parse(
+      html.match(/<script\b[^>]*\btype="importmap"[^>]*>([\s\S]*?)<\/script>/)[1]
+    ).imports;
+    // P5: thay danh sách viết tay bằng closure THẬT của đồ thị import, nên thêm
+    // module mới là tự động vào phạm vi kiểm (đúng ý "test tự phủ" của P5).
+    const modules = browserModuleNames();
+    const routed = new Set([...wiring.matchAll(/"([A-Za-z0-9_.-]+\.mjs)"\s*:/g)].map((m) => m[1]));
+
+    let relative = 0, bare = 0;
+    for (const name of modules) {
+      const source = readBrowserSource(name);
+      for (const [, spec] of source.matchAll(/(?:^|\s)(?:import|export)[^"']*?from\s*"([^"]+)"/g)) {
+        if (spec.startsWith("./")) {
+          relative++;
+          const file = spec.slice(2);
+          expect(routed, `${name} import ${spec} nhưng route map không có khoá "${file}"`).toContain(file);
+        } else {
+          bare++;
+          expect(Object.keys(importMap), `${name} import "${spec}" — thiếu trong importmap`).toContain(spec);
+        }
+      }
+    }
+    // Chiều NGƯỢC lại: route map không được thừa. Module được phục vụ mà không ai
+    // import nó nghĩa là import đã bị xoá nhầm (browser 404) hoặc dead file — cả hai
+    // đều phải đỏ, chứ không im lặng như trước P5.
+    for (const file of routed) {
+      expect(modules, `route map phục vụ "${file}" nhưng không module browser nào import nó`).toContain(file);
+    }
+    // Chốt chống regex hỏng: closure phải thật sự là cả đồ thị, đừng để test xanh
+    // vì match rỗng.
+    expect(modules.length).toBeGreaterThanOrEqual(7);
+    expect(routed.size).toBe(modules.length);
+    expect(relative).toBeGreaterThanOrEqual(6);
+    expect(bare).toBeGreaterThanOrEqual(1);
+  });
+
+  // Audit vòng 5 (O1): test động trong `webapp-app-boot.test.mjs` chỉ chạm vài id trên đường
+  // boot rồi dừng ở bước RPC. Đây là lưới PHỦ TOÀN BỘ: mọi `getElementById("x")` phải có
+  // `id="x"` trong HTML, hoặc app phải tự chèn nó (`id="x"` có trong chính webapp-app.mjs —
+  // ví dụ `tx-verify-note` chèn vào banner rồi tra lại, có null-guard). Sai một cái ⇒
+  // `null.textContent` ⇒ TypeError chỉ hiện khi người dùng bấm đúng nút đó.
+  it("vòng 5: mọi getElementById trong webapp đều có id tương ứng (HTML hoặc module tự chèn)", () => {
+    const htmlIds = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+    // P5: id tự chèn có thể nằm ở BẤT KỲ module browser nào (ví dụ `tx-verify-note`
+    // nay ở webapp-withdraw.mjs) nên phải quét cả closure, không chỉ module app.
+    const selfInjected = new Set(browserSources().flatMap((s) => [...s.matchAll(/id="([^"]+)"/g)].map((m) => m[1])));
+    const used = [...webapp.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]);
+    expect(used.length).toBeGreaterThanOrEqual(60); // chốt chống regex hỏng (đo được: 61)
+    const missing = [...new Set(used)].filter((id) => !htmlIds.has(id) && !selfInjected.has(id));
+    expect(missing).toEqual([]);
+  });
+
+  it("bản sao logic đã chuyển sang module chung được dùng ở đúng call site", () => {
+    // Rút tiền: validation + MAX phải đi qua hàm chung (nếu không, test trên
+    // module xanh mà UI vẫn dùng bản cũ — đúng thứ A.1b muốn chặn).
+    expect(webapp).toContain("validateWithdraw({");
+    expect(webapp).toContain("computeMaxWithdraw(");
+    expect(webapp).toContain("computeSupplyAssets(");
+    expect(webapp).toContain("computeBorrowAssets(");
+    expect(webapp).toContain("computeLiquidity(");
+    expect(webapp).toContain("computeUtilization(");
+  });
+
+  // Stepper nonce presign (2026-09-25): người dùng yêu cầu nút tăng/giảm thay
+  // vì nhập tay, và KHÔNG BAO GIỜ xuống dưới nonce on-chain.
+  it("presign nonce là stepper [−][N][+]: 2 nút, không có ô nhập tay", () => {
+    expect(html).toContain('id="btn-nonce-dec"');
+    expect(html).toContain('id="btn-nonce-inc"');
+    expect(html).toMatch(/onclick="onNonceStep\(-1\)"/);
+    expect(html).toMatch(/onclick="onNonceStep\(1\)"/);
+    // Không nhập tay: #presign-nonce vẫn là phần tử hiển thị, không phải input.
+    expect(html).not.toMatch(/<input[^>]*id="presign-nonce"/);
+  });
+
+  it("stepper chỉ hoạt động sau khi có sàn on-chain và dùng stepNonce từ module chung", () => {
+    // Nút disabled mặc định trong HTML.
+    expect(html).toMatch(/id="btn-nonce-dec"[^>]*disabled/);
+    expect(html).toMatch(/id="btn-nonce-inc"[^>]*disabled/);
+    // App: enable sau khi fetch, kẹp sàn qua hàm thuần chung.
+    expect(webapp).toMatch(/setNonceStepperEnabled\(/);
+    expect(webapp).toMatch(/window\.onNonceStep\s*=/);
+    expect(webapp).toMatch(/stepNonce\(/);
+  });
+
+  // Audit P5: "một chủ sở hữu window.*". Nếu một module luồng cũng gán window.X thì
+  // hợp đồng `on*` ở trên vẫn xanh (nó chỉ kiểm TỒN TẠI, không kiểm AI sở hữu), và
+  // thứ tự nạp module sẽ quyết định handler nào thắng — đúng loại bug im lặng.
+  it("P5: chỉ webapp-app.mjs gán window.*, không module luồng nào chạm", () => {
+    const modules = browserModuleNames();
+    expect(modules.length).toBeGreaterThanOrEqual(7);
+    for (const file of modules) {
+      const assigns = [...readBrowserSource(file).matchAll(/^[ ]*window[.][A-Za-z_$][A-Za-z0-9_$]*[ ]*=/gm)].length;
+      if (file === "webapp-app.mjs") expect(assigns, "app phải sở hữu hợp đồng window.*").toBeGreaterThanOrEqual(20);
+      else expect(assigns, `${file} gán window.* (chỉ webapp-app.mjs được phép)`).toBe(0);
+    }
+  });
+
+  // Audit P5: `state` là object ĐÓNG (Object.seal) — gõ sai tên field thành TypeError
+  // lúc chạy, nhưng chỉ khi nhánh đó chạy. Lưới tĩnh dưới đây phủ MỌI lần đọc
+  // `state.<field>` ở mọi module, nên một field viết sai chính tả là đỏ ngay.
+  it("P5: mọi state.<field> đều là field đã khai báo trong webapp-state.mjs", () => {
+    const stateSrc = readBrowserSource("webapp-state.mjs");
+    const declared = new Set([...stateSrc.matchAll(/^[ ]{2}([A-Za-z_$][A-Za-z0-9_$]*):/gm)].map((m) => m[1]));
+    expect(declared.size).toBeGreaterThanOrEqual(10); // chốt chống regex hỏng (đo được: 14)
+    expect(stateSrc).toContain("Object.seal(state)");
+    const used = new Set();
+    for (const file of browserModuleNames()) {
+      // `-state.mjs` (tên file) không được tính là truy cập field ⇒ loại cả dấu `-`.
+      for (const [, field] of readBrowserSource(file).matchAll(/(?<![A-Za-z0-9_$.-])state[.]\s*([A-Za-z_$][A-Za-z0-9_$]*)/g)) used.add(field);
+    }
+    expect(used.size).toBeGreaterThanOrEqual(10);
+    expect([...used].filter((f) => !declared.has(f))).toEqual([]);
+  });
+});
+
+// ============================================================
+// Đồng bộ với shared.mjs (audit P2.8)
+// ============================================================
+// Browser không import được shared.mjs, nên wadToPercent/shortenAddr tồn tại hai
+// bản. Test này chặn chúng lệch nhau (lệch ⇒ UI hiển thị khác monitor).
+describe("webapp-logic ↔ shared: hai bản cho cùng kết quả", () => {
+  it("wadToPercent khớp trên nhiều mẫu", () => {
+    const samples = [0n, 1n, 500_000_000_000_000_000n, 1_000_000_000_000_000_000n, 860_000_000_000_000_000n, 123_456_789_000_000_000_000n];
+    for (const wad of samples) expect(wadToPercent(wad)).toBe(sharedWadToPercent(wad));
+  });
+
+  it("shortenAddr khớp shortenAddress (kể cả giá trị rỗng)", () => {
+    const samples = [null, undefined, "", "0x1234", "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb", "0x0A5e1Db3671faCcD146404925bDa5c59929f66c3"];
+    for (const addr of samples) expect(shortenAddr(addr)).toBe(shortenAddress(addr));
   });
 });

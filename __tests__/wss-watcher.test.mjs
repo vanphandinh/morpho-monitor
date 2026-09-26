@@ -1,303 +1,214 @@
 /**
- * Tests for WebSocket watcher logic (hybrid trigger).
- *
- * Các hàm trong monitor.mjs (debouncedCheck, startWsWatcher, stopWsWatcher)
- * sử dụng module-level state và import từ viem nên không thể import trực tiếp.
- * File test này dupliate logic thuật toán cốt lõi để verify behavior,
- * theo pattern tương tự như presign-broadcast.test.mjs và ntfy.test.mjs.
+ * Tests for the production scheduler and WSS watcher (monitor-triggers.mjs).
+ * Mọi scenario đều import implementation thật — không có bản copy logic.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-// ============================================================
-// Duplicate: debouncedCheck logic từ monitor.mjs
-// ============================================================
+import { createCheckScheduler, createWssWatcher } from "../monitor-triggers.mjs";
+import { closeTransport } from "../wss-connect.mjs";
 
 /**
- * Factory tạo debouncedCheck giống hệt logic trong monitor.mjs.
- * Tách biệt với module-level state để test độc lập.
+ * Connection với ĐÚNG shape viem: close() đi qua closeTransport() →
+ * getRpcClient() (Promise<SocketRpcClient>) → .close(). Đây là đường close
+ * thật của production, nên test khẳng định nó được gọi ở mọi nhánh cleanup.
  */
-function createDebouncedCheck(checkFn, debounceMs, getCheckInProgress) {
-  let debounceTimer = null;
-
-  return function debouncedCheck() {
-    if (getCheckInProgress()) return;
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      checkFn();
-    }, debounceMs);
+function viemShapedConnection(url, watch) {
+  const closeSpy = vi.fn();
+  const client = { transport: { value: { getRpcClient: () => Promise.resolve({ close: closeSpy }) } } };
+  return {
+    closeSpy,
+    connection: { url, close: () => closeTransport(client), watch: watch ?? vi.fn(() => vi.fn()) },
   };
 }
 
-describe("debouncedCheck", () => {
-  beforeEach(() => {
+describe("production scheduler", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("unions events, lets all dominate, and runs trailing work", async () => {
+    const calls = [];
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const scheduler = createCheckScheduler(async (ids) => { calls.push(ids); if (calls.length === 1) await gate; }, { debounceMs: 10 });
+    scheduler.request(["a"]); scheduler.request(["b"]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(calls).toEqual([["a", "b"]]);
+    scheduler.request(); release();
+    await vi.runAllTimersAsync();
+    expect(calls).toEqual([["a", "b"], undefined]);
+  });
+
+  it("deduplicates repeated ids without concurrent runs", async () => {
+    const calls = [];
+    const scheduler = createCheckScheduler(async (ids) => { calls.push(ids); }, { debounceMs: 10 });
+    scheduler.request(["a"]); scheduler.request(["a", "b"]); scheduler.request(["b"]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(calls).toEqual([["a", "b"]]);
+  });
+
+  it("close() cancels pending timers and ignores later requests", async () => {
+    const checkFn = vi.fn();
+    const scheduler = createCheckScheduler(checkFn, { debounceMs: 10 });
+    scheduler.request(["a"]);
+    scheduler.close();
+    scheduler.request(["b"]);
+    await vi.runAllTimersAsync();
+    expect(checkFn).not.toHaveBeenCalled();
+  });
+});
+
+describe("production WSS watcher", () => {
+  const eventNames = ["Supply", "Withdraw", "Borrow", "Repay", "Liquidate"];
+  const baseArgs = { eventNames, marketIds: ["a", "b"], onMarkets: vi.fn(), logger: { warn: vi.fn(), log: vi.fn() }, retryDelayMs: 1000 };
+
+  afterEach(() => vi.useRealTimers());
+
+  it("uses one endpoint, five OR-filtered subscriptions, and cleanup on close", async () => {
+    const watch = vi.fn(() => vi.fn()); const close = vi.fn();
+    const watcher = createWssWatcher({ ...baseArgs, urls: ["bad", "good"], connect: async (url) => { if (url === "bad") throw new Error("no"); return { url, watch, close }; } });
+    await watcher.start();
+    expect(watcher.activeUrl).toBe("good");
+    expect(watch).toHaveBeenCalledTimes(5);
+    expect(watch.mock.calls[0][1]).toEqual({ id: ["a", "b"] });
+    watcher.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("closes partial subscriptions and the connection when a later watch throws", async () => {
+    const unwatchers = [vi.fn(), vi.fn()];
+    let calls = 0;
+    const { connection, closeSpy } = viemShapedConnection("only", vi.fn(() => (calls < 2 ? unwatchers[calls++] : (() => { throw new Error("watch failed"); })())));
+    const watcher = createWssWatcher({ ...baseArgs, urls: ["only"], connect: async () => connection });
+    const ok = await watcher.start();
+    expect(ok).toBe(false);
+    expect(unwatchers[0]).toHaveBeenCalled();
+    expect(unwatchers[1]).toHaveBeenCalled();
+    // Orphan cleanup đi đúng đường viem (H1) — trước đây là no-op.
+    await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledTimes(1));
+    expect(watcher.activeUrl).toBeNull();
+  });
+
+  it("rotates to the next url on runtime error instead of restarting the list", async () => {
+    let errCallback;
+    const unwatch = vi.fn();
+    const created = [];
+    const urls = [];
+    const watcher = createWssWatcher({
+      ...baseArgs, urls: ["first", "second"],
+      connect: async (url) => {
+        urls.push(url);
+        const watch = vi.fn((_name, _args, onLogs, onError) => { errCallback = onError; return unwatch; });
+        const entry = viemShapedConnection(url, watch);
+        created.push(entry);
+        return entry.connection;
+      },
+    });
+    await watcher.start();
+    expect(watcher.activeUrl).toBe("first");
+    errCallback(); // runtime failure on the active endpoint
+    await vi.waitFor(() => expect(created.length).toBe(2));
+    // Rotation attempted the NEXT url, và endpoint cũ được đóng thật.
+    expect(urls).toEqual(["first", "second"]);
+    await vi.waitFor(() => expect(created[0].closeSpy).toHaveBeenCalledTimes(1));
+    watcher.close();
+    await vi.waitFor(() => expect(created[1].closeSpy).toHaveBeenCalledTimes(1));
+  });
+
+  it("H1: log từ endpoint cũ không kích scheduler, log generation hiện tại thì có", async () => {
+    const onMarkets = vi.fn();
+    const logCallbacks = [];
+    const errorCallbacks = [];
+    const watcher = createWssWatcher({
+      ...baseArgs, onMarkets, urls: ["first", "second"],
+      connect: async (url) => viemShapedConnection(url, vi.fn((_name, _args, onLogs, onError) => {
+        logCallbacks.push({ url, onLogs });
+        errorCallbacks.push(onError);
+        return vi.fn();
+      })).connection,
+    });
+    await watcher.start();
+    expect(watcher.activeUrl).toBe("first");
+    logCallbacks[0].onLogs([{ args: { id: "a" } }]); // generation hiện tại → có kích
+    expect(onMarkets).toHaveBeenCalledTimes(1);
+
+    errorCallbacks[0](); // runtime failure → rotate sang "second"
+    await vi.waitFor(() => expect(watcher.activeUrl).toBe("second"));
+
+    logCallbacks[0].onLogs([{ args: { id: "a" } }]); // log endpoint cũ → bị fence
+    expect(onMarkets).toHaveBeenCalledTimes(1);
+    logCallbacks.at(-1).onLogs([{ args: { id: "a" } }, { args: { id: "b" } }, { args: { id: "a" } }, { args: {} }]);
+    expect(onMarkets).toHaveBeenCalledTimes(2);
+    expect(onMarkets).toHaveBeenLastCalledWith(["a", "b"]);
+    watcher.close();
+  });
+
+  it("retries with bounded backoff after all endpoints fail and stops on close", async () => {
     vi.useFakeTimers();
+    const connect = vi.fn(async () => { throw new Error("down"); });
+    const logger = { warn: vi.fn(), log: vi.fn() };
+    const watcher = createWssWatcher({ urls: ["a", "b"], eventNames, marketIds: ["a"], onMarkets: vi.fn(), logger, connect, retryDelayMs: 1000 });
+    await watcher.start();
+    expect(connect).toHaveBeenCalledTimes(2); // no infinite loop
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(connect).toHaveBeenCalledTimes(4); // one bounded retry of both urls
+    watcher.close();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(connect).toHaveBeenCalledTimes(4); // retry timer cancelled by close
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
+  it("M5: check throw không giết loop — chu kỳ sau vẫn chạy và có log chẩn đoán", async () => {
+    vi.useFakeTimers();
+    const calls = [];
+    const logger = { error: vi.fn(), warn: vi.fn(), log: vi.fn() };
+    const scheduler = createCheckScheduler(async (ids) => {
+      calls.push(ids);
+      if (calls.length === 1) throw new Error("RPC outage");
+    }, { debounceMs: 10, logger });
+    scheduler.request(["a"]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(calls).toEqual([["a"]]);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("RPC outage"));
+    scheduler.request(["b"]);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(calls).toEqual([["a"], ["b"]]);
   });
 
-  it("gọi checkFn sau đúng debounce window (3000ms)", () => {
-    const checkFn = vi.fn();
-    const getCheckInProgress = () => false;
-    const debounced = createDebouncedCheck(checkFn, 3000, getCheckInProgress);
-
-    debounced();
-    expect(checkFn).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(2999);
-    expect(checkFn).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(1);
-    expect(checkFn).toHaveBeenCalledTimes(1);
+  it("ignores stale error callbacks from a replaced generation", async () => {
+    let errCallback;
+    const close = vi.fn();
+    const watch = vi.fn((_name, _args, _onLogs, onError) => { errCallback = onError; return vi.fn(); });
+    const watcher = createWssWatcher({ ...baseArgs, urls: ["only"], connect: async () => ({ url: "only", watch, close }) });
+    await watcher.start();
+    const staleCallback = errCallback;
+    watcher.close(); // generation dead
+    // Stale callback after close must not schedule anything or throw.
+    expect(() => staleCallback()).not.toThrow();
+    expect(watcher.activeUrl).toBeNull();
   });
 
-  it("gộp nhiều calls trong debounce window thành 1 lần gọi checkFn", () => {
-    const checkFn = vi.fn();
-    const getCheckInProgress = () => false;
-    const debounced = createDebouncedCheck(checkFn, 3000, getCheckInProgress);
-
-    // 5 events trong vòng 2 giây — chỉ trigger 1 lần check
-    debounced();
-    vi.advanceTimersByTime(500);
-    debounced();
-    vi.advanceTimersByTime(500);
-    debounced();
-    vi.advanceTimersByTime(500);
-    debounced();
-    vi.advanceTimersByTime(500);
-    debounced();
-
-    expect(checkFn).not.toHaveBeenCalled();
-
-    // Sau debounce window, chỉ gọi 1 lần
-    vi.advanceTimersByTime(3000);
-    expect(checkFn).toHaveBeenCalledTimes(1);
-  });
-
-  it("mỗi call reset lại debounce timer về đầu", () => {
-    const checkFn = vi.fn();
-    const getCheckInProgress = () => false;
-    const debounced = createDebouncedCheck(checkFn, 3000, getCheckInProgress);
-
-    debounced();
-    vi.advanceTimersByTime(2500); // sắp hết debounce window
-    debounced();                   // reset timer!
-    vi.advanceTimersByTime(2500); // mới chỉ 2500ms sau lần reset
-    expect(checkFn).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(500);  // đủ 3000ms sau lần reset
-    expect(checkFn).toHaveBeenCalledTimes(1);
-  });
-
-  it("không gọi checkFn nếu checkInProgress = true", () => {
-    const checkFn = vi.fn();
-    const getCheckInProgress = () => true;
-    const debounced = createDebouncedCheck(checkFn, 3000, getCheckInProgress);
-
-    debounced();
-    vi.advanceTimersByTime(3000);
-    expect(checkFn).not.toHaveBeenCalled();
-  });
-
-  it("checkInProgress guard kiểm tra tại thời điểm gọi debounce, không phải tại thời điểm timeout chạy", () => {
-    // Mô phỏng: lúc gọi debounce thì checkInProgress=false,
-    // nhưng lúc timeout chạy thì checkInProgress đã thành true.
-    // Hàm vẫn gọi checkFn vì guard chỉ check lúc debounce() được gọi.
-    const checkFn = vi.fn();
-    let inProgress = false;
-    const getCheckInProgress = () => inProgress;
-    const debounced = createDebouncedCheck(checkFn, 100, getCheckInProgress);
-
-    debounced(); // inProgress = false → được phép
-    inProgress = true; // sau đó checkInProgress thành true
-
-    vi.advanceTimersByTime(100);
-    expect(checkFn).toHaveBeenCalledTimes(1);
-  });
-
-  it("debounce với window khác (1000ms)", () => {
-    const checkFn = vi.fn();
-    const getCheckInProgress = () => false;
-    const debounced = createDebouncedCheck(checkFn, 1000, getCheckInProgress);
-
-    debounced();
-    vi.advanceTimersByTime(999);
-    expect(checkFn).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(1);
-    expect(checkFn).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ============================================================
-// Duplicate: sequential failover logic từ monitor.mjs
-// ============================================================
-
-/**
- * Mô phỏng logic sequential failover trong startWsWatcher.
- * Thử từng URL theo thứ tự, dừng lại khi kết nối thành công.
- */
-async function sequentialConnect(urls, connectFn) {
-  for (const url of urls) {
-    try {
-      const result = await connectFn(url);
-      return { success: true, url, result };
-    } catch {
-      // Thử URL tiếp theo
-    }
-  }
-  return { success: false, url: null, result: null };
-}
-
-describe("WSS sequential failover", () => {
-  it("thử URL đầu tiên → thành công → dừng ngay", async () => {
-    const triedUrls = [];
-    const connectFn = async (url) => {
-      triedUrls.push(url);
-      return { client: "mock", unwatch: () => {} };
-    };
-
-    const urls = ["wss://good.example.com", "wss://never-tried.example.com"];
-    const result = await sequentialConnect(urls, connectFn);
-
-    expect(result.success).toBe(true);
-    expect(result.url).toBe("wss://good.example.com");
-    expect(triedUrls).toEqual(["wss://good.example.com"]);
-  });
-
-  it("thử URL 1 thất bại → URL 2 thành công → dừng", async () => {
-    const triedUrls = [];
-    const connectFn = async (url) => {
-      triedUrls.push(url);
-      if (url === "wss://bad.example.com") throw new Error("Connection refused");
-      return { client: "mock", unwatch: () => {} };
-    };
-
-    const urls = [
-      "wss://bad.example.com",
-      "wss://good.example.com",
-      "wss://never-tried.example.com",
-    ];
-    const result = await sequentialConnect(urls, connectFn);
-
-    expect(result.success).toBe(true);
-    expect(result.url).toBe("wss://good.example.com");
-    expect(triedUrls).toEqual(["wss://bad.example.com", "wss://good.example.com"]);
-  });
-
-  it("tất cả URLs thất bại → trả về success=false", async () => {
-    const triedUrls = [];
-    const connectFn = async (url) => {
-      triedUrls.push(url);
-      throw new Error("Connection failed");
-    };
-
-    const urls = ["wss://bad1.example.com", "wss://bad2.example.com"];
-    const result = await sequentialConnect(urls, connectFn);
-
-    expect(result.success).toBe(false);
-    expect(result.url).toBeNull();
-    expect(triedUrls).toEqual(urls);
-  });
-
-  it("danh sách URLs rỗng → không thử gì cả, trả về false ngay", async () => {
-    const connectFn = vi.fn();
-    const result = await sequentialConnect([], connectFn);
-
-    expect(result.success).toBe(false);
-    expect(connectFn).not.toHaveBeenCalled();
-  });
-
-  it("1 URL duy nhất thất bại → trả về false", async () => {
-    const connectFn = async () => { throw new Error("Connection timeout"); };
-    const result = await sequentialConnect(["wss://only.example.com"], connectFn);
-
-    expect(result.success).toBe(false);
-  });
-
-  it("lỗi khác nhau ở mỗi URL không ảnh hưởng đến URL tiếp theo", async () => {
-    const errors = [];
-    const connectFn = async (url) => {
-      if (url.includes("dns")) throw new Error("ENOTFOUND");
-      if (url.includes("refused")) throw new Error("ECONNREFUSED");
-      if (url.includes("timeout")) throw new Error("ETIMEDOUT");
-      return { client: "mock", unwatch: () => {} };
-    };
-
-    const urls = [
-      "wss://dns-fail.example.com",
-      "wss://refused.example.com",
-      "wss://timeout.example.com",
-      "wss://good.example.com",
-    ];
-    const result = await sequentialConnect(urls, connectFn);
-
-    expect(result.success).toBe(true);
-    expect(result.url).toBe("wss://good.example.com");
-  });
-});
-
-// ============================================================
-// Duplicate: stopWsWatcher cleanup logic
-// ============================================================
-
-describe("stopWsWatcher cleanup", () => {
-  it("gọi unwatch và clearTimeout khi cleanup", () => {
-    let unwatchCalled = false;
-    let timerCleared = false;
-
-    const mockUnwatch = () => { unwatchCalled = true; };
-    const mockClearTimeout = () => { timerCleared = true; };
-
-    // Mô phỏng logic stopWsWatcher
-    const state = { unwatch: mockUnwatch };
-    let timer = 123; // mock timer ID
-
-    if (state?.unwatch) {
-      try { state.unwatch(); } catch { /* ignore */ }
-      state.unwatch = null; // mark as cleaned
-    }
-    mockClearTimeout();
-    timer = null;
-
-    expect(unwatchCalled).toBe(true);
-    expect(state.unwatch).toBeNull();
-    expect(timerCleared).toBe(true);
-    expect(timer).toBeNull();
-  });
-
-  it("không throw nếu unwatch bị lỗi", () => {
-    const state = {
-      unwatch: () => { throw new Error("Already closed"); },
-    };
-
-    let threw = false;
-    try {
-      if (state?.unwatch) {
-        try { state.unwatch(); } catch { /* ignore */ }
-        state.unwatch = null;
-      }
-    } catch {
-      threw = true;
-    }
-
-    expect(threw).toBe(false);
-    expect(state.unwatch).toBeNull();
-  });
-
-  it("không làm gì nếu state là null (chưa từng kết nối)", () => {
-    const state = null;
-    let threw = false;
-
-    try {
-      if (state?.unwatch) {
-        state.unwatch();
-      }
-    } catch {
-      threw = true;
-    }
-
-    expect(threw).toBe(false);
+  it("rotation relative to the FAILED url: giữa fail → skip sang url kế, không thử lại url chết (audit 2026-09-24)", async () => {
+    const attempts = [];
+    const errorCallbacks = [];
+    const created = [];
+    const watcher = createWssWatcher({
+      ...baseArgs, urls: ["u1", "u2", "u3"],
+      connect: async (url) => {
+        attempts.push(url);
+        if (url === "u1") throw new Error("connect refused");
+        const watch = vi.fn((_n, _a, _onLogs, onError) => { errorCallbacks.push(onError); return vi.fn(); });
+        const entry = viemShapedConnection(url, watch);
+        created.push(entry);
+        return entry.connection;
+      },
+    });
+    await watcher.start();
+    expect(watcher.activeUrl).toBe("u2"); // u1 connect fail → u2
+    expect(attempts).toEqual(["u1", "u2"]);
+    errorCallbacks[0](); // runtime failure trên u2
+    await vi.waitFor(() => expect(watcher.activeUrl).toBe("u3"));
+    // Trước fix: urls.slice(1) = [u2, u3] ⇒ thử lại u2 (đã chết) trước.
+    expect(attempts).toEqual(["u1", "u2", "u3"]);
+    watcher.close();
+    await vi.waitFor(() => expect(created[0].closeSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(created[1].closeSpy).toHaveBeenCalledTimes(1));
   });
 });

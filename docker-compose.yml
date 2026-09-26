@@ -11,6 +11,7 @@ services:
       - "8545:8545"              # proxy RPC (public) — capture gated by lender sender check
     volumes:
       - ./.env:/app/.env:ro
+      - ./config:/app/config:ro
       - presigned_data:/app/data
       # ---- SSL/TLS (Let's Encrypt) ----
       # Mount toàn bộ /etc/letsencrypt vào /certs/ (read-only).
@@ -19,6 +20,41 @@ services:
       #   SSL_CERT_PATH=/certs/live/your-domain.com/fullchain.pem
       #   SSL_KEY_PATH=/certs/live/your-domain.com/privkey.pem
       - /etc/letsencrypt:/certs/:ro
+
+  # ── Diagnostic: probe RPC_URLS từ đúng môi trường Docker (profile "debug") ──
+  # Chạy: docker compose run --rm probe
+  # RED (exit 1) khi ≥1 endpoint eth_call thất bại — feedback loop cho lỗi
+  # "[proxy] eth_call forwarding failed" (xem scripts/probe-rpc-endpoints.mjs).
+  # Script được MOUNT (không bake vào image) → image cũ vẫn chạy bản probe mới.
+  probe:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/probe-rpc-endpoints.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
+
+  # ── Diagnostic: replay burst eth_call kiểu Ambire (profile "debug") ──
+  # Chạy: docker compose --profile debug run --rm probe-burst
+  # Mô phỏng 48+8 eth_call đồng thời/nhiều đợt QUA transport thật (round-robin
+  # + retry + circuit breaker). RED khi tái hiện transport fail / circuit OPEN.
+  probe-burst:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/replay-eth-call-burst.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
+
+  # ── Diagnostic: tìm ngưỡng kích thước eth_call bị provider chặn (profile "debug") ──
+  # Chạy: docker compose --profile debug run --rm probe-payload-limit
+  probe-payload-limit:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/probe-payload-limit.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
 
 volumes:
   presigned_data:

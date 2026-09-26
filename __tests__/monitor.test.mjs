@@ -6,8 +6,10 @@
  * focuses on integration: verifying the monitor wiring works
  * end-to-end with mocked I/O.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { shouldNotify, computeDrainThreshold } from "../shared.mjs";
+import { describe, it, expect, beforeEach } from "vitest";
+import fs from "node:fs";
+import { shouldNotify, computeDrainThreshold } from "../monitor-rules.mjs";
+import { shouldSendLifecycleAlert } from "../lifecycle-alert.mjs";
 
 // ============================================================
 // Integration: shouldNotify() wired with real-world scenarios
@@ -18,7 +20,6 @@ describe("monitor anti-spam scenarios (integration)", () => {
   const MAX_PER_DAY = 10;
   const SUPPLY = 100_000_000_000_000n; // rất lớn để tests tập trung vào anti-spam
   const DRAIN_MULTIPLIER = 2;
-  const DRAIN = computeDrainThreshold(SUPPLY, DRAIN_MULTIPLIER);
 
   // Simulate what the monitor passes to shouldNotify each cycle
   function simulateCycle(state, liquidity) {
@@ -161,5 +162,62 @@ describe("monitor anti-spam scenarios (integration)", () => {
     const r = simulateCycle(state, 6_000_000n);
     expect(r.shouldNotify).toBe(false);
     expect(r.reason).toBe("in_zone_no_transition");
+  });
+});
+
+/**
+ * monitor.mjs có side effect ở module-level (loadMarkets/setInterval) nên không
+ * import được ⇒ kiểm hợp đồng TĨNH trên nguồn, cùng cách `webapp.test.mjs` làm với
+ * webapp.html. Mục đích: chặn lớp lỗi "code có nhưng không được gọi tới" — đúng
+ * lớp lỗi đã khiến R1 không chạy ở production (audit vòng 2, D1).
+ */
+describe("monitor.mjs — wiring cảnh báo vòng đời (D2)", () => {
+  const src = fs.readFileSync(new URL("../monitor.mjs", import.meta.url), "utf8");
+
+  it("alertOnLifecycle phát cảnh báo cho result.problems", () => {
+    expect(src).toContain("result.problems");
+    expect(src).toMatch(/for \(const problem of result\.problems/);
+    expect(src).toMatch(/notify\(problem\.kind/);
+  });
+
+  it("chỉ chuyển tiếp kind đã biết — kind lạ không bịa thông báo", () => {
+    expect(src).toContain("LIFECYCLE_PROBLEM_KINDS.has(problem?.kind)");
+    const kinds = src.match(/LIFECYCLE_PROBLEM_KINDS = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "";
+    expect(kinds).toContain('"config"');
+    expect(kinds).toContain('"invalid"');
+  });
+
+  it("mọi kind monitor gửi đều được kênh cảnh báo NHẬN (không rơi vào unknown_kind)", () => {
+    // Chống lệch giữa hai module: đổi tên kind ở một nơi là test này đỏ ngay.
+    const kinds = [...(src.match(/LIFECYCLE_PROBLEM_KINDS = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(kinds).toEqual(["config", "invalid"]);
+    for (const kind of kinds) {
+      expect(shouldSendLifecycleAlert(kind, "m@7", { lastSentAt: null })).toEqual({ send: true, reason: "ok" });
+    }
+  });
+
+  it("mỗi chu kỳ checkMarkets đều gọi cảnh báo sau broadcast", () => {
+    expect(src).toMatch(/alertOnLifecycle\(await broadcastEligible\(/);
+  });
+});
+
+/**
+ * D6 (audit vòng 3): quyết định "cùng node" nằm ở MỘT chỗ — client của monitor.
+ * Nếu wiring này bị gỡ, bằng chứng nhả claim lại rơi về hai node khác nhau và
+ * `EVIDENCE_CONFIRMATIONS` chỉ còn che được reorg, không che được lệch head.
+ */
+describe("monitor.mjs — chọn endpoint RPC (D6)", () => {
+  const src = fs.readFileSync(new URL("../monitor.mjs", import.meta.url), "utf8");
+
+  it("client của monitor bật stickyMs để chuỗi đọc liên tiếp nhìn cùng một node", () => {
+    expect(src).toMatch(/createRobustPublicClient\(RPC_URLS, \{ stickyMs: 2_000 \}\)/);
+  });
+
+  it("proxy/CLI KHÔNG bật sticky (giữ blast radius nhỏ — quyết định có chủ ý)", () => {
+    // Bật sticky cho proxy là một thay đổi hành vi cho MỌI ví đi qua proxy: nếu
+    // muốn làm, hãy làm như một quyết định có ý thức (test này sẽ đỏ trước).
+    for (const file of ["../proxy-rpc.mjs", "../index.mjs"]) {
+      expect(fs.readFileSync(new URL(file, import.meta.url), "utf8")).not.toContain("stickyMs");
+    }
   });
 });

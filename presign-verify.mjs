@@ -46,6 +46,27 @@ const MARKET_PARAMS_TYPES = [
   { type: "uint256" },
 ];
 
+// ============================================================
+// MÃ LỖI VERIFY (audit vòng 2, D2)
+// ============================================================
+// Phân biệt lỗi do MÔI TRƯỜNG (operator đổi .env: LENDER_ADDRESS /
+// MORPHO_BLUE_ADDRESS) với lỗi thuộc về NỘI DUNG bundle. Trước đây broadcaster
+// đánh `invalid` cho mọi lỗi verify, nên một lần lệch .env giết IM LẶNG + VĨNH
+// VIỄN mọi bundle đã ký (không thử lại, không cảnh báo).
+/** Thiếu cấu hình để verify (không có morphoBlueAddress/lenderAddress/marketId). */
+export const VERIFY_CONFIG_MISSING = "CONFIG_MISSING";
+/** Cấu hình hiện tại KHÁC bundle đã ký (lệch .env) — bundle vẫn tốt. */
+export const VERIFY_CONFIG_MISMATCH = "CONFIG_MISMATCH";
+/** Bundle/calldata thật sự sai — không bao giờ broadcast được. */
+export const VERIFY_BUNDLE_INVALID = "BUNDLE_INVALID";
+
+const CONFIG_ERROR_CODES = new Set([VERIFY_CONFIG_MISSING, VERIFY_CONFIG_MISMATCH]);
+
+/** True khi lỗi verify là do MÔI TRƯỜNG, không phải do bundle hỏng. */
+export function isConfigVerifyError(code) {
+  return CONFIG_ERROR_CODES.has(code);
+}
+
 /** Compute Morpho Blue market Id from MarketParams (abi.encode + keccak256). */
 export function computeMarketId(marketParams) {
   const p = marketParams;
@@ -75,75 +96,82 @@ export function computeMarketId(marketParams) {
  * @param {string} [expected.sharesWei] - for all-shares tiers
  * @param {boolean} [expected.isAllShares]
  * @param {boolean} [expected.skipAmountChecks] - capture-time: only to/fn/onBehalf/receiver/market/from
- * @returns {Promise<{ ok: true, decoded: object } | { ok: false, error: string }>}
+ * @returns {Promise<{ ok: true, decoded: object } | { ok: false, error: string, code: string }>}
+ *   `code` là VERIFY_CONFIG_MISSING | VERIFY_CONFIG_MISMATCH | VERIFY_BUNDLE_INVALID
+ *   (additive — chỉ xuất hiện ở nhánh lỗi; nhánh thành công không đổi shape).
  */
 export async function verifyWithdrawCalldata(signedTx, expected) {
   if (!signedTx || typeof signedTx !== "string") {
-    return { ok: false, error: "missing signedTx" };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: "missing signedTx" };
   }
 
   let tx;
   try {
     tx = parseTransaction(signedTx);
   } catch (err) {
-    return { ok: false, error: `parse signedTx: ${err.message}` };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `parse signedTx: ${err.message}` };
   }
 
   const morpho = expected.morphoBlueAddress?.toLowerCase();
   if (!morpho || tx.to?.toLowerCase() !== morpho) {
     return {
       ok: false,
+      // tx.to phụ thuộc MORPHO_BLUE_ADDRESS trong .env ⇒ đổi .env là "lệch cấu hình".
+      code: VERIFY_CONFIG_MISMATCH,
       error: `tx.to ${tx.to} !== Morpho Blue ${expected.morphoBlueAddress}`,
     };
   }
 
   if (tx.chainId != null && Number(tx.chainId) !== 1) {
-    return { ok: false, error: `chainId ${tx.chainId} !== 1` };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `chainId ${tx.chainId} !== 1` };
   }
 
   if (expected.nonce != null && expected.nonce !== "" && Number(tx.nonce) !== Number(expected.nonce)) {
     return {
       ok: false,
+      code: VERIFY_BUNDLE_INVALID,
       error: `tx nonce ${tx.nonce} !== bundle nonce ${expected.nonce}`,
     };
   }
 
   if (!tx.data || tx.data === "0x") {
-    return { ok: false, error: "missing calldata" };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: "missing calldata" };
   }
 
   let decoded;
   try {
     decoded = decodeFunctionData({ abi: MORPHO_WITHDRAW_ABI, data: tx.data });
   } catch (err) {
-    return { ok: false, error: `decode calldata: ${err.message}` };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `decode calldata: ${err.message}` };
   }
 
   if (decoded.functionName !== "withdraw") {
-    return { ok: false, error: `function ${decoded.functionName} !== withdraw` };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `function ${decoded.functionName} !== withdraw` };
   }
 
   const [marketParams, assets, shares, onBehalf, receiver] = decoded.args;
   const lender = expected.lenderAddress?.toLowerCase();
   if (!lender) {
-    return { ok: false, error: "missing expected lenderAddress" };
+    return { ok: false, code: VERIFY_CONFIG_MISSING, error: "missing expected lenderAddress" };
   }
   if (onBehalf?.toLowerCase() !== lender) {
-    return { ok: false, error: `onBehalf ${onBehalf} !== lender ${expected.lenderAddress}` };
+    return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: `onBehalf ${onBehalf} !== lender ${expected.lenderAddress}` };
   }
   if (receiver?.toLowerCase() !== lender) {
-    return { ok: false, error: `receiver ${receiver} !== lender ${expected.lenderAddress}` };
+    return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: `receiver ${receiver} !== lender ${expected.lenderAddress}` };
   }
 
   let from;
   try {
     from = await recoverTransactionAddress({ serializedTransaction: signedTx });
   } catch (err) {
-    return { ok: false, error: `recover sender: ${err.message}` };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `recover sender: ${err.message}` };
   }
   if (from.toLowerCase() !== lender) {
     return {
       ok: false,
+      // Chữ ký hợp lệ nhưng không phải ví lender ⇒ LENDER_ADDRESS trong .env đã đổi.
+      code: VERIFY_CONFIG_MISMATCH,
       error: `sender ${from} !== lender ${expected.lenderAddress}`,
     };
   }
@@ -153,6 +181,7 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
     if (computedId.toLowerCase() !== expected.marketId.toLowerCase()) {
       return {
         ok: false,
+        code: VERIFY_BUNDLE_INVALID,
         error: `marketId ${computedId} !== expected ${expected.marketId}`,
       };
     }
@@ -162,31 +191,33 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
     const isAllShares = expected.isAllShares || expected.type === "all-shares";
     if (isAllShares) {
       if (expected.sharesWei == null || expected.sharesWei === "") {
-        return { ok: false, error: "all-shares missing sharesWei label" };
+        return { ok: false, code: VERIFY_BUNDLE_INVALID, error: "all-shares missing sharesWei label" };
       }
       if (BigInt(shares) !== BigInt(expected.sharesWei)) {
         return {
           ok: false,
+          code: VERIFY_BUNDLE_INVALID,
           error: `shares ${shares} !== sharesWei ${expected.sharesWei}`,
         };
       }
       // assets should be 0 for shares-based withdraw
       if (assets != null && BigInt(assets) !== 0n) {
-        return { ok: false, error: `all-shares assets should be 0, got ${assets}` };
+        return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `all-shares assets should be 0, got ${assets}` };
       }
     } else {
       if (expected.amountWei == null || expected.amountWei === "") {
-        return { ok: false, error: "missing amountWei label" };
+        return { ok: false, code: VERIFY_BUNDLE_INVALID, error: "missing amountWei label" };
       }
       if (BigInt(assets) !== BigInt(expected.amountWei)) {
         return {
           ok: false,
+          code: VERIFY_BUNDLE_INVALID,
           error: `assets ${assets} !== amountWei ${expected.amountWei}`,
         };
       }
       // fixed-amount: shares must be 0
       if (shares != null && BigInt(shares) !== 0n) {
-        return { ok: false, error: `fixed-amount shares should be 0, got ${shares}` };
+        return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `fixed-amount shares should be 0, got ${shares}` };
       }
     }
   }
@@ -224,35 +255,42 @@ export async function assertCaptureTx(signedTx, expected) {
 
 /**
  * Verify every withdrawal in a bundle against config + per-tier labels.
- * @returns {Promise<{ ok: true } | { ok: false, error: string, index?: number }>}
+ *
+ * @returns {Promise<{ ok: true } | { ok: false, error: string, index?: number, code: string }>}
+ *
+ * Audit vòng 2 (D2): mọi nhánh lỗi mang thêm `code`
+ * (VERIFY_CONFIG_MISSING / VERIFY_CONFIG_MISMATCH / VERIFY_BUNDLE_INVALID) để caller
+ * phân biệt "môi trường lệch" với "bundle hỏng". Nhánh thành công KHÔNG đổi shape.
  */
 export async function verifyPresignedBundle(bundle, config = {}) {
   if (!bundle || typeof bundle !== "object") {
-    return { ok: false, error: "bundle must be an object" };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: "bundle must be an object" };
   }
   if (!Array.isArray(bundle.withdrawals) || bundle.withdrawals.length === 0) {
-    return { ok: false, error: "withdrawals empty" };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: "withdrawals empty" };
   }
 
   const morphoBlueAddress = config.morphoBlueAddress || bundle.morphoBlueAddress;
   const lenderAddress = config.lenderAddress || bundle.lenderAddress;
   const marketId = config.marketId || bundle.marketId;
 
-  if (!morphoBlueAddress) return { ok: false, error: "missing morphoBlueAddress" };
-  if (!lenderAddress) return { ok: false, error: "missing lenderAddress" };
-  if (!marketId) return { ok: false, error: "missing marketId" };
+  if (!morphoBlueAddress) return { ok: false, code: VERIFY_CONFIG_MISSING, error: "missing morphoBlueAddress" };
+  if (!lenderAddress) return { ok: false, code: VERIFY_CONFIG_MISSING, error: "missing lenderAddress" };
+  if (!marketId) return { ok: false, code: VERIFY_CONFIG_MISSING, error: "missing marketId" };
 
+  // Ba so sánh dưới đây là DẤU HIỆU LỆCH .env: bundle tự khai địa chỉ/market mà nó
+  // được ký, khác với cấu hình hiện tại ⇒ bundle vẫn tốt, chỉ môi trường đổi.
   if (config.lenderAddress && bundle.lenderAddress &&
       config.lenderAddress.toLowerCase() !== bundle.lenderAddress.toLowerCase()) {
-    return { ok: false, error: "bundle.lenderAddress !== config lender" };
+    return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: "bundle.lenderAddress !== config lender" };
   }
   if (config.marketId && bundle.marketId &&
       config.marketId.toLowerCase() !== bundle.marketId.toLowerCase()) {
-    return { ok: false, error: "bundle.marketId !== config market" };
+    return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: "bundle.marketId !== config market" };
   }
   if (config.morphoBlueAddress && bundle.morphoBlueAddress &&
       config.morphoBlueAddress.toLowerCase() !== bundle.morphoBlueAddress.toLowerCase()) {
-    return { ok: false, error: "bundle.morphoBlueAddress !== config Morpho" };
+    return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: "bundle.morphoBlueAddress !== config Morpho" };
   }
 
   const txNonces = [];
@@ -268,14 +306,15 @@ export async function verifyPresignedBundle(bundle, config = {}) {
       isAllShares: w.type === "all-shares",
     });
     if (!result.ok) {
-      return { ok: false, error: `withdrawals[${i}]: ${result.error}`, index: i };
+      // Propagate mã lỗi của tier (config vs nội dung) — broadcaster dựa vào đây.
+      return { ok: false, code: result.code, error: `withdrawals[${i}]: ${result.error}`, index: i };
     }
     txNonces.push(result.decoded.nonce);
   }
 
   const unique = [...new Set(txNonces.map(Number))];
   if (unique.length > 1) {
-    return { ok: false, error: `inconsistent tx nonces: ${unique.join(", ")}` };
+    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `inconsistent tx nonces: ${unique.join(", ")}` };
   }
 
   return { ok: true };

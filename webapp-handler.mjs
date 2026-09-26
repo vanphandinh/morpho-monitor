@@ -1,0 +1,611 @@
+/**
+ * Pure HTTP request handler for the presign webapp API.
+ * Tách riêng khỏi webapp-server.mjs để test import được production handler
+ * mà không kích hoạt loadMarkets/listen. Mọi response đều gửi SAU khi
+ * mutation commit (deferred response) — không bao giờ 200 trước khi guard chạy.
+ */
+import crypto from "node:crypto";
+import {
+  LENDER_ADDRESS,
+  MORPHO_BLUE_ADDRESS,
+  PROXY_RPC_URL,
+  WEBAPP_PASSWORD,
+  MAX_BODY_BYTES,
+  SESSION_EXPIRY_MS,
+  CHALLENGE_EXPIRY_MS,
+  recoverSignerAddress,
+  readBodyLimited,
+} from "./shared.mjs";
+import { LOCK_STALE } from "./file-lock.mjs";
+import { createSessionToken, verifyToken, checkInternalSecret } from "./auth.mjs";
+import {
+  requireConfiguredMarket,
+  MARKET_INPUT_INVALID,
+  MARKET_NOT_CONFIGURED,
+} from "./market-config.mjs";
+import { readRegistry, updateRegistry, registrySummary, marketBundles, nonceRounds, bundleKey, ACTIVE_CLAIM_CONFLICT } from "./presigned-store.mjs";
+import { verifyPresignedBundle } from "./presign-verify.mjs";
+
+// Rate limit for /api/challenge: max 10 requests per minute per IP
+const CHALLENGE_RATE_LIMIT_WINDOW_MS = 60_000;
+const CHALLENGE_RATE_LIMIT_MAX = 10;
+const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
+/** Đường dẫn module browser phục vụ tĩnh (`/webapp-*.mjs`). */
+const BROWSER_MODULE_RE = /^\/[A-Za-z0-9_.-]+\.mjs$/;
+
+/** Map a thrown error to an HTTP status (400/404/409/503 for known codes; 500 otherwise). */
+export function statusForError(err) {
+  if (err?.code === MARKET_INPUT_INVALID) return 400;
+  if (err?.code === MARKET_NOT_CONFIGURED) return 404;
+  if (err?.code === ACTIVE_CLAIM_CONFLICT) return 409;
+  // Stale cross-process lock: the registry cannot be read/written right now.
+  if (err?.code === LOCK_STALE) return 503;
+  return 500;
+}
+
+function sendJson(res, status, payload) {
+  if (res.headersSent || res.writableEnded) return;
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload));
+}
+
+/**
+ * Lifecycle fields the browser may never inject into a persisted bundle.
+ * POST /api/presign stores verified PENDING data only; the broadcaster owns
+ * the broadcasting/submitted/failed lifecycle.
+ */
+const CLIENT_FORBIDDEN_FIELDS = ["status", "txHash", "rawTx", "broadcastingAt", "broadcastingTier", "minedAt", "submittedAt", "terminalAt", "reason", "error"];
+
+/**
+ * Statuses that are inert history: they hold no claim and a re-sign at the same
+ * nonce may replace/merge them. `superseded` (audit R1) means the nonce was
+ * consumed by another transaction, so the record can never mine.
+ */
+const HISTORY_STATUSES = ["broadcasting", "submitted", "failed", "superseded"];
+
+function sanitizePendingBundle(input) {
+  const bundle = { ...input };
+  for (const field of CLIENT_FORBIDDEN_FIELDS) delete bundle[field];
+  bundle.status = "pending";
+  return bundle;
+}
+
+/**
+ * Build the request handler. Injectable deps keep tests on the production
+ * HTTP process instead of copied route logic.
+ *
+ * @param {object} deps
+ * @param {string} deps.presignedPath - registry file path
+ * @param {Array<{id: string}>} deps.markets - configured market allow-list
+ * @param {string} deps.content - HTML served at "/"
+ * @param {string} [deps.proxyUrl] - proxy base URL for /api/bundle relay
+ * @param {string} [deps.proxyPassword] - internal secret for proxy relay
+ * @param {typeof fetch} [deps.fetchImpl] - injectable fetch for proxy relay
+ */
+export function createRequestHandler({
+  presignedPath,
+  markets,
+  content,
+  // Audit A.1: script chính của webapp là module riêng (webapp-app.mjs) — được
+  // lint + import được trong test — nên nó được phục vụ ở đây thay vì nằm inline
+  // trong HTML. Không truyền thì route trả 404 (tương thích với test cũ).
+  appScript = null,
+  // Audit A.1b: logic thuần dùng chung (webapp-logic.mjs). webapp-app.mjs import
+  // nó bằng đường dẫn tương đối `./webapp-logic.mjs`, nên nó PHẢI được phục vụ ở
+  // cùng gốc: thiếu route này thì browser nhận 404 cho import và TOÀN BỘ UI chết
+  // lặng (module không nạp được ⇒ không handler nào tồn tại).
+  logicScript = null,
+  // P2.7: map tên-module → source cho MỌI module browser (webapp-app/logic/
+  // wallet/render...). Bootstrap nạp chúng lúc khởi động. `appScript`/`logicScript`
+  // ở trên vẫn được nhận để tương thích handler/test cũ.
+  scripts = null,
+  proxyUrl = PROXY_RPC_URL.replace(/\/+$/, ""),
+  proxyPassword = WEBAPP_PASSWORD,
+  fetchImpl = fetch,
+} = {}) {
+  const requireMarket = (marketId) => requireConfiguredMarket(markets, marketId);
+  const scriptSources = {
+    ...(appScript ? { "webapp-app.mjs": appScript } : {}),
+    ...(logicScript ? { "webapp-logic.mjs": logicScript } : {}),
+    ...scripts,
+  };
+
+  // Per-handler state (M10): không chia sẻ giữa các test/handler khác nhau.
+  const challenges = new Map(); // challenge → { address, createdAt, expiresAt }
+  const challengeRateLimit = new Map(); // IP → { count, windowStart }
+
+  /** Drop expired challenges and stale rate-limit windows. */
+  const sweepExpired = () => {
+    const now = Date.now();
+    for (const [key, val] of challenges) {
+      if (now > val.expiresAt) challenges.delete(key);
+    }
+    for (const [ip, entry] of challengeRateLimit) {
+      if (now - entry.windowStart > CHALLENGE_RATE_LIMIT_WINDOW_MS) challengeRateLimit.delete(ip);
+    }
+  };
+
+  const handler = async (req, res) => {
+    // Exact pathname routing: `/api/presignXYZ` không còn khớp `/api/presign`.
+    const pathname = new URL(req.url || "/", "http://localhost").pathname;
+    // ---- API: GET /api/challenge ----
+    if (req.method === "GET" && pathname === "/api/challenge") {
+      // Prefer socket address (X-Forwarded-For spoofable khi không có trusted proxy)
+      const ip = req.socket.remoteAddress || "unknown";
+      const now = Date.now();
+      const rl = challengeRateLimit.get(ip);
+      if (rl && now - rl.windowStart < CHALLENGE_RATE_LIMIT_WINDOW_MS) {
+        if (rl.count >= CHALLENGE_RATE_LIMIT_MAX) {
+          sendJson(res, 429, { ok: false, error: "Too many requests. Try again later." });
+          return;
+        }
+        rl.count++;
+      } else {
+        challengeRateLimit.set(ip, { count: 1, windowStart: now });
+      }
+
+      const challenge = crypto.randomBytes(16).toString("hex");
+      challenges.set(challenge, {
+        address: LENDER_ADDRESS,
+        createdAt: now,
+        expiresAt: now + CHALLENGE_EXPIRY_MS,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        challenge,
+        message: `Morpho Blue Monitor\n\nSign in with address: ${LENDER_ADDRESS}\nNonce: ${challenge}`,
+        expiresAt: new Date(now + CHALLENGE_EXPIRY_MS).toISOString(),
+      });
+      return;
+    }
+
+    // ---- API: POST /api/auth ----
+    if (req.method === "POST" && pathname === "/api/auth") {
+      let body;
+      try {
+        body = await readBodyLimited(req, MAX_BODY_BYTES);
+      } catch (err) {
+        sendJson(res, err.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, { ok: false, error: err.message });
+        return;
+      }
+      try {
+        const { address, signature, challenge: challengeStr } = JSON.parse(body);
+
+        if (!address || !signature || !challengeStr) {
+          sendJson(res, 400, { ok: false, error: "Missing address, signature, or challenge" });
+          return;
+        }
+
+        const challengeData = challenges.get(challengeStr);
+        if (!challengeData || Date.now() > challengeData.expiresAt) {
+          challenges.delete(challengeStr);
+          sendJson(res, 401, { ok: false, error: "Challenge expired or invalid. Request a new one." });
+          return;
+        }
+
+        if (address.toLowerCase() !== LENDER_ADDRESS.toLowerCase()) {
+          challenges.delete(challengeStr);
+          sendJson(res, 403, { ok: false, error: `Address ${address} is not the lender (${LENDER_ADDRESS})` });
+          return;
+        }
+
+        const message = `Morpho Blue Monitor\n\nSign in with address: ${LENDER_ADDRESS}\nNonce: ${challengeStr}`;
+        const recovered = await recoverSignerAddress(message, signature);
+
+        if (!recovered || recovered !== LENDER_ADDRESS.toLowerCase()) {
+          challenges.delete(challengeStr);
+          sendJson(res, 401, { ok: false, error: "Signature verification failed" });
+          return;
+        }
+
+        challenges.delete(challengeStr);
+        const token = createSessionToken(recovered, SESSION_EXPIRY_MS);
+        const now = Date.now();
+        const expiresAt = new Date(now + SESSION_EXPIRY_MS).toISOString();
+
+        console.log(
+          `[${new Date().toISOString()}] 🔑 New session for ${recovered} ` +
+            `(expires ${new Date(now + SESSION_EXPIRY_MS).toLocaleString("vi-VN")})`
+        );
+
+        sendJson(res, 200, { ok: true, token, expiresAt });
+      } catch (err) {
+        sendJson(res, 400, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // ---- API: GET /api/presign ----
+    // ---- API: GET /api/overview — trạng thái bundle của MỌI market ----
+    // Auth như /api/presign (đọc registry). Trả summary theo allow-list;
+    // market không có bundle → { exists: false }. Nonce on-chain không nằm ở
+    // đây (webapp không chạy RPC server-side); browser tự tính cảnh báo
+    // trùng nonce từ các nonce của bundle.
+    if (req.method === "GET" && pathname === "/api/overview") {
+      if (!verifyToken(req, LENDER_ADDRESS)) {
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+      try {
+        const bundles = readRegistry(presignedPath).bundles;
+        // Multi-nonce ladder (v3): mỗi market có THỂ giữ nhiều bundle (nonce
+        // liên tiếp). Trả ladder nonce tăng dần + rounds cùng nonce để browser
+        // vẽ overview và cảnh báo race.
+        const rounds = nonceRounds(bundles)
+          .map(({ nonce, entries }) => ({
+            nonce,
+            markets: entries
+              .map((e) => ({ id: e.marketId, key: e.key, ...registrySummary(e.bundle) }))
+              .sort((a, b) => (markets.findIndex((m) => m.id === a.id) - markets.findIndex((m) => m.id === b.id))),
+          }));
+        sendJson(res, 200, {
+          ok: true,
+          lenderAddress: LENDER_ADDRESS,
+          markets: markets.map((market) => ({
+            id: market.id,
+            ladder: marketBundles(bundles, market.id).map(({ key, bundle }) => ({ key, ...registrySummary(bundle) })),
+          })),
+          rounds,
+        });
+      } catch (err) {
+        sendJson(res, statusForError(err), { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/presign") {
+      if (!verifyToken(req, LENDER_ADDRESS)) {
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+      try {
+        const marketId = requireMarket(new URL(req.url, "http://localhost").searchParams.get("market"));
+        // v3: trả LADDER — mọi bundle của market này, nonce tăng dần.
+        const ladder = marketBundles(readRegistry(presignedPath).bundles, marketId)
+          .map(({ key, bundle }) => ({ key, ...registrySummary(bundle) }));
+        const head = ladder[0];
+        sendJson(res, 200, {
+          ok: true,
+          ladder,
+          // Back-compat head: bundle nonce thấp nhất (shape cũ per-market).
+          ...(head ? { ...head } : { exists: false }),
+        });
+      } catch (err) {
+        sendJson(res, statusForError(err), { ok: false, exists: false, error: err.message });
+      }
+      return;
+    }
+
+    // ---- API: POST /api/bundle — relay metadata từ frontend sang proxy ----
+    if (req.method === "POST" && pathname === "/api/bundle") {
+      if (!verifyToken(req, LENDER_ADDRESS)) {
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+
+      let body;
+      try {
+        body = await readBodyLimited(req, MAX_BODY_BYTES);
+      } catch (err) {
+        sendJson(res, err.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, { ok: false, error: err.message });
+        return;
+      }
+      try {
+        const authHeader = proxyPassword
+          ? "Basic " + Buffer.from(":" + proxyPassword).toString("base64")
+          : null;
+        const proxyResp = await fetchImpl(`${proxyUrl}/bundle`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(authHeader ? { "Authorization": authHeader } : {}),
+          },
+          body,
+        });
+        const result = await proxyResp.json();
+        sendJson(res, proxyResp.status, result);
+      } catch (err) {
+        sendJson(res, 502, { ok: false, error: "Proxy unreachable: " + err.message });
+      }
+      return;
+    }
+
+    // ---- Block access to sensitive files ----
+    const blockedPatterns = [/\.(json|env|log|tar)$/i];
+    if (req.method === "GET" && blockedPatterns.some(p => p.test(pathname))) {
+      sendJson(res, 403, { ok: false, error: "Forbidden" });
+      return;
+    }
+
+    // ---- API: DELETE /api/presign ----
+    if (req.method === "DELETE" && pathname === "/api/presign") {
+      if (!verifyToken(req, LENDER_ADDRESS)) {
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+
+      const urlObj = new URL(req.url, "http://localhost");
+      const tierIdx = urlObj.searchParams.get("tier");
+
+      try {
+        const marketId = requireMarket(urlObj.searchParams.get("market"));
+        const nonceParam = urlObj.searchParams.get("nonce");
+        // Kiểm rẻ tiền trước lock (P0.2); giới hạn trên phải chờ đọc registry.
+        const tierIndex = tierIdx === null ? null : parseInt(tierIdx, 10);
+        if (tierIdx !== null && (isNaN(tierIndex) || tierIndex < 0)) {
+          throw Object.assign(new Error(`Invalid tier index: ${tierIdx}`), { code: MARKET_INPUT_INVALID });
+        }
+        let outcome;
+        await updateRegistry(presignedPath, (registry) => {
+          // v3: bundles are keyed `marketId@nonce`. DELETE without nonce →
+          // delete EVERY bundle of this market (old per-market semantics,
+          // still guarded by the active-claim check). With nonce → only that
+          // ladder rung.
+          const targets = marketBundles(registry.bundles, marketId);
+          if (tierIdx !== null) {
+            // v3 ladder: `tier` KHÔNG kèm `nonce` là mơ hồ khi market có nhiều
+            // rung — trước fix luôn sửa rung nonce thấp nhất, có thể khác rung
+            // user đang xem ⇒ mất tier ở sai rung mà vẫn trả ok (audit F3).
+            if (nonceParam === null && targets.length > 1) {
+              throw Object.assign(
+                new Error(`market có ${targets.length} rung bundle — cần chỉ định ?nonce=<n> để xóa tier đúng rung`),
+                { code: MARKET_INPUT_INVALID }
+              );
+            }
+            const rung = nonceParam !== null ? targets.filter((t) => String(t.bundle.nonce) === nonceParam) : targets;
+            const bundle = rung[0]?.bundle;
+            if (nonceParam !== null && !bundle) {
+              throw Object.assign(
+                new Error(`market này không có bundle ở nonce ${nonceParam}`),
+                { code: MARKET_INPUT_INVALID }
+              );
+            }
+            if (bundle) {
+              const idx = tierIndex;
+              if (isNaN(idx) || idx < 0 || idx >= (bundle.withdrawals?.length || 0)) {
+                throw Object.assign(new Error(`Invalid tier index: ${tierIdx}`), { code: MARKET_INPUT_INVALID });
+              }
+              const removed = bundle.withdrawals.splice(idx, 1)[0];
+              console.log(
+                `[${new Date().toISOString()}] 🗑️  Removed tier "${removed.label}" from presigned bundle ${rung[0].key} (${bundle.withdrawals.length} remaining)`
+              );
+              outcome = { ok: true, removed: removed.label, remaining: bundle.withdrawals.length };
+            } else {
+              outcome = { ok: true, removed: null, remaining: 0 };
+            }
+          } else {
+            let deleted = 0;
+            for (const { key, bundle } of targets) {
+              if (bundle) deleted++;
+              delete registry.bundles[key];
+            }
+            console.log(
+              `[${new Date().toISOString()}] 🗑️  Presigned bundle deleted for market ${marketId.slice(0, 12)}… (${deleted} bundle)`
+            );
+            outcome = { ok: true, deleted };
+          }
+        }, { origin: "user" });
+        // Response only after the mutation committed (guard passed).
+        sendJson(res, 200, outcome);
+      } catch (err) {
+        sendJson(res, statusForError(err), { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // ---- API: POST /api/presign ----
+    if (req.method === "POST" && pathname === "/api/presign") {
+      const session = verifyToken(req, LENDER_ADDRESS);
+      const isInternal = checkInternalSecret(req);
+      if (!session && !isInternal) {
+        console.warn(
+          `[${new Date().toISOString()}] 🔒 POST /api/presign rejected: invalid credentials`
+        );
+        sendJson(res, 401, { ok: false, error: "Unauthorized" });
+        return;
+      }
+
+      let body;
+      try {
+        body = await readBodyLimited(req, MAX_BODY_BYTES);
+      } catch (err) {
+        sendJson(res, err.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, { ok: false, error: err.message });
+        return;
+      }
+
+      try {
+        // Validate TRƯỚC khi lấy lock (audit P0.2): parse JSON, kiểm withdrawals,
+        // allow-list market, version, nonce và verify calldata đều KHÔNG cần đọc
+        // registry. Trước đây chúng nằm trong mutation nên một request rác vẫn
+        // chiếm cross-process lock (và khi thư mục registry/vừa thiếu thì lỗi
+        // lock — 500 — che mất lỗi validate — 400).
+        let parsed;
+        try { parsed = JSON.parse(body); } catch (err) {
+          throw Object.assign(new Error(`Invalid JSON body: ${err.message}`), { code: MARKET_INPUT_INVALID });
+        }
+        if (!parsed.withdrawals || parsed.withdrawals.length === 0) {
+          throw Object.assign(new Error("Invalid bundle: withdrawals empty"), { code: MARKET_INPUT_INVALID });
+        }
+
+        // Fail-closed: verify Morpho withdraw calldata trước khi persist
+        const marketId = requireMarket(parsed.marketId);
+        if (parsed.version !== 2) {
+          throw Object.assign(new Error("Presigned bundle must use version 2"), { code: MARKET_INPUT_INVALID });
+        }
+        if (!Number.isFinite(Number(parsed.nonce))) {
+          throw Object.assign(new Error("Presigned bundle requires a numeric nonce"), { code: MARKET_INPUT_INVALID });
+        }
+        const incoming = sanitizePendingBundle(parsed);
+        incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
+        const verified = await verifyPresignedBundle(incoming, {
+          morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+          lenderAddress: LENDER_ADDRESS,
+          marketId,
+        });
+        if (!verified.ok) {
+          throw Object.assign(new Error(`Calldata verify failed: ${verified.error}`), { code: MARKET_INPUT_INVALID });
+        }
+
+        let outcome;
+        await updateRegistry(presignedPath, async (registry) => {
+          let merged = incoming;
+          let action = "saved";
+          // Key của rung sẽ ghi. Rung được tra theo IDENTITY (marketId, nonce)
+          // đọc từ VALUE — KHÔNG tra bằng key composite: registry v2 migrate giữ
+          // nguyên key cũ (plain marketId) và key là opaque, nên tra bằng
+          // `marketId@nonce` sẽ bỏ sót rung legacy ⇒ ghi thêm một rung trùng
+          // identity, ladder báo race giả và broadcaster claim nhầm bản cũ (audit F1).
+          let targetKey = bundleKey(marketId, incoming.nonce);
+
+          {
+            const sameIdentity = marketBundles(registry.bundles, marketId)
+              .filter(({ bundle }) => Number(bundle?.nonce) === Number(incoming.nonce));
+
+            // Claim sống phải được xử lý TRƯỚC khi chọn key để ghi: nếu bản sao
+            // `broadcasting` đứng SAU bản `pending` (đúng thứ tự file mà bug
+            // tra-key trước F1 tạo ra), `sameIdentity[0]` là bản pending ⇒ merged
+            // được ghi vào bản pending và bản broadcasting không bị dọn ⇒ registry
+            // còn HAI rung cùng identity (marketId, nonce) ⇒ overview báo race GIẢ
+            // cho cùng một market, đúng triệu chứng mà F1 sinh ra để xoá (audit D4).
+            // Ký lại một nonce đang được broadcast là mơ hồ ⇒ 409 rõ nghĩa, không
+            // ghi gì (lifecycle guard cũng sẽ chặn — nay chặn sớm và có thông báo).
+            const liveClaim = sameIdentity.find(({ bundle }) => bundle?.status === "broadcasting");
+            if (liveClaim) {
+              throw Object.assign(
+                new Error(
+                  `nonce ${incoming.nonce} đang được broadcast (claim ${liveClaim.key}) — chờ tx mine hoặc lấy nonce mới rồi ký lại`
+                ),
+                { code: ACTIVE_CLAIM_CONFLICT }
+              );
+            }
+
+            const target = sameIdentity[0];
+            // Bản sao identity (state hỏng do bug tra-key trước F1): giữ bản đầu,
+            // dọn MỌI bản còn lại — không còn nhánh `broadcasting` nào ở đây vì
+            // claim sống đã bị chặn ở trên.
+            for (const dup of sameIdentity.slice(1)) {
+              delete registry.bundles[dup.key];
+              console.log(
+                `[${new Date().toISOString()}] 🧹 Deduped bundle ${dup.key.slice(0, 22)}… (trùng identity market ${marketId.slice(0, 10)}…@${incoming.nonce})`
+              );
+            }
+            if (target) targetKey = target.key;
+            try {
+              const old = target?.bundle;
+              if (old && old.withdrawals && old.withdrawals.length > 0 && !HISTORY_STATUSES.includes(old.status)) {
+                if (Number(old.nonce) === Number(incoming.nonce)) {
+                  const getMergeKey = (w) => {
+                    if (w.type === "all-shares") return `__all_shares__`;
+                    return w.amountWei || null;
+                  };
+                  const map = new Map();
+                  let added = 0, replaced = 0;
+                  for (const w of old.withdrawals) {
+                    const key = getMergeKey(w);
+                    if (key) map.set(key, w);
+                  }
+                  for (const w of incoming.withdrawals) {
+                    const key = getMergeKey(w);
+                    if (!key) continue;
+                    if (map.has(key)) replaced++; else added++;
+                    map.set(key, w);
+                  }
+                  merged = {
+                    ...incoming,
+                    createdAt: old.createdAt,
+                    updatedAt: new Date().toISOString(),
+                    withdrawals: [...map.values()],
+                  };
+                  const parts = [];
+                  if (added > 0) parts.push(`${added} new`);
+                  if (replaced > 0) parts.push(`${replaced} updated`);
+                  if (map.size - added - replaced > 0) parts.push(`${map.size - added - replaced} kept`);
+                  action = `merged (${parts.join(", ")})`;
+                } else {
+                  action = "replaced (new nonce)";
+                }
+              }
+            } catch { /* malformed prior bundle — overwrite */ }
+          }
+
+          // Re-verify sau merge — tier cũ giữ lại cũng phải hợp lệ
+          const mergedVerified = await verifyPresignedBundle(merged, {
+            morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+            lenderAddress: LENDER_ADDRESS,
+            marketId,
+          });
+          if (!mergedVerified.ok) {
+            throw Object.assign(new Error(`Merged bundle verify failed: ${mergedVerified.error}`), { code: MARKET_INPUT_INVALID });
+          }
+
+          const key = targetKey;
+          registry.bundles[key] = merged;
+
+          console.log(
+            `[${new Date().toISOString()}] 📝 Presigned bundle ${action} at ${key.slice(0, 22)}…: ` +
+              `${merged.withdrawals.length} tiers, nonce=${incoming.nonce}`
+          );
+          outcome = { ok: true, tiers: merged.withdrawals.length, action, key };
+        }, { origin: "user" });
+        // Response only after the mutation committed (guard passed).
+        sendJson(res, 200, outcome);
+      } catch (err) {
+        sendJson(res, statusForError(err), { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    // ---- Unknown API route: JSON 404, không rơi vào SPA HTML 200 ----
+    if (pathname.startsWith("/api/")) {
+      sendJson(res, 404, { ok: false, error: `Unknown API route: ${req.method} ${pathname}` });
+      return;
+    }
+
+    // ---- Static: browser modules (A.1 / A.1b / P2.7) ----
+    if (req.method === "GET" && BROWSER_MODULE_RE.test(pathname)) {
+      const body = scriptSources[pathname.slice(1)];
+      if (!body) {
+        // Đường dẫn .mjs là module ĐÃ BIẾT mà chưa cấu hình ⇒ 404 JSON, KHÔNG rơi
+        // vào SPA fallback: trả HTML 200 sẽ khiến browser bỏ qua import hỏng lặng lẽ.
+        sendJson(res, 404, { ok: false, error: "app script not configured" });
+        return;
+      }
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+      // Không cache: module đổi giữa các lần deploy, browser giữ bản cũ sẽ chạy
+      // JS lệch với HTML (đúng lớp lỗi mà việc tách file này muốn tránh).
+      res.setHeader("Cache-Control", "no-store");
+      res.writeHead(200);
+      res.end(body);
+      return;
+    }
+
+    // ---- Static webapp ----
+    // Security headers
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+
+    res.on("error", (err) => {
+      if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+        console.error(`[${new Date().toISOString()}] ⚠️ Response error:`, err.message);
+      }
+    });
+
+    res.writeHead(200);
+    res.end(content);
+  };
+
+  // Cleanup timer do bootstrap (webapp-server.mjs) tạo — test import handler
+  // không để lại interval treo (M10).
+  handler.sweepExpired = sweepExpired;
+  handler.startCleanupTimer = (intervalMs = CLEANUP_INTERVAL_MS) => {
+    const timer = setInterval(sweepExpired, intervalMs);
+    timer.unref?.();
+    handler.stopCleanupTimer = () => clearInterval(timer);
+    return timer;
+  };
+  handler.stopCleanupTimer = () => {};
+  return handler;
+}

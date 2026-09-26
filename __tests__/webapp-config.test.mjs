@@ -1,0 +1,287 @@
+/**
+ * A3 + M2 + B2: cấu hình browser của webapp.
+ *
+ * - `buildWebappConfig`/`injectWebappConfig` (webapp-config.mjs) là production
+ *   code; test import trực tiếp (không boot server, không listen).
+ * - `webapp.html` được đọc dưới dạng text để khẳng định: không còn API key của
+ *   nhà cung cấp RPC trong file phục vụ công khai; từ 2026-09-24 cổng preflight
+ *   H5 đã gỡ theo quyết định user (mục sign flow bên dưới).
+ *
+ * Lưu ý: webapp.html là browser ESM (không import được bằng vitest), nên các
+ * assertion chạy trên text của file — cùng convention với webapp.test.mjs.
+ */
+import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig, assertProxyAuthConfig } from "../webapp-config.mjs";
+import { RECOVERY_THRESHOLD_MS } from "../presigned-broadcast.mjs";
+// Audit P5: danh sách module browser suy từ đồ thị import (helper dùng chung).
+import { browserSources, webappSource } from "./helpers/browser-modules.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
+// Audit A.1: script chính của webapp là module RIÊNG (webapp-app.mjs) để được lint
+// + `node --check` + import trong test. Hợp đồng về CODE đọc từ module; hợp đồng
+// về MARKUP (element id) vẫn đọc từ HTML. Kiểm tra trên HTML sau khi tách file sẽ
+// trở thành "vô nghĩa nhưng vẫn xanh" — đúng lớp lỗ hổng A.1 muốn đóng.
+const app = fs.readFileSync(path.join(__dirname, "..", "webapp-app.mjs"), "utf8");
+// Audit P2.7: nhận diện ví tách sang webapp-wallet.mjs — kiểm hợp đồng trên file
+// đó thay vì tìm trong webapp-app.mjs (nơi nó không còn tồn tại).
+const wallet = fs.readFileSync(path.join(__dirname, "..", "webapp-wallet.mjs"), "utf8");
+// Audit P5: `webapp-app.mjs` đã tách thành các module luồng. Khẳng định kiểu "webapp
+// dùng X / không chứa Y" phải đọc toàn bộ closure module browser — nếu ghim vào một
+// file thì mỗi lần code chuyển nhà là một test đỏ giả (đúng thứ đã xảy ra ở P2.7).
+const webapp = webappSource();
+
+const MARKET = { id: "0x" + "a".repeat(64), minLiquidity: "100", suddenDrainMultiplier: 2 };
+const LENDER = "0x" + "b".repeat(40);
+
+describe("buildWebappConfig (A3)", () => {
+  it("derive proxy URL + rpcUrls + markets từ shared/args", () => {
+    const config = buildWebappConfig({
+      markets: [MARKET],
+      lenderAddress: LENDER,
+      proxyRpcUrl: "https://vps.example.com:8545",
+      // Round-4 quota (2026-09-25): browser chỉ nhận RPC key-less — dep đổi tên
+      // thành `publicRpcUrls`; `rpcUrls` của server (có key) không còn là input.
+      publicRpcUrls: ["https://rpc.example.com", "  "],
+    });
+    expect(config.markets).toEqual([MARKET]);
+    expect(config.lenderAddress).toBe(LENDER);
+    expect(config.proxyRpcUrl).toBe("https://vps.example.com:8545");
+    expect(config.rpcUrls).toEqual(["https://rpc.example.com"]); // blank filtered
+    // R1: ngưỡng quá hạn của claim broadcasting phải là MỘT nguồn sự thật
+    // (presigned-broadcast.mjs), inject cho browser thay vì copy hằng số.
+    expect(config.claimRecoveryMs).toBe(RECOVERY_THRESHOLD_MS);
+  });
+
+  it("C3: thiếu/zero LENDER_ADDRESS → fail-fast với hướng dẫn tiếng Việt", () => {
+    for (const lenderAddress of ["", "   ", "0x0000000000000000000000000000000000000000", "not-an-address"]) {
+      expect(() => buildWebappConfig({ markets: [MARKET], lenderAddress })).toThrow(/LENDER_ADDRESS/);
+    }
+  });
+
+  it("C3: thiếu PROXY_RPC_URL → fail-fast (không để browser rơi về 127.0.0.1)", () => {
+    expect(() => buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, proxyRpcUrl: "" })).toThrow(/PROXY_RPC_URL/);
+  });
+
+  it("từ chối markets rỗng và RPC key-less rỗng", () => {
+    expect(() => buildWebappConfig({ markets: [], lenderAddress: LENDER })).toThrow(/markets\.json/);
+    expect(() => buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, publicRpcUrls: [] })).toThrow(/PUBLIC_RPC_URLS/);
+  });
+
+  // Round-4 quota (2026-09-25): URL kèm credential bị chặn fail closed.
+  it("từ chối URL mang API key trong path/query (không inject ra public)", () => {
+    const credentialed = [
+      "https://eth-mainnet.g.alchemy.com/v2/" + "f".repeat(32),
+      "https://rpc.ankr.com/eth/" + "0".repeat(64),
+      "https://eth.api.onfinality.io/rpc?apikey=secret",
+    ];
+    expect(() =>
+      buildWebappConfig({ markets: [MARKET], lenderAddress: LENDER, publicRpcUrls: credentialed })
+    ).toThrow(/credential/);
+  });
+});
+
+describe("injectWebappConfig (A3)", () => {
+  it("chèn window.MORPHO_CONFIG ngay trước </head> và escape `<`", () => {
+    const out = injectWebappConfig("<html><head></head><body>x</body></html>", {
+      markets: [MARKET],
+      lenderAddress: LENDER,
+      proxyRpcUrl: "https://evil.example.com/</script><script>alert(1)</script>",
+      // injectWebappConfig là injector mù (JSON hoá nguyên config object) —
+      // khoá `rpcUrls` ở đây là khoá trong PAYLOAD, không phải deps builder.
+      rpcUrls: ["https://rpc.example.com"],
+    });
+    expect(out).toContain("window.MORPHO_CONFIG=");
+    expect(out).not.toContain("</script><script>alert(1)");
+    expect(out).toContain("\\u003c/script");
+    const payload = out.slice(out.indexOf("window.MORPHO_CONFIG=") + "window.MORPHO_CONFIG=".length, out.indexOf("</script></head>"));
+    expect(JSON.parse(payload).rpcUrls).toEqual(["https://rpc.example.com"]);
+  });
+
+  it("thiếu marker </head> → throw rõ ràng thay vì im lặng không inject", () => {
+    expect(() => injectWebappConfig("<html></html>", {})).toThrow(/<\/head>/);
+  });
+});
+
+describe("webapp.html hygiene (M2)", () => {
+  it("không còn RPC URL kèm API key trong file phục vụ công khai", () => {
+    // A.1: file phục vụ công khai nay gồm CẢ webapp-app.mjs — phải kiểm cả hai,
+    // nếu không thì danh sách RPC đã chuyển sang module sẽ không còn ai ghim.
+    // P5: kiểm HẾT module được phục vụ công khai, không chỉ html + app.
+    for (const source of [html, ...browserSources()]) {
+      expect(source).not.toMatch(/infura\.io\/v3\//);
+      expect(source).not.toMatch(/ankr\.com\/eth\/0x/);
+      expect(source).not.toMatch(/alchemy\.com\/v2\//);
+      expect(source).not.toMatch(/lb\.drpc\.live\/ethereum\//);
+      expect(source).not.toMatch(/core\.chainstack\.com\//);
+      expect(source).not.toMatch(/onfinality\.io\/rpc\?apikey=/);
+    }
+  });
+
+  it("dùng CFG.rpcUrls do server inject, với fallback keyless", () => {
+    // P5: RPC_URLS nay ở webapp-state.mjs (lớp lá) ⇒ kiểm trên toàn webapp.
+    expect(webapp).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
+    expect(webapp).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
+    // Round-4 phụ lục (2026-09-25): ankr key-less ĐÃ CHẾT — trả -32000
+    // "Unauthorized: You must authenticate with an API key". Giữ nó trong
+    // fallback là lỗi cấu hình, phải pin KHÔNG CÒN.
+    expect(webapp).not.toMatch(/rpc\.ankr\.com\/eth/);
+    // 2 endpoint thay thế đã probe thật (CORS mở, chainId=0x1).
+    expect(webapp).toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
+    expect(webapp).toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
+  });
+});
+
+describe("assertWebappAuthConfig (P1, 2026-09-24)", () => {
+  it("thiếu WEBAPP_PASSWORD mà không override → fail-fast, message có đủ 2 hướng dẫn", () => {
+    let err = null;
+    try { assertWebappAuthConfig({ password: "", allowInsecure: false }); } catch (e) { err = e; }
+    expect(err).not.toBeNull();
+    expect(err.message).toContain("WEBAPP_PASSWORD");
+    expect(err.message).toContain("WEBAPP_ALLOW_INSECURE=1");
+  });
+
+  it("WEBAPP_ALLOW_INSECURE=1 → dev mode có chủ đích, kèm cảnh báo", () => {
+    const mode = assertWebappAuthConfig({ password: "", allowInsecure: true });
+    expect(mode.secure).toBe(false);
+    expect(mode.warning).toMatch(/MỞ hoàn toàn/);
+  });
+
+  it("có WEBAPP_PASSWORD → secure, không cảnh báo", () => {
+    expect(assertWebappAuthConfig({ password: "s3cret" })).toEqual({ secure: true, warning: null });
+  });
+});
+
+describe("assertProxyAuthConfig (R3)", () => {
+  it("loopback không cần mật khẩu (dev) — không cảnh báo, không throw", () => {
+    for (const host of [undefined, "127.0.0.1", "localhost", "::1"]) {
+      expect(assertProxyAuthConfig({ host, password: "", allowInsecure: false })).toEqual({ secure: false, warning: null, publicBind: false });
+    }
+  });
+
+  it("bind PUBLIC mà thiếu mật khẩu ⇒ fail-fast, message có hành động", () => {
+    let err = null;
+    try { assertProxyAuthConfig({ host: "0.0.0.0", password: "", allowInsecure: false }); } catch (e) { err = e; }
+    expect(err).not.toBeNull();
+    expect(err.message).toContain("PROXY_HOST=0.0.0.0");
+    expect(err.message).toContain("WEBAPP_PASSWORD");
+    expect(err.message).toContain("WEBAPP_ALLOW_INSECURE=1");
+    expect(err.message).toContain("127.0.0.1");
+  });
+
+  it("WEBAPP_ALLOW_INSECURE=1 ⇒ chạy được nhưng cảnh báo rõ /captured mở", () => {
+    const mode = assertProxyAuthConfig({ host: "0.0.0.0", password: "", allowInsecure: true });
+    expect(mode.secure).toBe(false);
+    expect(mode.publicBind).toBe(true);
+    expect(mode.warning).toContain("/captured");
+  });
+
+  it("có mật khẩu + loopback ⇒ secure, im lặng", () => {
+    expect(assertProxyAuthConfig({ host: "127.0.0.1", password: "s3cret" })).toEqual({ secure: true, warning: null, publicBind: false });
+  });
+
+  // D3 (audit vòng 2): mật khẩu KHÔNG làm proxy kín — nhánh JSON-RPC vẫn công khai
+  // (ví không gửi được header Authorization). Trước đây trường hợp này im lặng.
+  it("có mật khẩu + bind public ⇒ vẫn secure nhưng CẢNH BÁO relay JSON-RPC mở (D3)", () => {
+    const mode = assertProxyAuthConfig({ host: "0.0.0.0", password: "s3cret" });
+    expect(mode.secure).toBe(true);
+    expect(mode.publicBind).toBe(true);
+    expect(typeof mode.warning).toBe("string");
+    expect(mode.warning).toContain("PROXY_HOST=0.0.0.0");
+    expect(mode.warning).toContain("JSON-RPC");
+    expect(mode.warning).toContain("LENDER_ADDRESS");
+    expect(mode.warning).toContain("firewall");
+  });
+
+  it("cảnh báo D3 nói rõ phạm vi: /bundle + /captured vẫn được bảo vệ", () => {
+    const mode = assertProxyAuthConfig({ host: "0.0.0.0", password: "s3cret" });
+    expect(mode.warning).toContain("/bundle");
+    expect(mode.warning).toContain("/captured");
+  });
+});
+
+describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
+  // Quyết định 2026-09-24: GỠ cổng preflight H5 (morpho_proxyInfo chặn ký).
+  // Nguyên nhân: Ambire (smart-contract wallet) chặn method tùy chỉnh ngay ở
+  // client ("doesn't has corresponding handler") và tự trả lời
+  // web3_clientVersion ("Ambire v6.21.4") nên không thể xác thực RPC qua ví.
+  // Flow ký quay về như main: mọi ví → ok, an toàn dựa vào các check
+  // server-side (đúng lender, đúng market đã cấu hình, đúng bundle/nonce).
+  // Trade-off: ví EOA trỏ sai RPC sẽ không bị chặn trước khi ký.
+
+  it("H5 gỡ sạch: không còn probe/ gate trong webapp", () => {
+    expect(app).not.toContain("morpho_proxyInfo");
+    expect(app).not.toContain("assertProxyNetwork");
+    expect(app).not.toContain("PROXY_INFO_METHOD");
+    expect(app).not.toContain("CHẶN KÝ");
+    expect(app).not.toMatch(/wallet_addEthereumChain[\s\S]{0,400}morpho_proxyInfo/);
+  });
+
+  it("banner compat theo thương hiệu ví như main, mọi ví đều ok: true", () => {
+    // Cấu trúc switch giống main; Ambire có case riêng thay vì default.
+    // P2.7: code này nay nằm ở webapp-wallet.mjs (webapp-app.mjs import nó).
+    expect(wallet).toMatch(/case "rabby": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "metamask": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "ambire": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "frame": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "coinbase": return \{ ok: true,/);
+    expect(wallet).toMatch(/case "trust": return \{ ok: true,/);
+    expect(wallet).toMatch(/default: return \{ ok: true,/);
+    // Không còn nhánh chặn nào trong banner.
+    expect(wallet).not.toMatch(/ok: false/);
+    // Và app không còn định nghĩa lại (nếu có, bản tách đã bị bỏ qua).
+    expect(app).not.toMatch(/function getCompatibilityMessage/);
+  });
+
+  it("nhận diện Ambire qua provider flag (chỉ để hiển thị)", () => {
+    expect(wallet).toMatch(/if \(e\.isAmbire\) return "ambire";/);
+  });
+
+  it("ký gọi thẳng sendTransaction, không gate phía trước", () => {
+    // P5: hai call site ký nằm ở webapp-presign.mjs ⇒ đếm trên toàn webapp vẫn là 2,
+    // và bất biến "không gate bằng probe mạng" được kiểm trên mọi module.
+    const sends = [...webapp.matchAll(/walletClient\.sendTransaction\(/g)].map((m) => m.index);
+    expect(sends).toHaveLength(2);
+    expect(webapp).not.toMatch(/await assertProxyNetwork\(\)/);
+  });
+
+  it("nút Thêm Mạng Proxy: message thành công như main + giữ hướng dẫn khi ví chặn method", () => {
+    expect(app).toContain('✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.');
+    // UX-only: chỉ hướng dẫn thủ công, không chặn gì.
+    expect(app).toMatch(/msg\.includes\("corresponding handler"\)/);
+    expect(app).toMatch(/nút webapp không thể thêm mạng hộ bạn/);
+  });
+
+  it("multi-market: có market switcher + khối overview presign", () => {
+    expect(html).toContain('id="market-switcher"'); // markup
+    expect(html).toContain('id="market-switcher-wrap"');
+    expect(html).toContain('id="presign-overview"');
+    // P5: switcher ở webapp-overview.mjs, khối overview ở webapp-presign-bundles.mjs,
+    // và app chỉ CÔNG BỐ handler ra window (không định nghĩa tại chỗ nữa).
+    expect(webapp).toMatch(/SERVER_MARKETS\.length <= 1/); // ẩn khi 1 market
+    expect(webapp).toMatch(/window\.switchMarket = switchMarket;/);
+    expect(webapp).toMatch(/api\/overview/);
+    expect(webapp).toMatch(/refreshPresignOverview\(\)/);
+    expect(webapp).toMatch(/initMarketSwitcher\(\)/);
+  });
+
+  it("multi-market: cảnh báo race cùng nonce + note bậc thang nonce", () => {
+    expect(webapp).toMatch(/đang được dùng bởi nhiều market cùng lúc/);
+    expect(webapp).toMatch(/trigger trước/);
+    expect(webapp).toMatch(/sẽ <b>expired<\/b>/);
+    expect(webapp).toMatch(/Bậc thang nonce/);
+    // Race check trước khi ký: confirm dialog, không chặn cứng.
+    expect(webapp).toMatch(/TRIGGER trước/);
+    expect(webapp).toMatch(/EXPIRED ngay khi nonce này được tiêu thụ/);
+  });
+
+  it("M9: bundle expired/submitted hiện hướng dẫn ký lại với nonce mới", () => {
+    expect(webapp).toMatch(/r\.status === "expired"/);
+    expect(webapp).toMatch(/on-chain nonce đã đi qua nonce của bundle đó/);
+    expect(webapp).toMatch(/Ký lại với nonce mới/);
+    expect(webapp).toMatch(/submitted\/failed/);
+  });
+});

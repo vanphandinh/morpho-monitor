@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
+import http from "node:http";
 import {
   env,
   envNum,
@@ -6,14 +7,10 @@ import {
   formatTokenAmount,
   formatApy,
   shortenAddress,
-  shouldNotify,
-  computeDrainThreshold,
-  shouldBroadcastPresigned,
-  createSessionToken,
-  verifySessionToken,
-  safeEqualString,
-  requireLenderOrInternal,
+  readBodyLimited,
 } from "../shared.mjs";
+import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "../monitor-rules.mjs";
+import { createSessionToken, verifySessionToken, safeEqualString, requireLenderOrInternal } from "../auth.mjs";
 
 
 // ============================================================
@@ -283,7 +280,6 @@ describe("shouldNotify() — sudden drain", () => {
   const COOLDOWN = 30 * 60 * 1000;
   const SUPPLY = 10_000_000n;   // 10 USDC supply
   const MULTIPLIER = 2;
-  const DRAIN = computeDrainThreshold(SUPPLY, MULTIPLIER); // 20 USDC với MULTIPLIER=2
 
   const base = {
     supplyAssets: SUPPLY,
@@ -592,7 +588,7 @@ describe("createSessionToken() & verifySessionToken()", () => {
 
   it("verify trả về null với token bị chỉnh sửa payload", () => {
     const token = createSessionToken("0xabc", 3600000);
-    const [payload, hmac] = token.split(".");
+    const [, hmac] = token.split(".");
     const tamperedToken = "tampered." + hmac;
     expect(verifySessionToken(tamperedToken)).toBeNull();
   });
@@ -644,5 +640,79 @@ describe("requireLenderOrInternal()", () => {
     const req = { headers: {} };
     expect(requireLenderOrInternal(req, "").ok).toBe(false);
     expect(requireLenderOrInternal(req, null).ok).toBe(false);
+  });
+});
+
+// ============================================================
+// readBodyLimited() — trần kích thước thân request
+// ============================================================
+// Audit 2026-09-26 (D13): bản cũ gọi `req.destroy()` NGAY khi thân vượt trần,
+// nên mọi nhánh 413 ở caller (webapp-handler ×3, proxy-dispatcher ×2) là code
+// KHÔNG THỂ chạy: client chỉ thấy ECONNRESET và không bao giờ đọc được response.
+// Ở đây chạy HTTP THẬT và khẳng định đúng thứ client nhận được.
+describe("readBodyLimited()", () => {
+  /** Server tối thiểu dùng đúng production helper + cùng ánh xạ lỗi như caller thật. */
+  const startServer = async (cap, opts) => {
+    const server = http.createServer(async (req, res) => {
+      try {
+        const body = await readBodyLimited(req, cap, opts);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, length: body.length }));
+      } catch (err) {
+        res.writeHead(err.code === "PAYLOAD_TOO_LARGE" ? 413 : 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, code: err.code, error: err.message }));
+      }
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return { server, port: server.address().port };
+  };
+
+  const post = (port, body) =>
+    new Promise((resolve) => {
+      const req = http.request(
+        { host: "127.0.0.1", port, method: "POST", path: "/", headers: { "Content-Type": "application/json" } },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk) => (data += chunk));
+          res.on("end", () => resolve({ status: res.statusCode, body: data }));
+        }
+      );
+      req.on("error", (err) => resolve({ error: err.code || err.message }));
+      req.end(body);
+    });
+
+  it("thân ≤ trần: đọc bình thường", async () => {
+    const { server, port } = await startServer(16);
+    try {
+      const out = await post(port, "12345678");
+      expect(out.status).toBe(200);
+      expect(JSON.parse(out.body)).toEqual({ ok: true, length: 8 });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("thân vượt trần: client nhận 413 + lỗi PAYLOAD_TOO_LARGE (không phải reset kết nối)", async () => {
+    const { server, port } = await startServer(16);
+    try {
+      const out = await post(port, "x".repeat(64));
+      expect(out.error, `client thấy lỗi mạng thay vì 413: ${out.error}`).toBeUndefined();
+      expect(out.status).toBe(413);
+      expect(JSON.parse(out.body)).toMatchObject({ ok: false, code: "PAYLOAD_TOO_LARGE" });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("vượt cả hạn hút-thêm: CẮT kết nối (chặn client gửi vô hạn) — hành vi có chủ ý", async () => {
+    const { server, port } = await startServer(16, { drainGraceBytes: 0 });
+    try {
+      const out = await post(port, "x".repeat(64));
+      // Không có response sạch: đây là nhánh DUY NHẤT còn huỷ socket.
+      expect(out.status).toBeUndefined();
+      expect(out.error).toBeTruthy();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

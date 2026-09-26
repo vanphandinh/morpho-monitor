@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "markets": [
+    {
+      "id": "0x24852d8d7464402ddcd717415e009d42bf7427d6a8893487f83c75ee0f4a0ea6",
+      "minLiquidity": "100",
+      "suddenDrainMultiplier": 2
+    }
+  ]
+}

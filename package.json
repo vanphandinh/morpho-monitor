@@ -1,21 +1,32 @@
 {
   "name": "morpho",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Morpho Blue multi-market liquidity monitor, pre-signed withdrawal webapp and capture RPC proxy",
+  "main": "index.mjs",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node --env-file=.env index.mjs",
     "monitor": "node --env-file=.env monitor.mjs",
     "webapp": "node --env-file=.env webapp-server.mjs",
     "proxy": "node --env-file=.env proxy-rpc.mjs",
     "dev": "concurrently -n monitor,webapp,proxy -c blue,green,yellow \"npm run monitor\" \"npm run webapp\" \"npm run proxy\"",
+    "verify": "node verify-presigned.mjs",
+    "lint": "node scripts/lint.mjs",
+    "check": "npm run lint && node scripts/check-syntax.mjs && vitest run",
+    "diff:refactor": "node scripts/refactor-diff.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": [],
+  "keywords": [
+    "morpho",
+    "ethereum",
+    "monitor"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "module",
   "dependencies": {
     "@morpho-org/blue-sdk": "^6.2.0",
     "@morpho-org/blue-sdk-viem": "^5.1.1",
@@ -24,6 +35,7 @@
   },
   "devDependencies": {
     "concurrently": "^10.0.3",
+    "oxlint": "^1.85.0",
     "vitest": "^4.1.9"
   }
 }

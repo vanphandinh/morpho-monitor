@@ -14,6 +14,9 @@ const circuits = new Map();
 const CB_MAX_FAILURES = 3;
 const CB_BASE_BACKOFF_MS = 30_000; // 30s
 const CB_MAX_BACKOFF_MS = 120_000; // 2 min
+// Lỗi VĨNH VIỄN (401/403, API key bị tắt) không tự khỏi: giữ cooldown dài hơn để
+// không probe + log mỗi 2 phút, nhưng vẫn tự phục hồi nếu key được bật lại.
+const CB_PERMANENT_BACKOFF_MS = 600_000; // 10 min
 const CB_JITTER = 0.2; // ±20% jitter to prevent thundering herd
 
 /** Add ±20% jitter to prevent synchronized backoff across URLs. */
@@ -24,7 +27,7 @@ function applyJitter(backoffMs) {
 
 function getCircuit(url) {
   if (!circuits.has(url)) {
-    circuits.set(url, { failures: 0, openUntil: 0, backoffMs: CB_BASE_BACKOFF_MS, probing: false });
+    circuits.set(url, { failures: 0, openUntil: 0, backoffMs: CB_BASE_BACKOFF_MS, probing: false, permanent: false });
   }
   return circuits.get(url);
 }
@@ -56,11 +59,13 @@ function recordSuccess(url) {
 function recordFailure(url, opts = {}) {
   const c = getCircuit(url);
   c.failures++;
+  if (opts.isPermanent) c.permanent = true;
 
   if (c.probing) {
     // HALF-OPEN probe failed — re-open the circuit with doubled backoff
     c.probing = false;
-    c.backoffMs = Math.min(c.backoffMs * 2, CB_MAX_BACKOFF_MS);
+    const cap = c.permanent ? CB_PERMANENT_BACKOFF_MS : CB_MAX_BACKOFF_MS;
+    c.backoffMs = Math.min(c.backoffMs * 2, cap);
     c.openUntil = Date.now() + applyJitter(c.backoffMs);
     console.warn(
       `[rpc] Circuit OPEN for ${new URL(url).hostname} — ` +
@@ -69,16 +74,23 @@ function recordFailure(url, opts = {}) {
     return;
   }
 
-  // Rate limit (HTTP 429) is a clear signal — open the circuit immediately
-  // after 1 failure instead of waiting for CB_MAX_FAILURES.
-  const threshold = opts.isRateLimit ? 1 : CB_MAX_FAILURES;
+  // Rate limit (HTTP 429) and permanent endpoint errors (401/403, API key bị
+  // tắt) are clear signals — open the circuit immediately after 1 failure
+  // instead of waiting for CB_MAX_FAILURES. Không làm vậy thì một endpoint đã
+  // chết vẫn bị gọi mãi ở mọi vòng xoay mà không hề bị quarantine (audit vòng 2).
+  const threshold = opts.isRateLimit || opts.isPermanent ? 1 : CB_MAX_FAILURES;
 
   // Only open if not already open (guards against concurrent failures
   // that all arrive after the threshold was already crossed)
   if (c.failures >= threshold && c.openUntil === 0) {
-    c.backoffMs = Math.min(c.backoffMs * 2, CB_MAX_BACKOFF_MS);
+    const cap = c.permanent ? CB_PERMANENT_BACKOFF_MS : CB_MAX_BACKOFF_MS;
+    c.backoffMs = Math.min(c.backoffMs * 2, cap);
     c.openUntil = Date.now() + applyJitter(c.backoffMs);
-    const reason = opts.isRateLimit ? "rate limit (429)" : `${c.failures} consecutive failures`;
+    const reason = opts.isRateLimit
+      ? "rate limit (429)"
+      : opts.isPermanent
+        ? `endpoint từ chối vĩnh viễn (${opts.reason || "auth / API key"}) — kiểm tra URL và API key trong .env RPC_URLS`
+        : `${c.failures} consecutive failures`;
     console.warn(
       `[rpc] Circuit OPEN for ${new URL(url).hostname} — ` +
       `${reason}, cooldown ${c.backoffMs / 1000}s`
@@ -103,7 +115,7 @@ function isCircuitOpen(url) {
 }
 
 // Exported for testing
-export { recordSuccess, recordFailure, isCircuitOpen, getCircuit, circuits };
+export { recordSuccess, recordFailure, isCircuitOpen, getCircuit, circuits, isPermanentEndpointError };
 
 // ============================================================
 // ERROR CLASSIFICATION
@@ -114,6 +126,20 @@ export { recordSuccess, recordFailure, isCircuitOpen, getCircuit, circuits };
  * DNS failures, network down, timeout, rate limits, server errors.
  * Returns false for permanent errors (invalid params, method not found, etc.)
  */
+/**
+ * Lỗi cho thấy endpoint này sẽ không tự khỏi: sai/hết hạn API key (HTTP 401/403)
+ * hoặc provider trả JSON-RPC error kiểu "API key disabled". Đây KHÔNG phải lỗi
+ * tạm thời, nhưng phải được tính vào circuit breaker — nếu coi là "không liên
+ * quan" thì endpoint chết sẽ bị gọi ở mọi vòng xoay mãi mãi (audit vòng 2: 2/11
+ * slot cấu hình trong .env trả 401 "API key disabled" và không bao giờ bị quarantine).
+ */
+function isPermanentEndpointError(err) {
+  const status = err?.status;
+  if (status === 401 || status === 403) return true;
+  const combined = `${err?.message || ""} ${err?.details || ""}`;
+  return /api key (disabled|invalid|not found|expired|missing)/i.test(combined);
+}
+
 function isTransportError(err) {
   const msg = err?.message || "";
   const detail = err?.details || "";
@@ -155,16 +181,22 @@ function isTransportError(err) {
  * round-robin transport to skip to the next URL.
  *
  * @param {string} url - RPC endpoint URL
- * @param {object} httpOptions - Options forwarded to viem's http()
  * @returns {function} transport factory compatible with createRoundRobinTransport
+ *
+ * Retry policy (round-4 quota audit): 1 attempt per URL. Redundancy comes from
+ * the 11-URL rotation plus the circuit breaker; per-URL retry only multiplies
+ * load onto the exact endpoint that is currently struggling.
  */
-function circuitHttp(url, httpOptions = {}) {
+function circuitHttp(url) {
   return (config) => {
     const baseTransport = http(url, {
       timeout: 15_000,
-      retryCount: 1,        // 1 retry = 2 total attempts per URL.
-      retryDelay: 300,      // With 9 URLs in rotation, retrying the same URL
-      ...httpOptions,       // is less valuable than moving to the next one.
+      // Round-4 audit (quota, 2026-09-25): per-URL retry = 0. Trước đây retryCount
+      // = 1 khiến 1 logical call thất bại toàn URL phải trả tới 44 upstream call
+      // (2 per-URL × 11 URL × 2 lượt rotation) — đúng lúc provider rate-limit thì
+      // app tự đập thêm. Rotation 11 URL + circuit breaker (429 mở ngay) đã là dự
+      // phòng; retry cùng URL chỉ nhân lượng vào đúng endpoint đang nghẽn.
+      retryCount: 0,
     })(config);
 
     const originalRequest = baseTransport.request.bind(baseTransport);
@@ -187,12 +219,19 @@ function circuitHttp(url, httpOptions = {}) {
           recordSuccess(url);
           return result;
         } catch (err) {
-          if (isTransportError(err)) {
+          if (isTransportError(err) || isPermanentEndpointError(err)) {
             // Rate limits are a clear signal — trigger immediate circuit open.
             // Also catch JSON-RPC rate-limit code -32005.
             const isRateLimit =
               err?.status === 429 || err?.code === -32005;
-            recordFailure(url, { isRateLimit });
+            const isPermanent = !isRateLimit && isPermanentEndpointError(err);
+            recordFailure(url, {
+              isRateLimit,
+              isPermanent,
+              reason: isPermanent
+                ? `HTTP ${err?.status ?? "-"} / ${String(err?.message || "").replace(/\s+/g, " ").slice(0, 60)}`
+                : undefined,
+            });
           }
           throw err;
         }
@@ -211,14 +250,25 @@ function circuitHttp(url, httpOptions = {}) {
  * evenly across all providers. Circuit-breaker OPEN URLs are skipped
  * automatically.
  *
+ * `stickyMs` (mặc định 0 = tắt, giữ nguyên hành vi cũ): nếu request TRƯỚC vừa
+ * thành công chưa quá `stickyMs`, request kế tiếp bắt đầu lại từ đúng endpoint
+ * đó thay vì xoay tiếp. Cần cho các chuỗi đọc liên tiếp phải nhìn CÙNG một node
+ * (ví dụ bằng chứng nhả claim presign: `eth_getTransactionReceipt` rồi
+ * `eth_getTransactionCount`) — xoay sang node khác sẽ trộn hai góc nhìn lệch
+ * nhau (audit vòng 2). Cửa sổ đo từ lúc request trước HOÀN TẤT, nên một call
+ * chậm (timeout rồi retry) không phá được cặp đọc.
+ *
  * @param {string[]} urls - Array of RPC endpoint URLs
- * @param {{ retryCount?: number, retryDelay?: number }} [opts]
+ * @param {{ retryCount?: number, retryDelay?: number, stickyMs?: number }} [opts]
  * @returns {function} transport factory compatible with viem createPublicClient / createWalletClient
  */
 export function createRoundRobinTransport(urls, opts = {}) {
-  const { retryCount = 1, retryDelay = 500 } = opts;
+  const { retryCount = 1, retryDelay = 500, stickyMs = 0 } = opts;
   // Random starting position so each process distributes load differently
   let roundRobinIndex = Math.floor(Math.random() * urls.length);
+  // Endpoint phục vụ request thành công gần nhất — cơ sở cho chế độ sticky.
+  let lastServedIdx = -1;
+  let lastServedAt = 0;
 
   return (config) => {
     const transports = urls.map((url) => circuitHttp(url)(config));
@@ -231,6 +281,8 @@ export function createRoundRobinTransport(urls, opts = {}) {
           const result = await transports[idx].request(args);
           // Success — advance round-robin for the next request
           roundRobinIndex = (idx + 1) % urls.length;
+          lastServedIdx = idx;
+          lastServedAt = Date.now();
           return result;
         } catch (_err) {
           lastError = _err;
@@ -243,10 +295,14 @@ export function createRoundRobinTransport(urls, opts = {}) {
     return {
       config: transports[0].config,
       request: async (args) => {
+        const stickyStart =
+          stickyMs > 0 && lastServedIdx >= 0 && Date.now() - lastServedAt < stickyMs
+            ? lastServedIdx
+            : roundRobinIndex % urls.length;
         let lastError;
         for (let attempt = 0; attempt <= retryCount; attempt++) {
           try {
-            return await tryAllUrls(args, roundRobinIndex % urls.length);
+            return await tryAllUrls(args, stickyStart);
           } catch (err) {
             lastError = err;
             if (attempt < retryCount) {
@@ -254,6 +310,8 @@ export function createRoundRobinTransport(urls, opts = {}) {
             }
           }
         }
+        // Không URL nào phục vụ được ⇒ bỏ trạng thái sticky để vòng sau tự chọn lại.
+        lastServedIdx = -1;
         throw lastError;
       },
       get value() {
@@ -272,9 +330,11 @@ export function createRoundRobinTransport(urls, opts = {}) {
  * circuit breaker per URL, and retry with exponential backoff.
  *
  * @param {string[]} urls - Array of RPC endpoint URLs
+ * @param {{ stickyMs?: number }} [opts] - `stickyMs` giữ các request liên tiếp trên
+ *   cùng một endpoint (xem `createRoundRobinTransport`). Mặc định 0 = tắt.
  * @returns {import("viem").PublicClient}
  */
-export function createRobustPublicClient(urls) {
+export function createRobustPublicClient(urls, opts = {}) {
   if (!urls || urls.length === 0) {
     throw new Error("createRobustPublicClient: urls must be a non-empty array");
   }
@@ -286,6 +346,7 @@ export function createRobustPublicClient(urls) {
       // The per-URL retry is handled inside circuitHttp (retryCount=1).
       retryCount: 1,
       retryDelay: 500,
+      stickyMs: opts.stickyMs ?? 0,
     }),
   });
 }
@@ -323,7 +384,7 @@ export function createRobustWalletClient(urls) {
  * @param {string} serviceName - Label for log messages (e.g. "monitor")
  */
 export function addGlobalErrorHandlers(serviceName) {
-  process.on("unhandledRejection", (reason, promise) => {
+  process.on("unhandledRejection", (reason) => {
     const ts = new Date().toISOString();
     const msg = reason instanceof Error ? reason.message : String(reason);
     console.error(`[${ts}] [${serviceName}] UNHANDLED REJECTION: ${msg}`);

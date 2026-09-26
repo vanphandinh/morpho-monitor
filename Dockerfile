@@ -11,6 +11,7 @@ RUN npm ci --omit=dev
 # Copy application code
 COPY *.mjs ./
 COPY *.html ./
+COPY config ./config
 COPY docker-entrypoint.sh ./
 
 RUN chmod +x docker-entrypoint.sh

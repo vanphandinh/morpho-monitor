@@ -7,8 +7,10 @@ node_modules/
 # Environment — CHỨA THÔNG TIN NHẠY CẢM, TUYỆT ĐỐI KHÔNG COMMIT
 # ============================================================
 .env
+.env.bak
 .env.local
 .env.*.local
+config/markets.json
 
 # ============================================================
 # Build artifacts
@@ -54,6 +56,11 @@ logs/
 # AI assistant (local settings — có thể chứa token/permission)
 # ============================================================
 .claude/
+.freebuff/
+
+# Thư mục tạm của job `image` trong CI (và khi chạy lại job đó ở local): .env + markets.json mount vào
+# container. Không bao giờ commit — đây chỉ là cấu hình tối thiểu để webapp khởi động được.
+ci-fixture/
 
 # ============================================================
 # Docker (image files, not config)
