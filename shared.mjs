@@ -204,14 +204,39 @@ export async function recoverSignerAddress(message, signature) {
 }
 
 /**
+ * Số byte thân vượt trần mà server còn HÚT-THÊM (không buffer) trước khi cắt
+ * kết nối. Đủ rộng cho mọi payload ví thực tế (một eth_call deployless vài MB)
+ * để client nhận được 413 thay vì reset.
+ */
+export const DRAIN_GRACE_BYTES = 4 * 1024 * 1024;
+
+/**
  * Read request body with a hard size cap. Rejects oversized payloads.
+ *
+ * Audit 2026-09-26 (D13): bản cũ `req.destroy()` NGAY khi thân vượt trần ⇒ socket
+ * bị huỷ trước khi caller kịp ghi response, nên MỌI nhánh 413 (webapp-handler ×3,
+ * proxy-dispatcher ×2) là code không thể chạy: client chỉ thấy ECONNRESET.
+ *
+ * Nay khi thân vượt `maxBytes`: bỏ phần đã buffer (không giữ payload quá cỡ trong
+ * RAM), hút tiếp phần còn lại tới hết hoặc tới `maxBytes + drainGraceBytes` rồi
+ * mới reject — lúc đó kết nối đã sạch, caller ghi được 413 thật. Vượt cả hạn
+ * hút-thêm ⇒ cắt kết nối (nhánh DUY NHẤT còn destroy), nên một client gửi vô hạn
+ * vẫn bị chặn; trường hợp client nhỏ giọt mãi không kết thúc do `requestTimeout`
+ * của Node (mặc định 5 phút) cắt.
+ *
+ * @param {object} req - Node IncomingMessage
+ * @param {number} [maxBytes] - trần kích thước thân request
+ * @param {{ drainGraceBytes?: number }} [opts]
  * @returns {Promise<string>}
  */
-export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
+export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES, { drainGraceBytes = DRAIN_GRACE_BYTES } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     let settled = false;
+    let tooLarge = null;
+    const drainLimit = maxBytes + drainGraceBytes;
+    /** Huỷ socket — CHỈ dùng cho lỗi kết nối và cho thân vượt cả hạn hút-thêm. */
     const fail = (err) => {
       if (settled) return;
       settled = true;
@@ -219,9 +244,14 @@ export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
       req.destroy();
     };
     req.on("data", (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
-        fail(Object.assign(new Error("Payload too large"), { code: "PAYLOAD_TOO_LARGE" }));
+        if (!tooLarge) {
+          tooLarge = Object.assign(new Error("Payload too large"), { code: "PAYLOAD_TOO_LARGE" });
+        }
+        chunks.length = 0; // phần đã đọc chắc chắn bị bỏ ⇒ giải phóng RAM
+        if (size > drainLimit) fail(tooLarge);
         return;
       }
       chunks.push(chunk);
@@ -229,7 +259,9 @@ export function readBodyLimited(req, maxBytes = MAX_BODY_BYTES) {
     req.on("end", () => {
       if (settled) return;
       settled = true;
-      resolve(Buffer.concat(chunks).toString("utf-8"));
+      // Thân quá cỡ đã được hút hết ⇒ reject TRÊN KẾT NỐI SẠCH để caller ghi 413.
+      if (tooLarge) reject(tooLarge);
+      else resolve(Buffer.concat(chunks).toString("utf-8"));
     });
     req.on("error", (err) => fail(err));
   });

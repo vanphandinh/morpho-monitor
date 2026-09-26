@@ -305,4 +305,34 @@ describe("createProxyRequestHandler — HTTP semantics", () => {
     const after = await (await fetch(`http://127.0.0.1:${port}/captured`)).json();
     expect(after).toEqual({ count: 0, txs: [] });
   });
+
+  it("(e) thân quá lớn: trả 413 JSON, KHÔNG reset kết nối (audit 2026-09-26)", async () => {
+    // Trần nhỏ inject được (`deps.maxBodyBytes`) ⇒ cùng code production, không copy logic,
+    // và loop giữ ở mức vài chục byte.
+    const smallServer = http.createServer(
+      createProxyRequestHandler({
+        markets: [{ id: MARKET_ID }],
+        lenderAddress: LENDER,
+        morphoBlueAddress: MORPHO,
+        client: fakeClient,
+        capturedTxs: [],
+        maxBodyBytes: 64,
+        logger: silentLogger,
+      })
+    );
+    await new Promise((resolve) => smallServer.listen(0, "127.0.0.1", resolve));
+    const smallPort = smallServer.address().port;
+    try {
+      const resp = await fetch(`http://127.0.0.1:${smallPort}/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [], pad: "x".repeat(200) }),
+      });
+      expect(resp.status).toBe(413);
+      const json = await resp.json();
+      expect(json.error.message).toMatch(/payload too large/i);
+    } finally {
+      await new Promise((resolve) => smallServer.close(resolve));
+    }
+  });
 });

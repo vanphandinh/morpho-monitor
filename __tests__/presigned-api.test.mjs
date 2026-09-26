@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequestHandler, statusForError } from "../webapp-handler.mjs";
+import { MAX_BODY_BYTES } from "../shared.mjs";
 import { MARKET_INPUT_INVALID, MARKET_NOT_CONFIGURED } from "../market-config.mjs";
 import { ACTIVE_CLAIM_CONFLICT } from "../presigned-store.mjs";
 import { LOCK_STALE } from "../file-lock.mjs";
@@ -325,5 +326,15 @@ describe("presign API (production handler over real HTTP)", () => {
     } finally {
       await new Promise((resolve) => other.close(resolve));
     }
+  });
+
+  it("thân vượt MAX_BODY_BYTES ⇒ 413 JSON, KHÔNG reset kết nối (audit 2026-09-26)", async () => {
+    // Trần thật của production (MAX_BODY_BYTES, mặc định 1 MiB): dùng đúng con số đó
+    // để test không thể xanh vì một trần khác trong tương lai.
+    const oversized = "x".repeat(MAX_BODY_BYTES + 64 * 1024);
+    const resp = await api("POST", "/api/presign", oversized);
+    expect(resp.status).toBe(413);
+    expect(resp.json).toMatchObject({ ok: false });
+    expect(resp.json.error).toMatch(/too large/i);
   });
 });
