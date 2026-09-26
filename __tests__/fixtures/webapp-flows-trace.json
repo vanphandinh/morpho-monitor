@@ -29,7 +29,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": ""
       }
     },
     {
@@ -54,7 +55,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": ""
       }
     },
     {
@@ -80,7 +82,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": ""
       }
     },
     {
@@ -105,7 +108,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": ""
       }
     },
     {
@@ -129,7 +133,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": true,
-        "signAllDisabled": true
+        "signAllDisabled": true,
+        "nonceHint": ""
       }
     },
     {
@@ -151,7 +156,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": true,
-        "signAllDisabled": true
+        "signAllDisabled": true,
+        "nonceHint": ""
       }
     },
     {
@@ -173,7 +179,8 @@
         "gasMaxFee": "",
         "gasPriority": "",
         "nonceDecDisabled": false,
-        "signAllDisabled": true
+        "signAllDisabled": true,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -198,7 +205,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": true
+        "signAllDisabled": true,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -220,7 +228,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -242,12 +251,15 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
       "name": "sign-all-tiers",
       "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/captured\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/captured\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
         "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
@@ -261,7 +273,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Xác thực thành công! Bạn có thể sử dụng các chức năng bảo mật.</div>",
         "withdrawAllStatus": "",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -271,12 +283,14 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
       "name": "save-to-server-tiers",
       "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/captured\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"POST\",\"url\":\"/api/bundle\",\"body\":{\"tiers\":[{\"amount\":\"100\",\"amountWei\":\"100000000\",\"amountFormatted\":\"100 USDC\",\"label\":\"100 USDC\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000002\"},{\"amount\":\"250\",\"amountWei\":\"250000000\",\"amountFormatted\":\"250 USDC\",\"label\":\"250 USDC\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000003\"}],\"morphoBlueAddress\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"marketId\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lenderAddress\":\"0x1111111111111111111111111111111111111111\",\"nonce\":12,\"gas\":\"200000\",\"maxFeePerGas\":\"4000000000\",\"maxPriorityFeePerGas\":\"2000000000\",\"loanToken\":{\"symbol\":\"USDC\",\"decimals\":6}},\"authorization\":\"Bearer test-token\"}"
@@ -287,7 +301,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã lưu 2 giao dịch lên server!<br>Proxy đã capture signed tx + gửi bundle đến server.<br>Monitor sẽ tự động broadcast khi có thanh khoản.</div>",
         "withdrawAllStatus": "",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -297,12 +311,14 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
       "name": "sign-withdraw-all",
       "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/captured\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"provider\",\"method\":\"eth_chainId\",\"params\":[]}",
         "{\"kind\":\"provider\",\"method\":\"eth_sendTransaction\",\"params\":[{\"data\":\"0x5c2bea4900000000000000000000000022222222222222222222222222222222222222220000000000000000000000003333333333333333333333333333333333333333000000000000000000000000444444444444444444444444444444444444444400000000000000000000000055555555555555555555555555555555555555550000000000000000000000000000000000000000000000000bef55718ad600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001dcd650000000000000000000000000011111111111111111111111111111111111111110000000000000000000000001111111111111111111111111111111111111111\",\"from\":\"0x1111111111111111111111111111111111111111\",\"gas\":\"0x30d40\",\"maxFeePerGas\":\"0xee6b2800\",\"maxPriorityFeePerGas\":\"0x77359400\",\"nonce\":\"0xc\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"value\":\"0x0\"}]}",
         "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x93c52062aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000000000000000001111111111111111111111111111111111111111\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
@@ -314,7 +330,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã lưu 2 giao dịch lên server!<br>Proxy đã capture signed tx + gửi bundle đến server.<br>Monitor sẽ tự động broadcast khi có thanh khoản.</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -324,12 +340,14 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
       "name": "save-to-server-all-shares",
       "calls": [
+        "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/captured\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/overview\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"GET\",\"url\":\"/api/presign?market=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"body\":null,\"authorization\":\"Bearer test-token\"}",
         "{\"kind\":\"api\",\"method\":\"POST\",\"url\":\"/api/bundle\",\"body\":{\"tiers\":[{\"amount\":\"100\",\"amountWei\":\"100000000\",\"amountFormatted\":\"100 USDC\",\"label\":\"100 USDC\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000002\"},{\"amount\":\"250\",\"amountWei\":\"250000000\",\"amountFormatted\":\"250 USDC\",\"label\":\"250 USDC\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000003\"},{\"type\":\"all-shares\",\"sharesWei\":\"500000000\",\"amountWei\":\"0\",\"amountFormatted\":\"Toàn bộ shares\",\"label\":\"Rút toàn bộ shares\",\"txHash\":\"0x0000000000000000000000000000000000000000000000000000000000000004\"}],\"morphoBlueAddress\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\",\"marketId\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lenderAddress\":\"0x1111111111111111111111111111111111111111\",\"nonce\":12,\"gas\":\"200000\",\"maxFeePerGas\":\"4000000000\",\"maxPriorityFeePerGas\":\"2000000000\",\"loanToken\":{\"symbol\":\"USDC\",\"decimals\":6}},\"authorization\":\"Bearer test-token\"}"
@@ -340,7 +358,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã lưu 3 giao dịch lên server!<br>Proxy đã capture signed tx + gửi bundle đến server.<br>Monitor sẽ tự động broadcast khi có thanh khoản.</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -350,7 +368,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -366,7 +385,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -376,7 +395,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -388,7 +408,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -398,7 +418,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -413,7 +434,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "",
         "txVerifyNote": null,
@@ -423,7 +444,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -440,7 +462,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "<div class=\"banner success\">✅ Giao dịch đã gửi thành công!<br><br><strong>Tx Hash:</strong> <a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000005\" target=\"_blank\">0x0000...0005</a><br><a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000005\" target=\"_blank\">📊 Xem trên Etherscan →</a><div id=\"tx-verify-note\" class=\"tx-verify-note\">⏳ Đang xác minh giao dịch trên RPC công khai…</div></div>",
         "txVerifyNote": "✅ Đã thấy giao dịch trên RPC công khai.",
@@ -450,7 +472,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     },
     {
@@ -468,7 +491,7 @@
         "tierList": "<div class=\"tier-row\">\n            <span class=\"tier-label\">#1</span>\n            <input type=\"number\" value=\"100\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(0, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(0)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#2</span>\n            <input type=\"number\" value=\"250\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(1, this.value)\" readonly>\n            <span class=\"tier-status\" title=\"Đã ký\">✅</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(1)\" >✕</button>\n          </div><div class=\"tier-row\">\n            <span class=\"tier-label\">#3</span>\n            <input type=\"number\" value=\"\" placeholder=\"Số USDC\"\n              onchange=\"updateTierAmount(2, this.value)\" >\n            <span class=\"tier-status\" title=\"Chưa ký\">⬜</span>\n            <button class=\"btn-outline btn-remove\" onclick=\"removeTier(2)\" >✕</button>\n          </div>",
         "presignResult": "<div class=\"banner success\">✅ Đã xóa tier \"100 USDC\" khỏi rung nonce 11 (còn 1 tier).</div>",
         "withdrawAllStatus": "<span style=\"color:var(--green)\">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>",
-        "progressText": "✅ Đã ký thành công 2/2 giao dịch",
+        "progressText": "✅ Đã ký thành công 2/2 giao dịch — proxy xác nhận đúng nonce 12",
         "errorBanner": "",
         "txResult": "<div class=\"banner success\">✅ Giao dịch đã gửi thành công!<br><br><strong>Tx Hash:</strong> <a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000006\" target=\"_blank\">0x0000...0006</a><br><a href=\"https://etherscan.io/tx/0x0000000000000000000000000000000000000000000000000000000000000006\" target=\"_blank\">📊 Xem trên Etherscan →</a><div id=\"tx-verify-note\" class=\"tx-verify-note\">⏳ Đang xác minh giao dịch trên RPC công khai…</div></div>",
         "txVerifyNote": "✅ Đã thấy giao dịch trên RPC công khai.",
@@ -478,7 +501,8 @@
         "gasMaxFee": "4",
         "gasPriority": "2",
         "nonceDecDisabled": false,
-        "signAllDisabled": false
+        "signAllDisabled": false,
+        "nonceHint": "<div class=\"banner warn\">⚠️ Đang ký ở nonce <b>12</b> (sàn on-chain 11, +1). Ví phải cho phép đặt nonce khi ký — MetaMask: Settings → Advanced → bật “Customize transaction nonce”, rồi đặt đúng nonce <b>12</b> trong TỪNG popup xác nhận; hoặc dùng ví nhận nonce do dApp gửi. Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>"
       }
     }
   ]

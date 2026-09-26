@@ -378,6 +378,9 @@
             title="Tăng 1 — ký sẵn rung ở nonce tương lai">+</button>
         </div>
         <small style="color:var(--text-dim,#888)">Sàn = nonce on-chain. Bấm “Lấy Nonce” trước, rồi dùng ± để ký thang nhiều rung (N, N+1, …).</small>
+        <!-- Lời nhắc nonce > sàn (chẩn đoán 2026-09-26): nội dung do updateNonceHint() trong
+             webapp-presign.mjs ghi; ẩn khi đang đứng ở sàn hoặc chưa có nonce. -->
+        <div id="presign-nonce-hint" style="display:none"></div>
         <button class="btn-outline" id="btn-fetch-nonce" onclick="fetchNonce()" style="width:auto;margin-top:8px">
           🔢 Lấy Nonce
         </button>
