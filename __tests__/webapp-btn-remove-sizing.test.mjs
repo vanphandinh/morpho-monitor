@@ -14,9 +14,8 @@
  * Seam: DOM giả của harness KHÔNG có layout (không tính được `getBoundingClientRect()`), nên cách duy
  * nhất chạm ĐÚNG cơ chế gây lỗi mà không thêm phụ thuộc browser là tự giải CASCADE của chính
  * `webapp.html` (đặc tả + thứ tự khai báo) trên ĐÚNG ngữ cảnh container mà markup THẬT
- * (`renderPresignBundle` qua harness) sinh ra. Khẳng định khi đó là “nút thắng cascade phải cỡ inline
- * nhỏ, không phải mặc định `width:100%`/`padding:14px`” — một ngữ cảnh MỚI không có rule tương ứng sẽ
- * làm đỏ test này, đúng lớp lỗi đã xảy ra.
+ * (`renderPresignBundle` qua harness) sinh ra — xem `helpers/css-cascade.mjs`. Khẳng định khi đó là
+ * “nút thắng cascade phải cỡ inline nhỏ, không phải mặc định `width:100%`/`padding:14px`”.
  *
  * Đỏ-trước (chạy trên cây trước fix, CÙNG file này): ngữ cảnh `.row` trần giải ra `width:100%`,
  * `padding:14px`, `margin:8px 0`, và `flex`/`align-self` KHÔNG có ⇒ 4 khẳng định đỏ, rồi khẳng định
@@ -27,147 +26,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeApi, createFakeRpc, loadWebapp } from "./helpers/webapp-harness.mjs";
+import {
+  contextLabel,
+  flexContextOf,
+  flexContainerClasses,
+  modelLimitError,
+  parseCss,
+  resolveCascade,
+  scanElements,
+  specificity,
+  styleSheetOf,
+} from "./helpers/css-cascade.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(__dirname, "..", "webapp.html"), "utf8");
 
-// ============================================================
-// Giải CSS: `<style>` → rule phẳng (selector + khai báo + thứ tự)
-// ============================================================
-/**
- * Cắt stylesheet thành rule phẳng, đếm ngoặc để nuốt trọn at-rule dạng lồng (`@keyframes`).
- * Model này CHỈ đúng cho CSS không lồng của `webapp.html`; hai test “giới hạn model” bên dưới khoá
- * giả định đó lại để ngày ai thêm `@media`/at-rule chạm `.btn-remove` thì phải đỏ, không im lặng.
- */
-function parseCss(css) {
-  const src = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  const rules = [];
-  let i = 0;
-  while (i < src.length) {
-    const open = src.indexOf("{", i);
-    if (open === -1) break;
-    const selector = src.slice(i, open).trim();
-    let depth = 1;
-    let j = open + 1;
-    while (j < src.length && depth > 0) {
-      if (src[j] === "{") depth += 1;
-      else if (src[j] === "}") depth -= 1;
-      j += 1;
-    }
-    rules.push({ selector, body: src.slice(open + 1, j - 1), order: rules.length });
-    i = j;
-  }
-  return rules;
-}
-
-function declarations(body) {
-  const out = {};
-  for (const chunk of body.split(";")) {
-    const at = chunk.indexOf(":");
-    if (at === -1) continue;
-    out[chunk.slice(0, at).trim().toLowerCase()] = chunk.slice(at + 1).trim();
-  }
-  return out;
-}
-
-/** Đặc tả [id, class/attr/pseudo, element] — đủ cho các selector của file này. */
-function specificity(selector) {
-  let ids = 0;
-  let classes = 0;
-  let tags = 0;
-  for (const compound of selector.trim().split(/\s+/)) {
-    ids += (compound.match(/#[\w-]+/g) || []).length;
-    classes += (compound.match(/\.[\w-]+/g) || []).length;
-    classes += (compound.match(/\[[^\]]*\]|(?<!:):(?!:)[\w-]+/g) || []).length;
-    if (/^[a-zA-Z]/.test(compound)) tags += 1;
-  }
-  return [ids, classes, tags];
-}
-
-function cmpRank(a, b) {
-  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
-  return a[3] - b[3];
-}
-
-/** Một compound khớp element giả `{tag, classes}`; pseudo-chưa mô hình hoá ⇒ coi như KHÔNG khớp. */
-function matchesCompound(compound, node) {
-  if (compound.includes(":")) return false;
-  const tag = compound.match(/^([a-zA-Z][\w-]*)/);
-  if (tag && tag[1].toLowerCase() !== node.tag) return false;
-  for (const [, cls] of compound.matchAll(/\.([\w-]+)/g)) {
-    if (!node.classes.includes(cls)) return false;
-  }
-  return true;
-}
-
-function matches(selector, node, ancestors) {
-  if (/[>+~]/.test(selector)) return false;
-  const parts = selector.trim().split(/\s+/);
-  if (!matchesCompound(parts[parts.length - 1], node)) return false;
-  let cursor = ancestors.length - 1;
-  for (let p = parts.length - 2; p >= 0; p -= 1) {
-    let found = false;
-    while (cursor >= 0) {
-      if (matchesCompound(parts[p], ancestors[cursor])) {
-        found = true;
-        cursor -= 1;
-        break;
-      }
-      cursor -= 1;
-    }
-    if (!found) return false;
-  }
-  return true;
-}
-
-/** Giá trị thắng cascade cho `props`, trên `node` với chuỗi tổ tiên `ancestors`. */
-function resolveCascade(node, ancestors, rules, props) {
-  const winners = {};
-  for (const rule of rules) {
-    const decls = declarations(rule.body);
-    for (const raw of rule.selector.split(",")) {
-      const selector = raw.trim();
-      if (!selector || !matches(selector, node, ancestors)) continue;
-      const rank = [...specificity(selector), rule.order];
-      for (const prop of props) {
-        if (!(prop in decls)) continue;
-        const prev = winners[prop];
-        if (!prev || cmpRank(rank, prev.rank) >= 0) winners[prop] = { value: decls[prop], rank };
-      }
-    }
-  }
-  return Object.fromEntries(Object.entries(winners).map(([prop, w]) => [prop, w.value]));
-}
-
-// ============================================================
-// Đọc markup THẬT: quét thẻ, giữ chồng tổ tiên cho mỗi `.btn-remove`
-// ============================================================
-const VOID_TAGS = new Set(["br", "hr", "input", "img", "meta", "link", "source", "col", "area", "base", "embed", "track", "wbr"]);
-
-/** Mọi `.btn-remove` trong markup kèm chuỗi tổ tiên thật (tag + class của từng tổ tiên). */
-function buttonsWithContext(markup) {
-  const out = [];
-  const stack = [];
-  for (const m of String(markup).matchAll(/<(\/?)([a-zA-Z][\w-]*)([^>]*)>/g)) {
-    const [, closing, tag, attrs] = m;
-    const name = tag.toLowerCase();
-    if (closing) {
-      for (let i = stack.length - 1; i >= 0; i -= 1) {
-        if (stack[i].tag === name) {
-          stack.length = i;
-          break;
-        }
-      }
-      continue;
-    }
-    const classAttr = attrs.match(/\bclass="([^"]*)"/);
-    const classes = classAttr ? classAttr[1].split(/\s+/).filter(Boolean) : [];
-    const node = { tag: name, classes };
-    if (classes.includes("btn-remove")) out.push({ node, ancestors: stack.slice(), attrs });
-    if (!attrs.trimEnd().endsWith("/") && !VOID_TAGS.has(name)) stack.push(node);
-  }
-  return out;
-}
+const rules = parseCss(styleSheetOf(html));
+const flexClasses = flexContainerClasses(rules);
+const TRACKED = ["width", "padding", "margin", "flex", "align-self", "font-size", "line-height"];
 
 // ============================================================
 // Dựng markup thật qua harness (MỘT lần nạp webapp mỗi tiến trình)
@@ -183,15 +59,11 @@ await app.window.fetchExistingBundle();
 // Thêm một tier đang soạn để phủ ngữ cảnh thứ ba (`.tier-row`, nút ✕ của danh sách tier).
 app.window.addPresetTier("100");
 
+const isRemoveButton = (node) => node.tag === "button" && node.classes.includes("btn-remove");
 /** Nút xoá trong bậc thang bundle (`.row` trần + `.row.bundle-tier-row`). */
-const ladderButtons = buttonsWithContext(app.html("presign-existing-info"));
+const ladderButtons = scanElements(app.html("presign-existing-info"), isRemoveButton);
 /** Nút xoá trong danh sách tier đang soạn (`.tier-row`). */
-const tierButtons = buttonsWithContext(app.html("tier-list"));
-
-const styleBody = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
-const rules = parseCss(styleBody);
-
-const TRACKED = ["width", "padding", "margin", "flex", "align-self", "font-size", "line-height"];
+const tierButtons = scanElements(app.html("tier-list"), isRemoveButton);
 
 /** Các mặt số phải giống nhau giữa hai nút thì mới gọi là “đồng đều”. */
 function sizingSignature(resolved) {
@@ -211,16 +83,12 @@ const padSides = (value) => String(value).split(/\s+/).map((v) => {
   return Number(mm[1]);
 });
 
-const hasAncestorClass = (btn, cls, forbidden = null) => btn.ancestors.some(
-  (a) => a.classes.includes(cls) && (!forbidden || !a.classes.includes(forbidden))
-);
+const hasFlexAncestor = (btn, cls) => btn.ancestors.some((a) => a.classes.includes(cls));
 
 describe("giới hạn của model CSS trong test (khoá giả định 'stylesheet phẳng')", () => {
-  it("không có at-rule nào chạm `.btn-remove` (nếu có, phải mở rộng parser thay vì để test xanh giả)", () => {
+  it("không có at-rule nào chạm `.btn-remove`/`.row` (nếu có, phải mở rộng parser thay vì để test xanh giả)", () => {
     expect(rules.length).toBeGreaterThanOrEqual(40); // chốt chống regex hỏng (đo được: 61)
-    const atRules = rules.filter((r) => r.selector.trim().startsWith("@"));
-    expect(atRules.map((r) => r.body).join("\n")).not.toContain("btn-remove");
-    expect(rules.filter((r) => /^@(media|supports|layer|container)/.test(r.selector.trim()))).toEqual([]);
+    expect(modelLimitError(rules, ["btn-remove", "row", "tier-row", "bundle-tier-row"])).toBeNull();
   });
 
   it("quét markup không bỏ sót nút nào (số nút quét được = số lần xuất hiện `btn-remove`)", () => {
@@ -235,9 +103,15 @@ describe("giới hạn của model CSS trong test (khoá giả định 'styleshe
   });
 
   it("phủ CẢ BA ngữ cảnh: `.row` trần (🗑), `.row.bundle-tier-row` (✕ trong bậc thang), `.tier-row` (✕ khi soạn)", () => {
-    expect(ladderButtons.filter((b) => hasAncestorClass(b, "row", "bundle-tier-row")).length, "thiếu ngữ cảnh 🗑 trong `.row` trần").toBeGreaterThanOrEqual(1);
-    expect(ladderButtons.filter((b) => hasAncestorClass(b, "bundle-tier-row")).length, "thiếu ngữ cảnh ✕ trong `.bundle-tier-row`").toBeGreaterThanOrEqual(2);
-    expect(tierButtons.filter((b) => hasAncestorClass(b, "tier-row")).length, "thiếu ngữ cảnh ✕ trong `.tier-row`").toBeGreaterThanOrEqual(1);
+    expect(flexClasses.size, "suy `display:flex` từ CSS không ra class nào — model hỏng").toBeGreaterThanOrEqual(3);
+    // `.bundle-tier-row` KHÔNG tự khai `display:flex` — nó là modifier của `.row` (markup phát
+    // `class="row bundle-tier-row"`); nên chỉ đòi những container thật sự khai flex.
+    for (const cls of ["row", "tier-row", "preset-buttons"]) {
+      expect([...flexClasses], `stylesheet phải khai .${cls} là flex container`).toContain(cls);
+    }
+    expect(ladderButtons.filter((b) => hasFlexAncestor(b, "row") && !hasFlexAncestor(b, "bundle-tier-row")).length, "thiếu ngữ cảnh 🗑 trong `.row` trần").toBeGreaterThanOrEqual(1);
+    expect(ladderButtons.filter((b) => hasFlexAncestor(b, "bundle-tier-row")).length, "thiếu ngữ cảnh ✕ trong `.bundle-tier-row`").toBeGreaterThanOrEqual(2);
+    expect(tierButtons.filter((b) => hasFlexAncestor(b, "tier-row")).length, "thiếu ngữ cảnh ✕ trong `.tier-row`").toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -248,8 +122,8 @@ describe("nút xoá tier/rung phải là nút inline nhỏ, KHÔNG rơi về m�
   ];
 
   it.each(cases)("%s — không bị giãn theo bề rộng hàng", (_label, btn) => {
-    const ctx = btn.ancestors.map((a) => [a.tag, ...a.classes].join(".")).join(" > ");
-    const resolved = resolveCascade(btn.node, btn.ancestors, rules, TRACKED);
+    const ctx = contextLabel(btn);
+    const resolved = resolveCascade(btn, rules, TRACKED);
 
     // Đúng triệu chứng người dùng thấy: mặc định `button` cho `width:100%` + `padding:14px`.
     expect(resolved.width, `width thắng cascade trong [${ctx}]`).toBe("auto");
@@ -264,8 +138,19 @@ describe("nút xoá tier/rung phải là nút inline nhỏ, KHÔNG rơi về m�
   });
 
   it("🗑 và ✕ trong cùng bậc thang phải ĐỒNG ĐỀU (cùng mặt số), không lệch nhau theo rung", () => {
-    const signatures = ladderButtons.map((btn) => sizingSignature(resolveCascade(btn.node, btn.ancestors, rules, TRACKED)));
+    const signatures = ladderButtons.map((btn) => sizingSignature(resolveCascade(btn, rules, TRACKED)));
     // Đỏ-trước: rung 2553 rộng 255px còn rung 2554 rộng 324px vì bề rộng `.value` khác nhau.
     expect(new Set(signatures).size, `các mặt số phải giống nhau, đo được: ${JSON.stringify([...new Set(signatures)])}`).toBe(1);
+  });
+
+  it("ngữ cảnh flex của mỗi nút được suy ra từ CSS, không viết tay (không nút nào ngoài hàng flex)", () => {
+    for (const btn of [...ladderButtons, ...tierButtons]) {
+      expect(flexContextOf(btn, flexClasses), `nút trong [${contextLabel(btn)}] phải nằm trong hàng flex`).toBeTruthy();
+    }
+    // `specificity()` phải thật sự phân biệt được `.btn-remove` với `.bundle-tier-row .btn-remove`,
+    // nếu không thì toàn bộ phép giải cascade ở trên là vô nghĩa.
+    expect(specificity(".btn-remove")).toEqual([0, 1, 0]);
+    expect(specificity(".bundle-tier-row .btn-remove")).toEqual([0, 2, 0]);
+    expect(specificity("button")).toEqual([0, 0, 1]);
   });
 });
