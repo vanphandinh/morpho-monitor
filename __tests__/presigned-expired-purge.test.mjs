@@ -131,4 +131,49 @@ describe("dọn rung expired (chẩn đoán 2026-09-26)", () => {
     expect(stored.bundles["m1@5"].status).toBe("expired");
     expect(stored.bundles["m1@5"].expiredAt).toBe(new Date(NOW).toISOString());
   });
+
+  it("P7: lock/hỏng registry KHÔNG được xuyên ra ngoài — purge là best-effort, trả 0 và warn", async () => {
+    const filePath = tempRegistry();
+    seed(filePath, { version: 3, consumedNonce: -1, bundles: { "m1@2550": expiredEmpty() } });
+    for (const code of ["LOCK_STALE", "ENOENT"]) {
+      const warnings = [];
+      const locked = async () => {
+        const err = new Error(`Could not acquire lock (${code})`);
+        err.code = code;
+        throw err;
+      };
+
+      const result = await purgeExpiredRungs({
+        filePath, updateRegistry: locked, now: () => NOW, retentionMs: HOUR,
+        logger: { log: () => {}, warn: (m) => warnings.push(String(m)), error: () => {} },
+      });
+
+      expect(result.purged).toBe(0);
+      expect(warnings.join("\n"), "phải nói rõ vì sao bỏ lượt dọn").toMatch(/purge/);
+      expect(read(filePath).bundles["m1@2550"].status, "record còn nguyên, chờ lượt sau").toBe("expired");
+    }
+  });
+
+  it("P8: chu kỳ IDLE vẫn hoàn tất khi purge không lấy được lock (trước fix: cả chu kỳ ném)", async () => {
+    const filePath = tempRegistry();
+    seed(filePath, { version: 3, consumedNonce: -1, bundles: { "m1@2550": expiredEmpty() } });
+    const warnings = [];
+    const locked = async () => {
+      const err = new Error("Could not acquire lock after 50 attempts");
+      err.code = "LOCK_STALE";
+      throw err;
+    };
+    const client = { getTransactionCount: async () => { throw new Error("idle ⇒ không được đọc RPC"); } };
+
+    const result = await broadcastEligible({
+      client, lenderAddress: "x", filePath, snapshots: new Map(),
+      updateRegistry: locked, verifyBundle: async () => ({ ok: true }), isEligible: () => true,
+      now: () => NOW, expiredRetentionMs: HOUR,
+      logger: { log: () => {}, warn: (m) => warnings.push(String(m)), error: () => {} },
+    });
+
+    expect(result.idle).toBe(true);
+    expect(result.purged).toBe(0);
+    expect(warnings.join("\n")).toMatch(/purge/);
+  });
 });

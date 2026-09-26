@@ -261,20 +261,30 @@ export async function purgeExpiredRungs({ filePath, updateRegistry, now = () => 
   }
   if (victims.length === 0) return { purged: 0, keys: [] };
 
-  const keys = await updateRegistry(filePath, (reg) => {
-    const purged = [];
-    for (const { key, nonce } of victims) {
-      const bundle = reg.bundles[key];
-      // Trạng thái đổi giữa hai lần đọc (chu kỳ/tiến trình khác vừa claim hoặc xoá) ⇒ bỏ qua,
-      // không xoá mù.
-      if (!bundle || bundle.status !== "expired") continue;
-      delete reg.bundles[key];
-      // Nâng mốc TRƯỚC khi record biến mất khỏi file — nếu không, nonce này "sống lại".
-      reg.consumedNonce = Math.max(Number(reg.consumedNonce) || -1, nonce, consumedWatermark(reg));
-      purged.push(key);
-    }
-    return purged;
-  });
+  let keys;
+  try {
+    keys = await updateRegistry(filePath, (reg) => {
+      const purged = [];
+      for (const { key, nonce } of victims) {
+        const bundle = reg.bundles[key];
+        // Trạng thái đổi giữa hai lần đọc (chu kỳ/tiến trình khác vừa claim hoặc xoá) ⇒ bỏ qua,
+        // không xoá mù.
+        if (!bundle || bundle.status !== "expired") continue;
+        delete reg.bundles[key];
+        // Nâng mốc TRƯỚC khi record biến mất khỏi file — nếu không, nonce này "sống lại".
+        reg.consumedNonce = Math.max(Number(reg.consumedNonce) || -1, nonce, consumedWatermark(reg));
+        purged.push(key);
+      }
+      return purged;
+    });
+  } catch (err) {
+    // Purge là dọn dẹp BEST-EFFORT: lock bị process khác giữ (LOCK_STALE), registry hỏng giữa hai
+    // lần đọc… chỉ được TRÌ HOÃN việc dọn sang chu kỳ sau. Trước fix lỗi từ đây xuyên thẳng ra
+    // `broadcastEligible` (purge chạy trước cả nhánh idle) ⇒ một lượt dọn không lấy được lock giết
+    // cả chu kỳ 30s, kể cả khi registry idle — thứ trước đây không bao giờ ném (audit D15–D20).
+    logger?.warn?.(`[presign] purge expired rungs bỏ qua lượt này: ${err?.message || err}`);
+    return { purged: 0, keys: [] };
+  }
   if (keys.length > 0) {
     logger?.log?.(
       `[presign] purged ${keys.length} expired rung(s) quá ân hạn ${Math.round(retentionMs / 60_000)} phút: ${keys.join(", ")}`
