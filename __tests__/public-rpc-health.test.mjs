@@ -253,6 +253,46 @@ describe("probePublicRpc — các lớp lỗi bắt được (ghim từ probe th
     expect(r.reason).toMatch(/mainnet|0x2105/i);
   });
 
+  it("preflight TIMEOUT (tạm thời) ⇒ retry 1 lần; lần 2 có ACAO ⇒ vẫn đạt", async () => {
+    let preflightCalls = 0;
+    const base = makeGoodFetcher();
+    const fetcher = async (url, init = {}) => {
+      if (init.method === "OPTIONS") {
+        preflightCalls++;
+        if (preflightCalls === 1) {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+      }
+      return base(url, init);
+    };
+    const r = await probePublicRpc(GOOD_RPC, { fetchImpl: fetcher, timeoutMs: 1000, interRequestDelayMs: 0 });
+    expect(r.ok).toBe(true);
+    expect(preflightCalls).toBe(2);
+  });
+
+  it("chainId TIMEOUT 1 lần (kiểu publicnode trên VPS) ⇒ retry ⇒ vẫn đạt — không bị loại oan", async () => {
+    let chainIdCalls = 0;
+    const base = makeGoodFetcher();
+    const fetcher = async (url, init = {}) => {
+      if (init.method === "OPTIONS") return base(url, init); // preflight không có body
+      const body = JSON.parse(init.body);
+      if (body.method === "eth_chainId") {
+        chainIdCalls++;
+        if (chainIdCalls === 1) {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          throw err;
+        }
+      }
+      return base(url, init);
+    };
+    const r = await probePublicRpc(GOOD_RPC, { fetchImpl: fetcher, timeoutMs: 1000, interRequestDelayMs: 0 });
+    expect(r.ok).toBe(true);
+    expect(chainIdCalls).toBe(2);
+  });
+
   it("mạng chết (AbortError ở mọi request) ⇒ loại ngay ở preflight, không treo", async () => {
     const fetcher = async () => {
       const err = new Error("The operation was aborted");

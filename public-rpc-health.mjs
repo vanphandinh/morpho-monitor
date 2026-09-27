@@ -202,12 +202,32 @@ export async function probePublicRpc(url, {
   const call = (method, params) => rpcRequest(url, method, params, { timeoutMs, fetchImpl, origin });
   const delay = () => new Promise((r) => setTimeout(r, interRequestDelayMs));
 
-  const pre = await preflightRequest(url, { timeoutMs, fetchImpl, origin });
+  // Lỗi TẠM THỜI (429/timeout/mạng) retry ĐÚNG 1 lần — áp dụng cho MỌI bước
+  // (preflight, chainId, checks): chạy VPS 2026-09-27 cho thấy publicnode —
+  // endpoint ổn định nhất — bị loại chỉ vì 1 timeout ở bước chainId KHÔNG có
+  // retry. Lỗi logic (thiếu method, chainId sai, không CORS) thì không retry.
+  const isTransient = (r) => r.rateLimited || r.kind === "timeout" || r.kind === "network";
+  const withTransientRetry = async (attempt) => {
+    let r = await attempt();
+    if (!r.ok && isTransient(r)) {
+      await delay();
+      r = await attempt();
+    }
+    return r;
+  };
+
+  // Preflight: throw/timeout ⇒ status 0 (tạm thời) — retry 1 lần; thiếu ACAO
+  // (status 2xx nhưng không header) là lỗi logic — không retry.
+  let pre = await preflightRequest(url, { timeoutMs, fetchImpl, origin });
+  if (!pre.ok && pre.status === 0) {
+    await delay();
+    pre = await preflightRequest(url, { timeoutMs, fetchImpl, origin });
+  }
   if (!pre.ok) {
     return { ok: false, latencyMs: 0, reason: "preflight OPTIONS không có access-control-allow-origin — browser không gọi trực tiếp được" };
   }
 
-  const chainId = await call("eth_chainId", []);
+  const chainId = await withTransientRetry(() => call("eth_chainId", []));
   if (!chainId.ok) return { ok: false, latencyMs: chainId.latencyMs, reason: `chainId: ${chainId.error}` };
   if (chainId.result !== "0x1") return { ok: false, latencyMs: chainId.latencyMs, reason: `chainId=${chainId.result} (không phải mainnet)` };
   if (!chainId.cors) return { ok: false, latencyMs: chainId.latencyMs, reason: "POST không có access-control-allow-origin" };
@@ -229,13 +249,7 @@ export async function probePublicRpc(url, {
     // eslint-disable-next-line no-await-in-loop -- nhịp tuần tự có chủ ý: delay giữa các request, không burst
     await delay();
     // eslint-disable-next-line no-await-in-loop
-    let r = await call(method, params);
-    if (!r.ok && (r.rateLimited || r.kind === "timeout" || r.kind === "network")) {
-      // Lỗi tạm thời (429/timeout/mạng): probe chạy 4 worker song song nên endpoint
-      // yếu có thể 429 tùy thứ tự request — retry ĐÚNG 1 lần, không retry lỗi logic.
-      await delay();
-      r = await call(method, params);
-    }
+    const r = await withTransientRetry(() => call(method, params));
     total += r.latencyMs;
     if (!r.ok) {
       return {
