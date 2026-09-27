@@ -19,7 +19,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PUBLIC_RPC_HEALTH_PATH, PUBLIC_RPC_URLS } from "../shared.mjs";
+import { PUBLIC_RPC_HEALTH_PATH, PUBLIC_RPC_MAX_ENDPOINTS, PUBLIC_RPC_URLS } from "../shared.mjs";
 import { extractCandidates, probeCandidates, CHAINLIST_CATALOG_URL } from "../public-rpc-health.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,14 +68,17 @@ if (outArg) {
   mkdirSync(path.dirname(outPath), { recursive: true });
   // Script tay chỉ GHI khi có --out (mặc định ghi đúng cache server đọc như
   // verifyPublicRpcs làm — nhưng chỉ khi đạt ngưỡng tối thiểu để không cụt hóa).
+  // Cắt theo PUBLIC_RPC_MAX_ENDPOINTS Y NHƯ server-side: không nhất quán thì
+  // cache tay có thể nhét endpoint chậm (stakely 1961ms trên VPS) vượt cap 8.
+  const chosen = passing.slice(0, PUBLIC_RPC_MAX_ENDPOINTS);
   const payload = {
     version: 1,
     verifiedAt: new Date().toISOString(),
-    urls: passing.map((r) => r.url),
-    probe: Object.fromEntries(passing.map((r) => [r.url, { latencyMs: r.latencyMs }])),
+    urls: chosen.map((r) => r.url),
+    probe: Object.fromEntries(chosen.map((r) => [r.url, { latencyMs: r.latencyMs }])),
   };
   writeFileSync(outPath, JSON.stringify(payload, null, 2));
-  console.log(`[probe-tay] đã ghi ${passing.length} endpoint → ${outPath}`);
+  console.log(`[probe-tay] đã ghi ${chosen.length}/${passing.length} endpoint (cap ${PUBLIC_RPC_MAX_ENDPOINTS}) → ${outPath}`);
 } else {
   console.log("[probe-tay] chỉ báo cáo — truyền --out=<path> để ghi cache (server đọc file đó).");
 }
