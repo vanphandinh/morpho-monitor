@@ -250,6 +250,13 @@
   <!-- Error banner -->
   <div id="error-banner" class="banner error" style="display:none"></div>
 
+  <!-- Lớp hybrid RPC (2026-09-27): lần kiểm chứng gần nhất của danh sách RPC
+       cho browser (server probe định kỳ qua public-rpc-health.mjs). Ẩn khi
+       lớp động tắt/chưa từng probe thành công. -->
+  <div id="rpc-verified-note" style="display:none;margin:8px 0;font-size:0.78rem;color:var(--text-dim,#888);text-align:center">
+    <span id="rpc-verified-text"></span>
+  </div>
+
   <!-- ============================================ -->
   <!-- TAB: Rút Tiền                                -->
   <!-- ============================================ -->

@@ -20,7 +20,7 @@ import { createWalletClient, custom } from "viem";
 import { mainnet } from "viem/chains";
 import { getWalletProviderName } from "./webapp-wallet.mjs";
 import { SERVER_LENDER_ADDRESS, SERVER_MARKETS, state } from "./webapp-state.mjs";
-import { clearSession, getProxyUrl, hideError, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
+import { clearSession, getProxyUrl, hideError, renderRpcVerifiedNote, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
 import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
 import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
@@ -360,6 +360,8 @@ async function init() {
     document.getElementById("presign-actions").style.display = "block";
     renderTierList();
     renderWalletCompatibility();
+    // Lớp hybrid RPC (2026-09-27): dòng nhỏ "đã kiểm chứng lúc …" — ẩn khi lớp động tắt.
+    renderRpcVerifiedNote();
     // Populate proxy URL
     const proxyUrlEl = document.getElementById("presign-proxy-url-display");
     if (proxyUrlEl) proxyUrlEl.textContent = getProxyUrl();

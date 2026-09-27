@@ -6,7 +6,7 @@
  */
 
 import { getCompatibilityMessage } from "./webapp-wallet.mjs";
-import { SERVER_PROXY_RPC_URL, state } from "./webapp-state.mjs";
+import { SERVER_PROXY_RPC_URL, RPC_VERIFIED_AT, RPC_REFRESH_HOURS, state } from "./webapp-state.mjs";
 
 // Auth state
 let sessionToken = sessionStorage.getItem("morpho-session-token") || null;
@@ -96,6 +96,28 @@ export function updateAuthUI() {
 
 export function getProxyUrl() {
   return SERVER_PROXY_RPC_URL;
+}
+
+// ============================================================
+// RPC VERIFIED NOTE (lớp hybrid, 2026-09-27)
+// ============================================================
+// Server probe định kỳ danh sách RPC cho browser (public-rpc-health.mjs) và
+// inject timestamp "lần kiểm chứng gần nhất" vào config. Hiển thị 1 dòng nhỏ;
+// không có timestamp (lớp động tắt / fallback tĩnh) ⇒ ẩn dòng đó, KHÔNG lỗi.
+export function renderRpcVerifiedNote() {
+  const wrap = document.getElementById("rpc-verified-note");
+  if (!wrap) return;
+  const textEl = document.getElementById("rpc-verified-text");
+  if (!RPC_VERIFIED_AT) {
+    wrap.style.display = "none";
+    return;
+  }
+  const when = new Date(RPC_VERIFIED_AT);
+  const whenText = Number.isFinite(when.getTime())
+    ? when.toLocaleString("vi-VN", { hour12: false })
+    : RPC_VERIFIED_AT;
+  if (textEl) textEl.textContent = `🩺 Danh sách RPC cho trình duyệt đã được server kiểm chứng lúc ${whenText} (tự cập nhật ${RPC_REFRESH_HOURS > 0 ? "mỗi " + RPC_REFRESH_HOURS + " giờ" : "theo chu kỳ"}).`;
+  wrap.style.display = "block";
 }
 
 // ============================================================
