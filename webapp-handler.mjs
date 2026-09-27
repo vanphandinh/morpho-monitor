@@ -110,7 +110,10 @@ function sanitizePendingBundle(input) {
  * @param {object} deps
  * @param {string} deps.presignedPath - registry file path
  * @param {Array<{id: string}>} deps.markets - configured market allow-list
- * @param {string} deps.content - HTML served at "/"
+ * @param {string|(() => string)} deps.content - HTML served at "/". Hàm được
+ *   gọi MỖI request GET/HEAD trang chính: cho phép bootstrap build lại HTML
+ *   khi danh sách RPC verified thay đổi giữa chừng (lớp hybrid, 2026-09-27).
+ *   Truyền string vẫn hoạt động như cũ (test cũ không đổi).
  * @param {string} [deps.proxyUrl] - proxy base URL for /api/bundle relay
  * @param {string} [deps.proxyPassword] - internal secret for proxy relay
  * @param {typeof fetch} [deps.fetchImpl] - injectable fetch for proxy relay
@@ -688,8 +691,19 @@ export function createRequestHandler({
       }
     });
 
+    // content có thể là string hoặc hàm trả string (lớp hybrid RPC: HTML
+    // rebuild khi danh sách verified đổi — webapp-server.mjs). build failure
+    // giữa chừng không được phép chết request: giữ servingHtml cũ.
+    let body;
+    try {
+      body = typeof content === "function" ? content() : content;
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] ⚠️ content() build failed:`, err.message);
+      body = "";
+    }
+
     res.writeHead(200);
-    res.end(content);
+    res.end(body);
   };
 
   // Cleanup timer do bootstrap (webapp-server.mjs) tạo — test import handler

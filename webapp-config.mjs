@@ -7,7 +7,7 @@
  * nhận `proxyRpcUrl: undefined` rồi rơi về `http://127.0.0.1:8545` — trên VPS
  * qua HTTPS địa chỉ đó trỏ về máy của user, không phải server.
  */
-import { LENDER_ADDRESS, PROXY_RPC_URL, PUBLIC_RPC_URLS, WEBAPP_PASSWORD, PROXY_RPC_RATE_LIMIT, PROXY_ALLOW_PUBLIC_RPC } from "./shared.mjs";
+import { LENDER_ADDRESS, PROXY_RPC_URL, PUBLIC_RPC_URLS, PUBLIC_RPC_REFRESH_HOURS, WEBAPP_PASSWORD, PROXY_RPC_RATE_LIMIT, PROXY_ALLOW_PUBLIC_RPC } from "./shared.mjs";
 import { RECOVERY_THRESHOLD_MS } from "./presigned-broadcast.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -30,6 +30,13 @@ export function buildWebappConfig({
   lenderAddress = LENDER_ADDRESS,
   proxyRpcUrl = PROXY_RPC_URL,
   publicRpcUrls = PUBLIC_RPC_URLS,
+  // Lớp hybrid (2026-09-27): danh sách đã probe từ public-rpc-health.mjs.
+  // Ưu tiên: env/operator (publicRpcUrls) > verified cache > mặc định tĩnh.
+  // `undefined`/null ⇒ bỏ qua lớp động; mảng rỗng cũng bị bỏ qua (cache hỏng
+  // không được phép trống hóa config).
+  verifiedRpcUrls = null,
+  verifiedAt = null,
+  refreshHours = PUBLIC_RPC_REFRESH_HOURS,
 } = {}) {
   if (!Array.isArray(markets) || markets.length === 0) {
     throw new Error("❌ Không có market nào được cấu hình — kiểm tra config/markets.json (MARKETS_FILE).");
@@ -52,7 +59,17 @@ export function buildWebappConfig({
   }
 
   const urls = Array.isArray(publicRpcUrls) ? publicRpcUrls.filter((u) => typeof u === "string" && u.trim()) : [];
-  if (urls.length === 0) {
+
+  // Precedence lớp hybrid (2026-09-27): verified cache THẮNG danh sách tĩnh
+  // KHI ĐƯỢC TRUYỀN. Trách nhiệm "operator override PUBLIC_RPC_URLS ⇒ không
+  // truyền verified" thuộc về webapp-server.mjs (nó biết process.env) — builder
+  // giữ mù về nguồn: verified được truyền là được dùng. Mảng rỗng/không phải
+  // mảng ⇒ bỏ qua lớp động (cache hỏng không được phép cụt hóa config).
+  const verified = Array.isArray(verifiedRpcUrls) && verifiedRpcUrls.length > 0
+    ? verifiedRpcUrls.filter((u) => typeof u === "string" && u.trim())
+    : null;
+  const effectiveRpcUrls = verified ?? urls;
+  if (effectiveRpcUrls.length === 0) {
     throw new Error(
       "❌ PUBLIC_RPC_URLS đang trống — browser cần ít nhất 1 HTTP RPC endpoint key-less.\n" +
       "   → Set PUBLIC_RPC_URLS=https://... trong .env (danh sách phân cách bằng dấu phẩy).\n" +
@@ -60,19 +77,32 @@ export function buildWebappConfig({
     );
   }
   // Fail closed: một URL kèm credential lộ qua webapp public là mất key. Chặn
-  // lúc cấu hình thay vì tin vào việc operator nhớ dọn .env.
-  const credentialed = urls.filter((u) => urlLooksCredentialed(u));
+  // lúc cấu hình thay vì tin vào việc operator nhớ dọn .env. Guard chạy trên
+  // DANH SÁCH HIỆU QUẢ — verified đến từ catalog bên ngoài (chainlist) nên
+  // phải qua cùng cửa chặn, không được tin hơn danh sách tĩnh.
+  const credentialed = effectiveRpcUrls.filter((u) => urlLooksCredentialed(u));
   if (credentialed.length > 0) {
     throw new Error(
-      `❌ PUBLIC_RPC_URLS chứa ${credentialed.length} URL mang API key/credential — webapp public sẽ bóc lịch key.\n` +
-      `   → Bỏ các URL sau khỏi PUBLIC_RPC_URLS: ${credentialed.map(maskCredential).join(", ")}\n` +
+      `❌ Danh sách RPC cho browser chứa ${credentialed.length} URL mang API key/credential — webapp public sẽ bóc lịch key.\n` +
+      `   → Bỏ các URL sau: ${credentialed.map(maskCredential).join(", ")}\n` +
       "   → RPC_URLS (có key) chỉ dành cho server-side (monitor/proxy), không cho browser."
     );
   }
 
   // claimRecoveryMs: ngưỡng "claim đã quá hạn recovery" (presigned-broadcast.mjs)
   // để browser hiển thị tuổi claim đang broadcasting mà không copy hằng số (R1).
-  return { markets, lenderAddress: lender, proxyRpcUrl: proxyUrl, rpcUrls: urls, claimRecoveryMs: RECOVERY_THRESHOLD_MS };
+  return {
+    markets,
+    lenderAddress: lender,
+    proxyRpcUrl: proxyUrl,
+    rpcUrls: effectiveRpcUrls,
+    // Lớp hybrid: browser chỉ HIỂN THỊ lần kiểm chứng gần nhất (webapp-shell);
+    // null = chưa từng probe thành công hoặc lớp động tắt.
+    rpcVerifiedAt: typeof verifiedAt === "string" && verified ? verifiedAt : null,
+    // Chu kỳ refresh server đang chạy (giờ) — chỉ để hiển thị.
+    rpcRefreshHours: Number(refreshHours) > 0 ? Number(refreshHours) : 0,
+    claimRecoveryMs: RECOVERY_THRESHOLD_MS,
+  };
 }
 
 /**

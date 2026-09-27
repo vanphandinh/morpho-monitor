@@ -48,10 +48,20 @@ export const RPC_URLS = env("RPC_URLS",
 // Round-4 audit (quota, 2026-09-25): RPC_URLS toàn endpoint kèm API key, mà
 // webapp public (docker publish :3000) inject config này vào window.MORPHO_CONFIG
 // ⇒ mỗi visitor bóc lịch được toàn bộ key. Browser KHÔNG BAO GIỜ nhận RPC_URLS:
-// mặc định là 6 endpoint key-less đã PROBE THẬT 2026-09-25 (chainId=0x1, CORS
-// mở, latency 100–770ms; chi tiết probe: docs/plans/2026-09-25-round4-quota-rpc.md).
-// LƯU Ý: rpc.ankr.com/eth key-less ĐÃ CHẾT (trả -32000 "Unauthorized: You must
-// authenticate with an API key") — không thêm lại. Override bằng PUBLIC_RPC_URLS.
+// mặc định là 8 endpoint key-less đã PROBE THẬT (chainId=0x1, CORS mở, đủ
+// eth_call/eth_getLogs/receipt; probe gần nhất 2026-09-27: docs/plans/
+// 2026-09-27-public-rpc-list-update.md).
+// Đã LOẠI kèm bằng chứng probe (đừng thêm lại):
+//   • rpc.ankr.com/eth key-less — chết: -32000 "Unauthorized ... API key" (2026-09-25)
+//   • eth.meowrpc.com — 429 thất thường (tái hiện: 200 → 429 → 200 trong 3 request
+//     liên tiếp, 2026-09-27)
+//   • eth.merkle.io — 429 ngay request đầu (2026-09-27); rpc.flashbots.net — từ chối
+//     eth_call; eth.rpc.blxrbdn.com — thiếu eth_getLogs (cùng ngày)
+//   • eth-pokt/ethereum-public.nodies.app — preflight OPTIONS KHÔNG trả ACAO
+//     (dù POST có) ⇒ browser chặn POST ⇒ vô dụng cho webapp (audit 2026-09-27)
+// Lớp hybrid (2026-09-27): webapp-server còn tự fetch catalog chainlist + probe,
+// kết quả ghi cache và ƯU TIÊN TRÊN danh sách tĩnh này (xem public-rpc-health.mjs);
+// operator vẫn override bằng PUBLIC_RPC_URLS (thắng cả lớp động).
 export const PUBLIC_RPC_URLS = env("PUBLIC_RPC_URLS",
   [
     "https://ethereum-rpc.publicnode.com",
@@ -59,9 +69,26 @@ export const PUBLIC_RPC_URLS = env("PUBLIC_RPC_URLS",
     "https://eth-mainnet.public.blastapi.io",
     "https://gateway.tenderly.co/public/mainnet",
     "https://1rpc.io/eth",
-    "https://eth.meowrpc.com",
+    "https://eth.blockrazor.xyz",
+    "https://rpc-eth.blockmachine.io",
+    "https://rpc.mevblocker.io",
   ].join(",")
 ).split(",").map(u => u.trim()).filter(Boolean);
+
+// ---- Lớp hybrid RPC công khai (public-rpc-health.mjs) ----
+// Danh sách tĩnh trên chỉ là FALLBACK: định kỳ server fetch catalog chainlist
+// (đã ETag), lọc key-less + probe từng ứng viên (chainId/eth_call/eth_getLogs
+// + CORS) và cache kết quả vào PUBLIC_RPC_HEALTH_PATH. Cache tươi hơn
+// PUBLIC_RPC_CACHE_MAX_AGE_HOURS giờ được dùng cho browser trước danh sách tĩnh.
+// Chu kỳ 0 = tắt lớp động (luôn dùng danh sách tĩnh). Probe là các request
+// CHỈ ĐỌC (chainId/blockNumber/eth_call/getLogs/receipt/feeHistory).
+export const PUBLIC_RPC_REFRESH_HOURS = envNum("PUBLIC_RPC_REFRESH_HOURS", 24);
+export const PUBLIC_RPC_MIN_ENDPOINTS = envNum("PUBLIC_RPC_MIN_ENDPOINTS", 4);
+export const PUBLIC_RPC_MAX_ENDPOINTS = envNum("PUBLIC_RPC_MAX_ENDPOINTS", 8);
+export const PUBLIC_RPC_CACHE_MAX_AGE_HOURS = envNum("PUBLIC_RPC_CACHE_MAX_AGE_HOURS", 48);
+export const PUBLIC_RPC_HEALTH_PATH = env("PUBLIC_RPC_HEALTH_PATH", "./data/public-rpcs-verified.json");
+// Probe dùng chung timeout request (ms) — mỗi endpoint ≤6 request chỉ đọc.
+export const PUBLIC_RPC_PROBE_TIMEOUT_MS = envNum("PUBLIC_RPC_PROBE_TIMEOUT_MS", 8000);
 
 // ---- WebSocket RPC (real-time event trigger, tùy chọn) ----
 // WSS endpoints để nhận events real-time từ Morpho Blue.

@@ -33,10 +33,11 @@ export const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
 
 // M2 + Round-4 phụ lục (2026-09-25): KHÔNG hardcode URL kèm API key trong
 // file được phục vụ công khai. Danh sách thật do server inject qua
-// window.MORPHO_CONFIG.rpcUrls (derive từ PUBLIC_RPC_URLS — 6 endpoint
+// window.MORPHO_CONFIG.rpcUrls (derive từ PUBLIC_RPC_URLS — 8 endpoint
 // key-less đã probe thật; xem webapp-config.mjs). Fallback dưới đây chỉ
 // chạy khi server không inject config, và KHÔNG chứa endpoint ankr
-// key-less — đã chết (ankr bắt buộc API key, probe 2026-09-25).
+// key-less — đã chết (ankr bắt buộc API key, probe 2026-09-25), cũng
+// KHÔNG chứa meowrpc — 429 thất thường (probe 2026-09-27).
 export const RPC_URLS = (Array.isArray(CFG.rpcUrls) && CFG.rpcUrls.length > 0)
   ? CFG.rpcUrls
   : [
@@ -45,8 +46,18 @@ export const RPC_URLS = (Array.isArray(CFG.rpcUrls) && CFG.rpcUrls.length > 0)
     "https://eth-mainnet.public.blastapi.io",
     "https://gateway.tenderly.co/public/mainnet",
     "https://1rpc.io/eth",
-    "https://eth.meowrpc.com",
+    "https://eth.blockrazor.xyz",
+    "https://rpc-eth.blockmachine.io",
+    "https://rpc.mevblocker.io",
   ];
+
+// Lớp hybrid (2026-09-27): server probe định kỳ và ghi "lần kiểm chứng gần
+// nhất" vào config. Browser chỉ DÙNG ĐỂ HIỂN THỊ (dòng nhỏ dưới header),
+// không có nó thì UI bỏ trống — danh sách RPC vẫn là CFG.rpcUrls.
+export const RPC_VERIFIED_AT = typeof CFG.rpcVerifiedAt === "string" ? CFG.rpcVerifiedAt : null;
+// Chu kỳ refresh server đang chạy (giờ). 0 = lớp động tắt — dòng UI cũng ẩn
+// (renderRpcVerifiedAt chỉ hiện khi RPC_VERIFIED_AT có giá trị).
+export const RPC_REFRESH_HOURS = Number(CFG.rpcRefreshHours) > 0 ? Number(CFG.rpcRefreshHours) : 0;
 
 // Minimal ABI for Morpho Blue
 export const MORPHO_ABI = [

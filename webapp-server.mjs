@@ -18,11 +18,17 @@ import {
   USE_SSL,
   SSL_CERT_PATH,
   SSL_KEY_PATH,
+  LENDER_ADDRESS,
+  PROXY_RPC_URL,
+  PUBLIC_RPC_REFRESH_HOURS,
+  PUBLIC_RPC_HEALTH_PATH,
+  PUBLIC_RPC_CACHE_MAX_AGE_HOURS,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
 import { createRequestHandler } from "./webapp-handler.mjs";
-import { buildWebappConfig, injectWebappConfig, assertWebappAuthConfig } from "./webapp-config.mjs";
+import { assertWebappAuthConfig } from "./webapp-config.mjs";
+import { createHybridRpcServing, refreshHoursToMs } from "./webapp-serving.mjs";
 
 // Global error handlers — prevent crashes from unhandled rejections
 addGlobalErrorHandlers("webapp-server");
@@ -53,17 +59,33 @@ try {
   process.exit(1);
 }
 
-// Inject config via JSON.stringify — tránh XSS break-out từ env values.
-// Fail-fast khi thiếu LENDER_ADDRESS / PROXY_RPC_URL (C3) thay vì để browser
-// rơi về http://127.0.0.1:8545 (sai hoàn toàn trên VPS/HTTPS).
-let webappConfig;
+// Lớp hybrid RPC (2026-09-27): orchestration nằm ở webapp-serving.mjs
+// (createHybridRpcServing) — factory test được, sở hữu duy nhất state
+// verified/serving. Boot KHÔNG chờ probe: request đầu dùng cache/fallback,
+// refresh nền rebuild HTML sau mỗi chu kỳ (tab mở lâu không cần F5).
+let serving; // assigned trong try/exit bên dưới
 try {
-  webappConfig = buildWebappConfig({ markets: configuredMarkets });
+  serving = createHybridRpcServing({
+    markets: configuredMarkets,
+    htmlContent,
+    lenderAddress: LENDER_ADDRESS,
+    proxyRpcUrl: PROXY_RPC_URL,
+    operatorOverrodePublicRpcs: process.env.PUBLIC_RPC_URLS !== undefined,
+    refreshEnabled: PUBLIC_RPC_REFRESH_HOURS > 0,
+    refreshHoursMs: refreshHoursToMs(PUBLIC_RPC_REFRESH_HOURS),
+    cachePath: path.join(__dirname, PUBLIC_RPC_HEALTH_PATH),
+    maxAgeHours: PUBLIC_RPC_CACHE_MAX_AGE_HOURS,
+  });
 } catch (err) {
   console.error(err.message);
   process.exit(1);
 }
-htmlContent = injectWebappConfig(htmlContent, webappConfig);
+// Boot log đọc serving.getConfig(); refresh nền start sau (unref'd).
+const servingConfig = serving.getConfig();
+serving.startRefreshTimer();
+// Probe nền NGAY lúc boot (không await — boot không phụ thuộc mạng ngoài);
+// chỉ khi lớp hybrid thực sự bật (operator override ⇒ chỉ dùng danh sách tĩnh).
+if (serving.isActive()) serving.refreshOnce();
 
 // Đọc module app một lần lúc khởi động, fail-fast cùng kiểu với webapp.html:
 // thiếu file này thì trang tải được nhưng KHÔNG có JS nào chạy (UI chết lặng).
@@ -128,7 +150,7 @@ const createServer = (requestHandler) =>
 const handler = createRequestHandler({
   presignedPath: PRESIGNED_PATH,
   markets: configuredMarkets,
-  content: htmlContent,
+  content: () => serving.getHtml(), // hàm ⇒ handler đọc HTML mỗi request (config RPC tự tươi)
   appScript,
   logicScript,
   scripts: {
@@ -157,9 +179,10 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("");
   console.log(`  🌐 Webapp đang chạy tại: ${proto}://0.0.0.0:${PORT}`);
   console.log(`  📱 Local:               ${proto}://localhost:${PORT}`);
-  console.log(`  🔌 Proxy RPC (browser): ${webappConfig.proxyRpcUrl}`);
-  console.log(`  📡 Browser RPC URLs:    ${webappConfig.rpcUrls.length} endpoint(s)`);
-  console.log(`  👛 Lender:              ${webappConfig.lenderAddress}`);
+  console.log(`  🔌 Proxy RPC (browser): ${servingConfig.proxyRpcUrl}`);
+  console.log(`  📡 Browser RPC URLs:    ${servingConfig.rpcUrls.length} endpoint(s)` +
+    (servingConfig.rpcVerifiedAt ? ` (verified ${servingConfig.rpcVerifiedAt})` : " (fallback tĩnh)"));
+  console.log(`  👛 Lender:              ${servingConfig.lenderAddress}`);
   if (sslOptions) console.log(`  🔒 SSL enabled — cert: ${SSL_CERT_PATH}`);
   console.log("");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

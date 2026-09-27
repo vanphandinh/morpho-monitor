@@ -132,6 +132,9 @@ describe("webapp.html hygiene (M2)", () => {
     // 2 endpoint thay thế đã probe thật (CORS mở, chainId=0x1).
     expect(webapp).toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
     expect(webapp).toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
+    // Audit 2026-09-27: nodies.app TRẢ ACAO cho POST nhưng im lặng với OPTIONS
+    // preflight ⇒ browser chặn POST. Endpoint vô dụng cho browser — pin KHÔNG CÒN.
+    expect(webapp).not.toMatch(/nodies\.app/);
   });
 });
 

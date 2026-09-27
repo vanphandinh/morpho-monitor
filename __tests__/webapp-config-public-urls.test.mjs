@@ -18,10 +18,19 @@ const MARKET = { id: "0x" + "a".repeat(64), minLiquidity: "100", suddenDrainMult
 const LENDER = "0x" + "b".repeat(40);
 
 /**
- * 6 public RPC key-less đã PROBE THẬT 2026-09-25 (POST JSON-RPC từ máy thật):
- * chainId=0x1, head block trả về, CORS mở cho browser, latency 100–770ms.
- * Thứ tự = thứ tự rotation của browser. Chi tiết probe + lý do loại các
- * endpoint khác: docs/plans/2026-09-25-round4-quota-rpc.md (phụ lục).
+ * Lớp hybrid RPC (2026-09-27): danh sách mặc định 8 endpoint key-less PROBE
+ * THẬT (đợt gần nhất 2026-09-27, POST JSON-RPC từ máy thật: eth_chainId +
+ * eth_call + eth_getLogs + receipt + feeHistory, CORS mở, 300–1500ms).
+ * Thứ tự = thứ tự rotation của browser. Chi tiết probe + lý do loại từng
+ * endpoint: docs/plans/2026-09-27-public-rpc-list-update.md.
+ *
+ * Đã LOẠI kèm bằng chứng (đừng thêm lại):
+ *  • eth.meowrpc.com — 429 thất thường (tái hiện 200 → 429 → 200 trong 3 request liên tiếp, 2026-09-27)
+ *  • rpc.ankr.com/eth key-less — chết: -32000 bắt buộc API key (2026-09-25)
+ *  • eth.merkle.io — 429 request đầu; rpc.flashbots.net — không có eth_call;
+ *    eth.rpc.blxrbdn.com — thiếu eth_getLogs (cùng đợt 2026-09-27)
+ *  • eth-pokt/ethereum-public.nodies.app — preflight OPTIONS KHÔNG trả ACAO
+ *    (dù POST có) ⇒ browser chặn POST — audit 2026-09-27
  */
 const EXPECTED_DEFAULT_PUBLIC_URLS = [
   "https://ethereum-rpc.publicnode.com",
@@ -29,7 +38,9 @@ const EXPECTED_DEFAULT_PUBLIC_URLS = [
   "https://eth-mainnet.public.blastapi.io",
   "https://gateway.tenderly.co/public/mainnet",
   "https://1rpc.io/eth",
-  "https://eth.meowrpc.com",
+  "https://eth.blockrazor.xyz",
+  "https://rpc-eth.blockmachine.io",
+  "https://rpc.mevblocker.io",
 ];
 
 /** Mẫu URL mang credential thật (chỉ định dạng, không phải key thật). */
@@ -58,7 +69,7 @@ function looksCredentialed(url) {
 }
 
 describe("buildWebappConfig — webapp chỉ nhận RPC key-less (round-4 quota)", () => {
-  it("default: inject đúng 6 endpoint key-less đã probe (2026-09-25), không đọc RPC_URLS", () => {
+  it("default: inject đúng 8 endpoint key-less đã probe (2026-09-27), không đọc RPC_URLS", () => {
     const config = buildWebappConfig({
       markets: [MARKET],
       lenderAddress: LENDER,
@@ -67,7 +78,7 @@ describe("buildWebappConfig — webapp chỉ nhận RPC key-less (round-4 quota)
     expect(config.rpcUrls).toEqual(EXPECTED_DEFAULT_PUBLIC_URLS);
   });
 
-  it("default: cả 6 endpoint đều vượt guard credential (key-less thật)", () => {
+  it("default: cả 8 endpoint đều vượt guard credential (key-less thật)", () => {
     for (const url of EXPECTED_DEFAULT_PUBLIC_URLS) {
       expect(urlLooksCredentialed(url)).toBe(false);
     }
@@ -110,5 +121,73 @@ describe("buildWebappConfig — webapp chỉ nhận RPC key-less (round-4 quota)
     for (const url of config?.rpcUrls ?? []) {
       expect(looksCredentialed(url)).toBe(false);
     }
+  });
+
+  // ===== Lớp hybrid (2026-09-27): verified cache từ public-rpc-health.mjs =====
+  const VERIFIED = ["https://a-verified.example.com/rpc", "https://b-verified.example.com/rpc", "https://c-verified.example.com/rpc"];
+  const NO_OVERRIDE = ["https://x.example.com/rpc"]; // không khớp default ⇒ chưa override
+
+  it("hybrid: verifiedRpcUrls THẮNG danh sách tĩnh khi operator không override", () => {
+    const config = buildWebappConfig({
+      markets: [MARKET],
+      lenderAddress: LENDER,
+      proxyRpcUrl: "https://vps.example.com:8545",
+      publicRpcUrls: NO_OVERRIDE,
+      verifiedRpcUrls: VERIFIED,
+      verifiedAt: "2026-09-27T00:00:00.000Z",
+    });
+    expect(config.rpcUrls).toEqual(VERIFIED);
+    expect(config.rpcVerifiedAt).toBe("2026-09-27T00:00:00.000Z");
+  });
+
+  it("hybrid: builder MÙ NGUỒN — verified được truyền thì thắng; trách nhiệm bỏ qua khi operator override thuộc về webapp-server", () => {
+    // webapp-server.mjs đọc process.env.PUBLIC_RPC_URLS và KHÔNG truyền
+    // verifiedRpcUrls khi operator override — builder không tự đoán nguồn.
+    const config = buildWebappConfig({
+      markets: [MARKET],
+      lenderAddress: LENDER,
+      proxyRpcUrl: "https://vps.example.com:8545",
+      publicRpcUrls: ["https://my-own-rpc.example.com"],
+      verifiedRpcUrls: VERIFIED,
+      verifiedAt: "2026-09-27T00:00:00.000Z",
+    });
+    expect(config.rpcUrls).toEqual(VERIFIED);
+  });
+
+  it("hybrid: không truyền verified ⇒ hành vi cũ, rpcVerifiedAt null", () => {
+    const config = buildWebappConfig({
+      markets: [MARKET],
+      lenderAddress: LENDER,
+      proxyRpcUrl: "https://vps.example.com:8545",
+      publicRpcUrls: NO_OVERRIDE,
+    });
+    expect(config.rpcUrls).toEqual(NO_OVERRIDE);
+    expect(config.rpcVerifiedAt).toBe(null);
+  });
+
+  it("hybrid: verified rỗng (probe hỏng) ⇒ fallback tĩnh, KHÔNG cụt hóa config", () => {
+    const config = buildWebappConfig({
+      markets: [MARKET],
+      lenderAddress: LENDER,
+      proxyRpcUrl: "https://vps.example.com:8545",
+      publicRpcUrls: NO_OVERRIDE,
+      verifiedRpcUrls: [],
+      verifiedAt: "2026-09-27T00:00:00.000Z",
+    });
+    expect(config.rpcUrls).toEqual(NO_OVERRIDE);
+    expect(config.rpcVerifiedAt).toBe(null);
+  });
+
+  it("hybrid: verified chứa URL mang credential bị chặn fail closed như danh sách tĩnh", () => {
+    const poisoned = [...VERIFIED, "https://eth-mainnet.g.alchemy.com/v2/" + "f".repeat(32)];
+    expect(() =>
+      buildWebappConfig({
+        markets: [MARKET],
+        lenderAddress: LENDER,
+        proxyRpcUrl: "https://vps.example.com:8545",
+        publicRpcUrls: NO_OVERRIDE,
+        verifiedRpcUrls: poisoned,
+      })
+    ).toThrow(/credential/i);
   });
 });
