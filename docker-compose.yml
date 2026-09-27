@@ -56,5 +56,21 @@ services:
       - ./.env:/app/.env:ro
       - ./scripts:/app/scripts:ro
 
+  # ── RPC public cho browser: probe tay từ đúng môi trường Docker (profile "debug") ──
+  # Chạy: docker compose --profile debug run --rm probe-public-rpcs
+  # Probe catalog chainlist + ghi verified cache (data/public-rpcs-verified.json)
+  # mà webapp container đọc (CÙNG volume presigned_data). KHÔNG cần restart webapp:
+  # handler đọc serving HTML mỗi request, nhưng serving đọc cache lúc BOOT nên
+  # muốn request đầu sau restart dùng cache mới thì restart sau khi cache ghi xong.
+  # Mặc định chỉ BÁO CÁO; --out=/app/data/public-rpcs-verified.json để GHI cache.
+  probe-public-rpcs:
+    build: .
+    profiles: ["debug"]
+    entrypoint: ["node", "--env-file=/app/.env", "scripts/refresh-public-rpcs.mjs"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./scripts:/app/scripts:ro
+      - presigned_data:/app/data
+
 volumes:
   presigned_data:
