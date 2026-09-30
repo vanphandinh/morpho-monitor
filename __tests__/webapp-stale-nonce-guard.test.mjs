@@ -102,6 +102,29 @@ describe("B3 — nonce on-chain đã vượt qua thì KHÔNG được ký", () =
     expect(html, "rung expired vẫn phải hiển thị (lịch sử)").toMatch(/nonce-display">2550/);
   });
 
+  it("CẢ ladder đã chết (2 rung expired liên tiếp) ⇒ KHÔNG rung nào mang dấu 'nonce kế tiếp sẽ broadcast' (đỏ-trước: gắn vào 2550)", async () => {
+    // Đúng ca người dùng báo (2026-09-30): đã ký 2 tier ở 2 nonce liên tiếp, on-chain nonce đi qua
+    // CẢ HAI ⇒ cả hai chuyển expired. Dấu head không được lùi về rung thấp nhất của một ladder đã chết:
+    // không rung nào sẽ broadcast nữa, nên "expired (nonce kế tiếp sẽ broadcast)" là trạng thái vô nghĩa.
+    api.setPresign({
+      ok: true,
+      exists: true,
+      ladder: [
+        { marketId: DEFAULT_MARKET_ID, nonce: 2550, status: "expired", tiers: [{ amount: "100", amountFormatted: "100 USDC", label: "100 USDC" }] },
+        { marketId: DEFAULT_MARKET_ID, nonce: 2551, status: "expired", tiers: [{ amount: "200", amountFormatted: "200 USDC", label: "200 USDC" }] },
+      ],
+    });
+    await app.window.switchTab("presign");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const html = app.html("presign-existing-info");
+    // Lịch sử vẫn hiển thị đủ hai rung...
+    expect(html).toMatch(/nonce-display">2550/);
+    expect(html).toMatch(/nonce-display">2551/);
+    // ...nhưng không rung nào được mời "kế tiếp sẽ broadcast" khi không còn rung sống.
+    expect(html, "không còn rung sống ⇒ không được gắn dấu head").not.toContain("nonce kế tiếp sẽ broadcast");
+  });
+
   it("server từ chối rung đã chết (NONCE_NOT_CLAIMABLE, D16) ⇒ app cũng tự lấy lại nonce, không để chữ ký chết nằm lại", async () => {
     // Mã này sinh ở SERVER (D16) và chỉ tới được browser vì relay proxy chuyển tiếp `code`
     // (ghim ở ca cuối `__tests__/proxy-nonce-freshness.test.mjs`). Không có `code`, app chỉ còn

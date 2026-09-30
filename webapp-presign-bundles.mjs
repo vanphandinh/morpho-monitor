@@ -185,9 +185,11 @@ export async function fetchExistingBundle() {
     // Rung head = rung HOẠT ĐỘNG đầu tiên (pending/broadcasting) — rung kế tiếp thật sự
     // được broadcast. Ladder sắp theo nonce tăng dần nên rung thấp nhất có thể là
     // `expired`/`submitted`: khi đó đánh dấu "kế tiếp" vào nó là nói sai (bug người dùng
-    // báo 2026-09-26: tưởng tier/nonce cũ còn là bundle hiện hành); nếu cả ladder là
-    // lịch sử trơ thì mới lùi về rung đầu.
-    const head = ladder.find((r) => r.status === "pending" || r.status === "broadcasting") ?? ladder[0];
+    // báo 2026-09-26: tưởng tier/nonce cũ còn là bundle hiện hành). Cả ladder đã chết
+    // (mọi rung expired/submitted/…) cũng vậy — không rung nào sẽ broadcast nữa nên
+    // KHÔNG gắn dấu vào rung nào; fallback `?? ladder[0]` cũ gắn dấu vào rung expired
+    // thấp nhất (bug người dùng báo 2026-09-30: “expired (nonce kế tiếp sẽ broadcast)”).
+    const head = ladder.find((r) => r.status === "pending" || r.status === "broadcasting") ?? null;
 
     const rungHtml = (r, isHead) => {
       const badge = r.status === "pending"
@@ -242,7 +244,7 @@ export async function fetchExistingBundle() {
       ladderHtml,
     ].join("");
 
-    if (head.status === "pending") {
+    if (head?.status === "pending") {
       document.getElementById("presign-existing-info").innerHTML +=
         `<div class="banner warn" style="margin-top:8px">⚠️ Bundle head đang pending (nonce ${head.nonce}). Ký thêm tier cùng nonce sẽ merge vào rung này; lấy nonce mới sẽ thêm rung mới vào bậc thang.</div>`;
     }
