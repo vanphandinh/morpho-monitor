@@ -167,6 +167,39 @@
       word-break: break-all;
     }
 
+    /* Market switcher — đồng bộ theme tối của app.
+       QUY ƯỚC BẮT BUỘC: stylesheet này chỉ dùng selector class/element, KHÔNG dùng `#id`
+       (test `webapp-btn-remove-sizing` tự giải cascade bằng model trong
+       `__tests__/helpers/css-cascade.mjs`, mà model đó không mô hình hoá id — một rule `#id`
+       sẽ bị tính là khớp MỌI element và đè bậy các rule class như `.btn-remove`). */
+    .market-switcher-wrap {
+      display: none;
+      margin: 8px 0;
+      padding: 10px 12px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      align-items: center;
+      gap: 8px;
+    }
+    .market-switcher-wrap.visible { display: flex; }
+    .market-switcher-label { font-size: 0.85rem; color: var(--text-dim); white-space: nowrap; }
+    .market-switcher {
+      flex: 1;
+      min-width: 0;
+      max-width: 100%;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .market-switcher:focus { outline: none; border-color: var(--blue); }
+    .market-switcher option { background: var(--card); color: var(--text); }
+
     /* Tabs */
     .tab-bar { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
     .tab {
@@ -227,7 +260,7 @@
 <body>
 
   <h1>🏦 Morpho Blue</h1>
-  <p class="subtitle">dCOMP/USDC Market</p>
+  <p class="subtitle" id="market-subtitle">Đang tải market...</p>
 
   <!-- Tab Bar -->
   <div class="tab-bar">
@@ -235,10 +268,11 @@
     <div class="tab" data-tab="presign" onclick="switchTab('presign')">✍️ Ký Trước</div>
   </div>
 
-  <!-- Market switcher: chỉ hiện khi server cấu hình >1 market -->
-  <div id="market-switcher-wrap" style="display:none;margin:8px 0">
-    <label for="market-switcher" style="font-size:0.85rem;color:var(--text-dim,#888)">Market:</label>
-    <select id="market-switcher" onchange="switchMarket(this.value)" style="max-width:100%;padding:6px 8px"></select>
+  <!-- Market switcher: chỉ hiện khi server cấu hình >1 market.
+       Style đồng bộ theme tối của app (trước đây là select trắng mặc định lạc tông). -->
+  <div id="market-switcher-wrap" class="market-switcher-wrap">
+    <label for="market-switcher" class="market-switcher-label">Market:</label>
+    <select id="market-switcher" class="market-switcher" onchange="switchMarket(this.value)"></select>
   </div>
 
   <!-- Loading -->

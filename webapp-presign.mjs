@@ -9,6 +9,7 @@
 import { encodeFunctionData, formatUnits, parseUnits } from "viem";
 import { mainnet } from "viem/chains";
 import { retryTransient, stepNonce } from "./webapp-logic.mjs";
+import { esc } from "./webapp-render.mjs";
 import { MORPHO_ABI, MORPHO_BLUE, state } from "./webapp-state.mjs";
 import { clearSession, getAuthHeaders, getProxyUrl, isAuthenticated, showPresignError, showPresignSuccess, updateAuthUI } from "./webapp-shell.mjs";
 import { fetchExistingBundle, refreshPresignOverview, renderPresignWithdrawAllInfo } from "./webapp-presign-bundles.mjs";
@@ -573,7 +574,7 @@ export function renderTierList() {
                           tier.status === "error" ? "Lỗi" : "Chưa ký";
       return `<div class="tier-row">
             <span class="tier-label">#${i + 1}</span>
-            <input type="number" value="${tier.amount}" placeholder="Số USDC"
+            <input type="number" value="${esc(tier.amount)}" placeholder="Số ${esc(state.loanToken.symbol)}"
               onchange="updateTierAmount(${i}, this.value)" ${tier.status === "signed" ? "readonly" : ""}>
             <span class="tier-status" title="${statusTitle}">${statusIcon}</span>
             <button class="btn-outline btn-remove" onclick="removeTier(${i})" ${tier.status === "signing" ? "disabled" : ""}>✕</button>
@@ -656,7 +657,7 @@ export async function signAllTiers() {
 
     tier.status = "signing";
     renderTierList();
-    progressText.textContent = `Đang ký ${signed + 1}/${total}: ${tier.amount} USDC...`;
+    progressText.textContent = `Đang ký ${signed + 1}/${total}: ${tier.amount} ${state.loanToken.symbol}...`;
     progressFill.style.width = `${((signed) / total) * 100}%`;
 
     try {

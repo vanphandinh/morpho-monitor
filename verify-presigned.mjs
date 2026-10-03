@@ -20,6 +20,7 @@ import {
   computeMarketId,
   MORPHO_WITHDRAW_ABI,
 } from "./presign-verify.mjs";
+import { formatTokenAmount } from "./shared.mjs";
 
 // Re-export for callers that import from CLI path
 export { verifyPresignedBundle, verifyWithdrawCalldata, computeMarketId, MORPHO_WITHDRAW_ABI };
@@ -118,7 +119,7 @@ async function verifyBundle(bundle, { label, marketId, filePath }) {
       console.log(`   sharesWei:         ${w.sharesWei || "N/A"}`);
       console.log(`   amountFormatted:   ${w.amountFormatted || "N/A"}`);
     } else {
-      console.log(`   amountWei:         ${w.amountWei} (${formatUnits(BigInt(w.amountWei || "0"), 6)} USDC)`);
+      console.log(`   amountWei:         ${w.amountWei} (${formatTokenAmount(BigInt(w.amountWei || "0"), bundle.loanToken?.decimals ?? 6, bundle.loanToken?.symbol ?? "USDC")})`);
       console.log(`   amountFormatted:   ${w.amountFormatted || "N/A"}`);
     }
 

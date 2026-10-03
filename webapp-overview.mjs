@@ -7,7 +7,7 @@
 import { createPublicClient, http } from "viem";
 import { mainnet } from "viem/chains";
 import { computeBorrowAssets, computeLiquidity, computeSupplyAssets, computeUtilization, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
-import { formatToken, row } from "./webapp-render.mjs";
+import { esc, formatToken, row } from "./webapp-render.mjs";
 import { ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 
 /**
@@ -135,7 +135,27 @@ export async function fetchAllData() {
 // ============================================================
 // RENDER
 // ============================================================
+/**
+ * Tiêu đề app theo market hiện tại (`dCOMP/USDC Market` cũ là HTML tĩnh nên
+ * đổi market vẫn hiện tên cũ). Gọi sau mỗi lần fetch/render market.
+ */
+export function updateMarketSubtitle() {
+  const el = document.getElementById("market-subtitle");
+  if (!el) return;
+  const coll = state.collateralToken?.symbol;
+  const loan = state.loanToken?.symbol;
+  if (coll && loan) {
+    el.textContent = `${coll}/${loan} Market`;
+    document.title = `Morpho Blue — ${coll}/${loan}`;
+  } else if (state.marketId) {
+    el.textContent = `Market ${state.marketId.slice(0, 10)}…${state.marketId.slice(-4)}`;
+  }
+}
+
 export function renderMarketInfo() {
+  updateMarketSubtitle();
+  refreshMarketSwitcherLabels();
+  syncWithdrawPlaceholder();
   const liquidity = state.marketData.liquidity;
   const liquidityClass = liquidity > 0n ? "green" : "red";
 
@@ -188,15 +208,40 @@ export function renderPosition() {
 // ============================================================
 // MARKET SWITCHER (>1 market)
 // ============================================================
+/** Label cho một option market: market hiện tại đã có symbol on-chain thì
+ * hiện `dCOMP/USDC — 0x582fdc41…5065 ●`; market khác chưa fetch metadata nên
+ * chỉ hiện id rút gọn (không bịa symbol). */
+function marketOptionLabel(id) {
+  const short = `${id.slice(0, 10)}…${id.slice(-4)}`;
+  if (id === state.marketId && state.collateralToken?.symbol && state.loanToken?.symbol) {
+    return `${state.collateralToken.symbol}/${state.loanToken.symbol} — ${short} ●`;
+  }
+  return short;
+}
+
 export function initMarketSwitcher() {
   const wrap = document.getElementById("market-switcher-wrap");
   const select = document.getElementById("market-switcher");
   if (!wrap || !select || SERVER_MARKETS.length <= 1) return;
-  const short = (id) => `${id.slice(0, 10)}…${id.slice(-4)}`;
   select.innerHTML = SERVER_MARKETS.map((m) =>
-    `<option value="${m.id}"${m.id === state.marketId ? " selected" : ""}>${short(m.id)}</option>`
+    `<option value="${esc(m.id)}" title="${esc(m.id)}"${m.id === state.marketId ? " selected" : ""}>${esc(marketOptionLabel(m.id))}</option>`
   ).join("");
-  wrap.style.display = "block";
+  wrap.classList.add("visible");
+}
+
+/** Làm tươi label selector sau khi đã có symbol on-chain (gọi từ renderMarketInfo). */
+export function refreshMarketSwitcherLabels() {
+  const select = document.getElementById("market-switcher");
+  if (!select || SERVER_MARKETS.length <= 1) return;
+  for (const opt of select.options) {
+    opt.textContent = marketOptionLabel(opt.value);
+  }
+}
+
+/** Placeholder ô rút tiền theo loan token của market hiện tại (AUSD thay vì USDC cứng). */
+export function syncWithdrawPlaceholder() {
+  const input = document.getElementById("withdraw-amount");
+  if (input && state.loanToken?.symbol) input.placeholder = `Số ${state.loanToken.symbol}`;
 }
 
 export function switchMarket(id) {

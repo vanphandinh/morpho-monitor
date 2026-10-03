@@ -321,8 +321,23 @@ async function addProxyNetwork() {
 };
 
 // ============================================================
-// INIT
+// INIT — boot tự thử lại qua RPC khác
 // ============================================================
+// `fallbackTransport` (webapp-overview.mjs) đã tự đảo URL theo từng request:
+// một endpoint chết chỉ làm request đó thử URL tiếp theo. Nhưng `init()` cũ
+// gọi `createRpcClient()` + `fetchAllData()` đúng MỘT lần: rơi đúng lúc TẤT CẢ
+// endpoint cùng chớp (hoặc mạng người dùng chập chờn lúc mở trang) là app rơi
+// thẳng vào banner lỗi dù chỉ cần thử lại. Vòng lặp dưới đây thử tối đa
+// BOOT_ATTEMPTS lần; mỗi lần dựng client mới với điểm bắt đầu round-robin
+// ngẫu nhiên nên lần sau đi vào URL khác lần trước.
+export const BOOT_ATTEMPTS = 3;
+export const BOOT_RETRY_DELAY_MS = 1200;
+
+function setLoadingText(text) {
+  const p = document.querySelector("#loading p");
+  if (p) p.textContent = text;
+}
+
 async function init() {
   // Only accept an explicit market from the server allow-list. Links from
   // notifications can therefore select a market without trusting arbitrary
@@ -338,11 +353,26 @@ async function init() {
   }
 
   try {
-    // Create RPC client
-    state.publicClient = await createRpcClient();
+    // Boot thử lại: RPC chớp đúng lúc mở trang thì thử RPC khác thay vì lỗi ngay.
+    let bootError = null;
+    for (let attempt = 1; attempt <= BOOT_ATTEMPTS; attempt++) {
+      try {
+        // Create RPC client
+        state.publicClient = await createRpcClient();
 
-    // Fetch all data
-    await fetchAllData();
+        // Fetch all data
+        await fetchAllData();
+        bootError = null;
+        break;
+      } catch (err) {
+        bootError = err;
+        if (attempt < BOOT_ATTEMPTS) {
+          setLoadingText(`⏳ RPC không phản hồi, đang thử RPC khác (lần ${attempt + 1}/${BOOT_ATTEMPTS})...`);
+          await new Promise((resolve) => setTimeout(resolve, BOOT_RETRY_DELAY_MS));
+        }
+      }
+    }
+    if (bootError) throw bootError;
 
     // Render
     initMarketSwitcher();
@@ -370,6 +400,10 @@ async function init() {
     updateAuthUI();
   } catch (err) {
     document.getElementById("loading").style.display = "none";
+    // Hết mọi lần thử mà RPC vẫn chết: subtitle không được kẹt ở chữ loading
+    // hay tên market mặc định — phải nói rõ là lỗi (quyết định từ review 2026-10-03).
+    const subtitle = document.getElementById("market-subtitle");
+    if (subtitle) subtitle.textContent = "⚠️ Không tải được dữ liệu market";
     showError("Lỗi tải dữ liệu: " + err.message);
   } finally {
     // Bundle đã ký là dữ liệu SERVER — không phụ thuộc RPC công cộng. Đọc ngay cả

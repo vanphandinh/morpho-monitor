@@ -64,6 +64,9 @@ describe("webapp-app.mjs — module evaluate được trong môi trường giố
     expect(missing).toEqual([]);
   });
 
+  // Boot nay thử lại RPC khác (BOOT_ATTEMPTS lần, mỗi lần cách nhau
+  // BOOT_RETRY_DELAY_MS) nên nhánh lỗi này chậm hơn boot cũ ~2.4s — timeout
+  // nới ra, KHÔNG nới lỏng khẳng định nào.
   it("đường boot chạy được và đi đúng nhánh lỗi khi RPC không nối được", async () => {
     const listeners = env.documentListeners.get("DOMContentLoaded") ?? [];
     expect(listeners.length).toBe(1); // document.readyState = "loading" ⇒ app chờ DOMContentLoaded
@@ -74,10 +77,13 @@ describe("webapp-app.mjs — module evaluate được trong môi trường giố
     expect(env.elements.get("error-banner").textContent).toContain("❌");
     expect(env.elements.get("error-banner").style.display).toBe("block");
     expect(env.elements.get("loading").style.display).toBe("none");
-  });
+    // Hết mọi lần thử mà RPC vẫn chết: subtitle báo lỗi, không kẹt chữ loading.
+    expect(env.elements.get("market-subtitle").textContent).toContain("Không tải được");
+  }, 15000);
 
   // Phạm vi THẬT của test này (đo được, không phải suy đoán): đường boot trong đây dừng ở bước
-  // RPC (không mạng) nên chỉ chạm 2 id (`loading`, `error-banner`). Nhờ vậy test này KHÔNG phải
+  // RPC (không mạng) nên chỉ chạm 3 id (`loading`, `error-banner`, `market-subtitle`).
+  // Nhờ vậy test này KHÔNG phải
   // lưới phủ toàn bộ id — lưới đó là test tĩnh trong `webapp.test.mjs` (quét mọi lời gọi
   // `getElementById`). Ở đây chỉ ghim rằng stub thực sự được dùng và không id lạ nào bị tra.
   it("không tra id nào ngoài HTML (và id tự chèn vẫn được coi là hợp lệ)", () => {

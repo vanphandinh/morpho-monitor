@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { createFakeApi, createFakeRpc, loadWebapp } from "./helpers/webapp-harness.mjs";
 import {
   contextLabel,
+  declarations,
   flexContextOf,
   flexContainerClasses,
   modelLimitError,
@@ -141,6 +142,23 @@ describe("nút xoá tier/rung phải là nút inline nhỏ, KHÔNG rơi về m�
     const signatures = ladderButtons.map((btn) => sizingSignature(resolveCascade(btn, rules, TRACKED)));
     // Đỏ-trước: rung 2553 rộng 255px còn rung 2554 rộng 324px vì bề rộng `.value` khác nhau.
     expect(new Set(signatures).size, `các mặt số phải giống nhau, đo được: ${JSON.stringify([...new Set(signatures)])}`).toBe(1);
+  });
+
+  // Hồi quy 2026-10-03: một rule `#market-switcher-wrap { margin:8px 0; ... }` (thêm khi
+  // restyle selector chọn market) làm 4 khẳng định sizing đỏ — model cascade trong
+  // `css-cascade.mjs` không mô hình hoá id nên selector `#id` bị tính là khớp MỌI element,
+  // với đặc tả [1,0,0] đè bậy cả `.btn-remove`. Vì vậy rule `#id` không được khai bất cứ
+  // thuộc tính nào thuộc TRACKED (các rule `#tx-section`/`#presign-result` có sẵn chỉ đặt
+  // `display`/`margin-top` — ngoài TRACKED — nên vô hại và được giữ nguyên).
+  it("rule `#id` không khai thuộc tính layout mà model cascade đang giải", () => {
+    const offenders = rules
+      .filter((r) => r.selector.includes("#"))
+      .map((r) => ({
+        selector: r.selector,
+        props: Object.keys(declarations(r.body)).filter((p) => TRACKED.includes(p)),
+      }))
+      .filter((r) => r.props.length > 0);
+    expect(offenders, "rule #id khớp mọi element trong model — thuộc tính layout phải viết bằng class").toEqual([]);
   });
 
   it("ngữ cảnh flex của mỗi nút được suy ra từ CSS, không viết tay (không nút nào ngoài hàng flex)", () => {
