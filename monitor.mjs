@@ -11,7 +11,7 @@ import { createCheckScheduler, createWssWatcher } from "./monitor-triggers.mjs";
 import { createWssConnect } from "./wss-connect.mjs";
 import { broadcastEligible as runPresignedBroadcast } from "./presigned-broadcast.mjs";
 import { dispatchNotifications } from "./notification-dispatch.mjs";
-import { createLifecycleAlerter, postNtfy, safeNtfyHeader } from "./lifecycle-alert.mjs";
+import { createLifecycleAlerter, postNtfy, safeNtfyHeader, NTFY_ALERT_TIMEOUT_MS } from "./lifecycle-alert.mjs";
 import { drainLifecycleAlerts } from "./presigned-alert-queue.mjs";
 import { sendVoipNotification } from "./voip.mjs";
 import { retryStartup } from "./startup-retry.mjs";
@@ -93,11 +93,42 @@ export function createMonitor({
 } = {}) {
   const states = new Map();
   let notificationsToday = 0;
+  const pendingByDay = new Map();
   let dayStart = now();
   let scheduler;
   let wssWatcher;
+  const backgroundTasks = new Set();
+  let outboxDrain = null;
+  let drainAgain = false;
 
-  function stateFor(id) { if (!states.has(id)) states.set(id, { lastSeenLiquidity: null, hasNotifiedThisCycle: false, lastNotificationTime: 0 }); return states.get(id); }
+  // Notification network I/O must never hold the scheduler's broadcast cycle.
+  // Keep ownership of promises so errors are observed and tests can await idle.
+  function runInBackground(label, work) {
+    const task = Promise.resolve().then(work)
+      .catch((err) => { logger.error(`[monitor] ${label} failed: ${err?.message || err}`); })
+      .finally(() => { backgroundTasks.delete(task); });
+    backgroundTasks.add(task);
+    return task;
+  }
+
+  function scheduleDrain() {
+    if (outboxDrain) { drainAgain = true; return; }
+    outboxDrain = runInBackground("lifecycle outbox", drainAlerts).finally(() => {
+      outboxDrain = null;
+      if (drainAgain) { drainAgain = false; scheduleDrain(); }
+    });
+  }
+
+  async function waitForNotifications() {
+    while (backgroundTasks.size || outboxDrain) {
+      await Promise.all([...backgroundTasks, ...(outboxDrain ? [outboxDrain] : [])]);
+    }
+  }
+
+  function stateFor(id) { if (!states.has(id)) states.set(id, {
+    lastSeenLiquidity: null, hasNotifiedThisCycle: false, lastNotificationTime: 0,
+    lastInZone: null, notificationGeneration: 0, pendingGeneration: null,
+  }); return states.get(id); }
   function resetDaily() { if (now() - dayStart >= 86_400_000) { notificationsToday = 0; dayStart = now(); } }
 
   /**
@@ -130,36 +161,60 @@ export function createMonitor({
   }
 
   async function checkMarkets(ids = marketIds) {
-    async function flushAlerts() {
-      try { await drainAlerts(); }
-      catch (err) { logger.error(`[monitor] lifecycle outbox failed (will retry): ${err?.message || err}`); }
-    }
-    // Drain before RPC I/O, so retry works even while the market reader is down.
-    await flushAlerts();
     try {
       resetDaily();
       const { snapshots, failures } = await reader.readSnapshots(ids);
       for (const [id, err] of failures) logger.warn(`[monitor] ${id}: multicall failed: ${err.message || err}`);
+      // Broadcast has priority over every notification, including VoIP and ntfy.
+      // It cannot wait for a stalled alert from this cycle or an earlier cycle.
+      let lifecycleResult;
+      try { lifecycleResult = await broadcastEligible(snapshots); }
+      catch (err) { logger.error(`[monitor] broadcast failed (loop continues): ${err?.message || err}`); }
       for (const snapshot of snapshots.values()) {
         const state = stateFor(snapshot.id), liquidity = snapshot.market.liquidity, supplyAssets = snapshot.position.supplyAssets;
-        if (state.lastSeenLiquidity === null) { state.lastSeenLiquidity = liquidity; logger.log(`[monitor] initialized ${snapshot.id}: ${formatTokenAmount(liquidity, snapshot.loanToken.decimals, snapshot.loanToken.symbol)}`); continue; }
         const multiplier = snapshot.suddenDrainMultiplier;
-        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday, notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
-        if (decision.shouldNotify) {
-          const delivery = await sendNotification(snapshot, decision.scenario);
-          if (delivery.ntfyDelivered) { state.hasNotifiedThisCycle = true; state.lastNotificationTime = now(); notificationsToday++; }
-          else logger.error(`[monitor] ntfy failed for ${snapshot.id}: ${delivery.ntfyError?.message || "unknown error"}`);
+        const drainThreshold = computeDrainThreshold(supplyAssets, multiplier);
+        const inZone = supplyAssets > 0n && liquidity >= snapshot.minLiquidityWei
+          && liquidity <= (drainThreshold < snapshot.minLiquidityWei ? snapshot.minLiquidityWei : drainThreshold);
+        // A delayed delivery from an earlier liquidity cycle must not mark a
+        // newer cycle as notified or suppress its alert.
+        if (state.lastInZone === true && !inZone) {
+          state.notificationGeneration++;
+          state.hasNotifiedThisCycle = false;
         }
-        if (state.hasNotifiedThisCycle && (liquidity < snapshot.minLiquidityWei || liquidity > computeDrainThreshold(supplyAssets, multiplier))) state.hasNotifiedThisCycle = false;
+        state.lastInZone = inZone;
+        if (state.lastSeenLiquidity === null) { state.lastSeenLiquidity = liquidity; logger.log(`[monitor] initialized ${snapshot.id}: ${formatTokenAmount(liquidity, snapshot.loanToken.decimals, snapshot.loanToken.symbol)}`); continue; }
+        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: notificationsToday + (pendingByDay.get(dayStart) ?? 0), notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
+        if (decision.shouldNotify && state.pendingGeneration !== state.notificationGeneration) {
+          const generation = state.notificationGeneration;
+          const notificationDay = dayStart;
+          state.pendingGeneration = generation;
+          pendingByDay.set(notificationDay, (pendingByDay.get(notificationDay) ?? 0) + 1);
+          runInBackground(`ntfy/VoIP for ${snapshot.id}`, async () => {
+            try {
+              const delivery = await sendNotification(snapshot, decision.scenario);
+              if (delivery?.ntfyDelivered) {
+                state.lastNotificationTime = now();
+                if (state.notificationGeneration === generation && state.lastInZone) state.hasNotifiedThisCycle = true;
+                if (dayStart === notificationDay) notificationsToday++;
+              } else logger.error(`[monitor] ntfy failed for ${snapshot.id}: ${delivery?.ntfyError?.message || "unknown error"}`);
+            } finally {
+              if (state.pendingGeneration === generation) state.pendingGeneration = null;
+              const remaining = (pendingByDay.get(notificationDay) ?? 1) - 1;
+              if (remaining) pendingByDay.set(notificationDay, remaining);
+              else pendingByDay.delete(notificationDay);
+            }
+          });
+        }
         state.lastSeenLiquidity = liquidity;
       }
-      await alertOnLifecycle(await broadcastEligible(snapshots));
+      runInBackground("lifecycle alert", () => alertOnLifecycle(lifecycleResult));
     } catch (err) {
       // RPC outage / any cycle failure: log per cycle, keep the loop alive (M5).
       logger.error(`[monitor] check cycle failed (loop continues): ${err?.message || err}`);
     } finally {
-      // Transitions just persisted by broadcastEligible can notify in this cycle.
-      await flushAlerts();
+      // Retry persisted alerts even on RPC failure, without delaying broadcast.
+      scheduleDrain();
     }
   }
 
@@ -182,7 +237,7 @@ export function createMonitor({
     return () => { clearInterval(interval); scheduler.close(); wssWatcher?.close(); };
   }
 
-  return { checkMarkets, start, stateFor };
+  return { checkMarkets, start, stateFor, waitForNotifications };
 }
 
 async function main() {
@@ -215,7 +270,9 @@ async function main() {
       scenario, id, loanToken, collateralToken, market, position,
       webappUrl: WEBAPP_URL, lenderAddress: LENDER_ADDRESS,
     });
-    const response = await fetch(`${NTFY_SERVER}/${topic}`, { method: "POST", headers, body });
+    const response = await fetch(`${NTFY_SERVER}/${topic}`, {
+      method: "POST", headers, body, signal: AbortSignal.timeout(NTFY_ALERT_TIMEOUT_MS),
+    });
     if (!response.ok) throw new Error(`ntfy responded ${response.status}`);
   };
 

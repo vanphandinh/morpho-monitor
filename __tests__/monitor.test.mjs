@@ -197,7 +197,8 @@ describe("monitor.mjs — wiring cảnh báo vòng đời (D2)", () => {
   });
 
   it("mỗi chu kỳ checkMarkets đều gọi cảnh báo sau broadcast", () => {
-    expect(src).toMatch(/alertOnLifecycle\(await broadcastEligible\(/);
+    expect(src).toContain("await broadcastEligible(snapshots)");
+    expect(src).toContain('runInBackground("lifecycle alert", () => alertOnLifecycle(lifecycleResult))');
   });
 });
 
