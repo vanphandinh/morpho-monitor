@@ -93,7 +93,9 @@ export function createMonitor({
 } = {}) {
   const states = new Map();
   let notificationsToday = 0;
-  const pendingByDay = new Map();
+  // Count all unresolved ntfy requests, including ones started before a quota reset.
+  // They may succeed in the new window, so reserve capacity until they settle.
+  let pendingNotifications = 0;
   let dayStart = now();
   let scheduler;
   let wssWatcher;
@@ -192,12 +194,11 @@ export function createMonitor({
         }
         state.lastInZone = inZone;
         if (state.lastSeenLiquidity === null) { state.lastSeenLiquidity = liquidity; logger.log(`[monitor] initialized ${snapshot.id}: ${formatTokenAmount(liquidity, snapshot.loanToken.decimals, snapshot.loanToken.symbol)}`); continue; }
-        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.retryFromLiquidity ?? state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: notificationsToday + (pendingByDay.get(dayStart) ?? 0), notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
+        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.retryFromLiquidity ?? state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: notificationsToday + pendingNotifications, notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
         if (decision.shouldNotify && state.pendingGeneration !== state.notificationGeneration) {
           const generation = state.notificationGeneration;
-          const notificationDay = dayStart;
           state.pendingGeneration = generation;
-          pendingByDay.set(notificationDay, (pendingByDay.get(notificationDay) ?? 0) + 1);
+          pendingNotifications++;
           runInBackground(`ntfy/VoIP for ${snapshot.id}`, async () => {
             let accounted = false;
             const onNtfySettled = (delivery) => {
@@ -215,12 +216,10 @@ export function createMonitor({
                 notificationsToday++;
               } else logger.error(`[monitor] ntfy failed for ${snapshot.id}: ${delivery?.ntfyError?.message || "unknown error"}`);
               if (state.pendingGeneration === generation) state.pendingGeneration = null;
-              const remaining = (pendingByDay.get(notificationDay) ?? 1) - 1;
-              if (remaining) pendingByDay.set(notificationDay, remaining);
-              else pendingByDay.delete(notificationDay);
+              pendingNotifications--;
             };
             try {
-              const delivery = await sendNotification(snapshot, decision.scenario, onNtfySettled);
+              const delivery = await sendNotification(snapshot, decision.scenario, onNtfySettled, generation);
               onNtfySettled(delivery); // Support callers that return only a final result.
             } catch (err) { onNtfySettled({ ntfyDelivered: false, ntfyError: err }); }
           });
@@ -305,12 +304,12 @@ async function main() {
       filePath: PRESIGNED_FILE, updateRegistry,
       send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
     }),
-    sendNotification: (snapshot, scenario, onNtfySettled) => dispatchNotifications({
+    sendNotification: (snapshot, scenario, onNtfySettled, generation) => dispatchNotifications({
       sendNtfy: () => sendNtfyNotification(snapshot, scenario),
       sendVoip: () => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
       voipEnabled: Boolean(VOIP_SECRET_KEY),
       onNtfySettled,
-      voipInFlight, voipKey: snapshot.id,
+      voipInFlight, voipKey: `${snapshot.id}:${generation}`,
     }),
     broadcastEligible: (snapshots) => runPresignedBroadcast({
       client: publicClient, lenderAddress: LENDER_ADDRESS, filePath: PRESIGNED_FILE, snapshots,
