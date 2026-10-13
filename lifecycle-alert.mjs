@@ -25,14 +25,21 @@ export const LIFECYCLE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
  * Priority "5" = max (kẹt/không thể tiến), "4" = cảnh báo mức cao.
  */
 const ALERT_KINDS = {
-  superseded: { title: "Morpho: presigned tx bị thay thế", tags: "warning,arrows_counterclockwise", priority: "4" },
-  stuck: { title: "Morpho: presign cần xử lý TAY", tags: "rotating_light,warning", priority: "5" },
-  conflict: { title: "Morpho: xung đột nonce presign", tags: "rotating_light,warning", priority: "5" },
+  superseded: { title: "Morpho: Presigned TX Superseded", tags: "warning,arrows_counterclockwise", priority: "4" },
+  stuck: { title: "Morpho: Presigned TX Stuck", tags: "rotating_light,warning", priority: "5" },
+  conflict: { title: "Morpho: Nonce Conflict", tags: "rotating_light,warning", priority: "5" },
   // Audit vòng 2 (D2): bundle verify hỏng — không bao giờ broadcast được, phải ký lại.
-  invalid: { title: "Morpho: presigned bundle KHÔNG hợp lệ", tags: "rotating_light,x", priority: "5" },
+  invalid: { title: "Morpho: Invalid Presigned Bundle", tags: "rotating_light,x", priority: "5" },
   // Lệch .env: bundle vẫn tốt, monitor tạm dừng rung này cho tới khi sửa cấu hình.
-  config: { title: "Morpho: cấu hình lệch bundle đã ký", tags: "warning,wrench", priority: "4" },
+  config: { title: "Morpho: Presigned Config Mismatch", tags: "warning,wrench", priority: "4" },
+  expired: { title: "Morpho: Presigned Nonce Expired", tags: "warning,clock3", priority: "4" },
 };
+
+/** HTTP headers are ByteStrings; ASCII also excludes CR/LF header injection. */
+export function safeNtfyHeader(value) {
+  return String(value ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, "?");
+}
 
 /** Rút gọn id/address cho thông báo đọc trên điện thoại. */
 function short(value, head = 10, tail = 6) {
@@ -67,6 +74,17 @@ export function buildLifecycleAlert(kind, { id, marketId, nonce, tier, detail } 
     tier ? `Tier: ${tier}` : null,
     `Bundle: ${short(id)}`,
   ].filter(Boolean).join("\n");
+
+  if (kind === "expired") {
+    return {
+      ...spec,
+      message: [
+        "**Nonce đã hết hạn** — nonce đã bị tiêu thụ, chữ ký cũ không thể thực thi.",
+        "", header, "", detail ? `Bằng chứng: ${detail}` : null, "",
+        "Hành động: mở webapp → lấy nonce mới → ký lại bundle nếu còn muốn thực hiện giao dịch.",
+      ].filter((line) => line !== null).join("\n"),
+    };
+  }
 
   if (kind === "superseded") {
     return {
@@ -151,9 +169,9 @@ export async function postNtfy({ fetchImpl = fetch, server, topic, alert, timeou
   const response = await fetchImpl(`${server}/${topic}`, {
     method: "POST",
     headers: {
-      Title: alert.title,
-      Tags: alert.tags,
-      Priority: alert.priority,
+      Title: safeNtfyHeader(alert.title),
+      Tags: safeNtfyHeader(alert.tags),
+      Priority: safeNtfyHeader(alert.priority),
       Markdown: "yes",
     },
     body: alert.message,
@@ -167,8 +185,10 @@ export async function postNtfy({ fetchImpl = fetch, server, topic, alert, timeou
  * Bọc cooldown quanh một hàm gửi. `notify` không bao giờ throw ra ngoài: lỗi gửi
  * chỉ được log (monitor không được chết vì kênh thông báo).
  */
-export function createLifecycleAlerter({ send, cooldownMs = LIFECYCLE_ALERT_COOLDOWN_MS, now = () => Date.now(), logger = console } = {}) {
+export function createLifecycleAlerter({ send, cooldownMs = LIFECYCLE_ALERT_COOLDOWN_MS, retryMs = 5 * 60_000, now = () => Date.now(), logger = console } = {}) {
   const lastSent = new Map();
+  const nextRetry = new Map();
+  const inFlight = new Set();
   return {
     /**
      * @param {string} kind - "superseded" | "stuck" | "conflict"
@@ -177,18 +197,24 @@ export function createLifecycleAlerter({ send, cooldownMs = LIFECYCLE_ALERT_COOL
     async notify(kind, info = {}) {
       const id = info.id ?? (info.nonce != null ? `nonce-${info.nonce}` : null);
       const key = `${kind}:${id}`;
+      if (inFlight.has(key)) return { sent: false, reason: "in_flight" };
+      if (now() < (nextRetry.get(key) ?? 0)) return { sent: false, reason: "retry_wait" };
       const decision = shouldSendLifecycleAlert(kind, id, { lastSentAt: lastSent.get(key) ?? null, now: now(), cooldownMs });
       if (!decision.send) return { sent: false, reason: decision.reason };
       const alert = buildLifecycleAlert(kind, { ...info, id });
       if (!alert) return { sent: false, reason: "unknown_kind" };
-      // Đánh dấu TRƯỚC khi gửi: lỗi gửi cũng không được biến thành spam mỗi chu kỳ.
-      lastSent.set(key, now());
+      inFlight.add(key);
       try {
         await send(alert);
+        lastSent.set(key, now());
+        nextRetry.delete(key);
         return { sent: true, reason: "ok" };
       } catch (err) {
+        nextRetry.set(key, now() + retryMs);
         logger?.error?.(`[presign] lifecycle alert (${kind}) failed: ${err?.message || err}`);
         return { sent: false, reason: "send_failed" };
+      } finally {
+        inFlight.delete(key);
       }
     },
   };

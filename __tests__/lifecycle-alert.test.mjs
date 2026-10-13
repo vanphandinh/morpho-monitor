@@ -37,7 +37,7 @@ describe("buildLifecycleAlert (thuần)", () => {
 
   it("superseded nêu hậu quả + hành động (lấy nonce mới, ký lại)", () => {
     const alert = buildLifecycleAlert("superseded", info);
-    expect(alert.title).toContain("bị thay thế");
+    expect(alert.title).toContain("Superseded");
     expect(alert.tags).toContain("warning");
     expect(alert.message).toContain("Nonce: 7");
     expect(alert.message).toContain("receipt=null, latest=8");
@@ -80,6 +80,17 @@ describe("buildLifecycleAlert (thuần)", () => {
   it("kind lạ ⇒ null (caller không gửi gì)", () => {
     expect(buildLifecycleAlert("khong-ton-tai", info)).toBe(null);
   });
+
+  it("all lifecycle titles are safe for Node's real HTTP Request, including expired", () => {
+    for (const kind of ["superseded", "stuck", "conflict", "invalid", "config", "expired"]) {
+      const alert = buildLifecycleAlert(kind, info);
+      expect(() => new Request("https://ntfy.sh/test", {
+        method: "POST", headers: { Title: alert.title, Tags: alert.tags, Priority: alert.priority }, body: alert.message,
+      })).not.toThrow();
+      expect(alert.message).toContain("Nonce: 7");
+    }
+    expect(buildLifecycleAlert("expired", info).message).toMatch(/ký lại/);
+  });
 });
 
 describe("createLifecycleAlerter — chống spam theo (kind, id)", () => {
@@ -101,17 +112,21 @@ describe("createLifecycleAlerter — chống spam theo (kind, id)", () => {
     expect(send).toHaveBeenCalledTimes(3);
   });
 
-  it("lỗi gửi không throw ra ngoài và KHÔNG biến thành spam mỗi chu kỳ", async () => {
+  it("lỗi gửi chỉ chặn retry 5 phút, không áp cooldown 6 giờ", async () => {
     const send = vi.fn(async () => { throw new Error("ntfy down"); });
     const logger = { error: vi.fn() };
-    const alerter = createLifecycleAlerter({ send, logger, now: () => 1_700_000_000_000 });
+    let clock = 1_700_000_000_000;
+    const alerter = createLifecycleAlerter({ send, logger, now: () => clock });
 
     const first = await alerter.notify("superseded", { id: "a@7", nonce: 7 });
     expect(first).toEqual({ sent: false, reason: "send_failed" });
     expect(logger.error).toHaveBeenCalledTimes(1);
     // Chu kỳ sau: vẫn trong cooldown ⇒ không gọi lại (không spam khi ntfy chết).
-    expect((await alerter.notify("superseded", { id: "a@7", nonce: 7 })).reason).toBe("cooldown");
+    expect((await alerter.notify("superseded", { id: "a@7", nonce: 7 })).reason).toBe("retry_wait");
     expect(send).toHaveBeenCalledTimes(1);
+    clock += 5 * 60_000;
+    expect((await alerter.notify("superseded", { id: "a@7", nonce: 7 })).reason).toBe("send_failed");
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   it("conflict không có id ⇒ tự suy ra từ nonce", async () => {

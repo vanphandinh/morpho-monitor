@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { withFileLock } from "./file-lock.mjs";
 
 /**
@@ -20,7 +21,7 @@ export const REGISTRY_VERSION = 3;
 export const TERMINAL_STATUSES = new Set(["submitted", "failed", "superseded"]);
 
 export function emptyRegistry() {
-  return { version: REGISTRY_VERSION, bundles: {}, consumedNonce: -1 };
+  return { version: REGISTRY_VERSION, bundles: {}, consumedNonce: -1, orphanedLifecycleAlerts: {} };
 }
 
 /** Composite registry key: `marketId@nonce` (marketId lowercase). */
@@ -86,7 +87,10 @@ function migrateRegistry(parsed) {
     // `consumedNonce` là additive: KHÔNG bump version (một process bản cũ đang
     // chạy phải đọc được file này trong lúc rolling deploy). Thiếu field ⇒ suy
     // ra từ record terminal, và lần write kế tiếp sẽ ghi lại mốc đã chuẩn hoá.
-    const registry = { version: REGISTRY_VERSION, bundles };
+    const orphanedLifecycleAlerts = parsed.orphanedLifecycleAlerts &&
+      typeof parsed.orphanedLifecycleAlerts === "object" && !Array.isArray(parsed.orphanedLifecycleAlerts)
+      ? parsed.orphanedLifecycleAlerts : {};
+    const registry = { version: REGISTRY_VERSION, bundles, orphanedLifecycleAlerts };
     registry.consumedNonce = consumedWatermark({ consumedNonce: parsed.consumedNonce, bundles });
     return registry;
   }
@@ -195,6 +199,27 @@ function sameClaims(a, b) {
   return true;
 }
 
+/** Keep notifications independent of any user-editable bundle's lifetime. */
+function snapshotPendingAlerts(registry) {
+  const pending = [];
+  for (const [key, bundle] of Object.entries(registry.bundles)) {
+    for (const alert of bundle.lifecycleAlerts ?? []) {
+      if (alert?.state !== "pending") continue;
+      // Older registry files may predate event IDs; assign one under the lock.
+      alert.eventId ??= randomUUID();
+      pending.push({ key, eventId: alert.eventId, alert: structuredClone(alert) });
+    }
+  }
+  return pending;
+}
+
+function preserveRemovedAlerts(registry, pending) {
+  for (const { key, eventId, alert } of pending) {
+    const retained = registry.bundles[key]?.lifecycleAlerts?.some((item) => item.eventId === eventId);
+    if (!retained) registry.orphanedLifecycleAlerts[eventId] = alert;
+  }
+}
+
 /**
  * Serialize all mutations across webapp and monitor processes.
  *
@@ -219,6 +244,7 @@ export async function updateRegistry(filePath, mutate, opts = {}) {
     const consumedFloor = consumedWatermark(registry);
     if (origin === "user") {
       const before = activeClaimSignature(registry);
+      const pendingAlerts = snapshotPendingAlerts(registry);
       try {
         const result = await mutate(registry);
         if (!sameClaims(before, activeClaimSignature(registry))) {
@@ -226,6 +252,7 @@ export async function updateRegistry(filePath, mutate, opts = {}) {
           err.code = ACTIVE_CLAIM_CONFLICT;
           throw err;
         }
+        preserveRemovedAlerts(registry, pendingAlerts);
         // Tự TIẾN khi mutation đánh dấu terminal, tự CHẶN LÙI khi xoá record:
         // một dòng này đủ cho cả hai, vì `consumedFloor` lấy từ trạng thái trước
         // khi mutate.

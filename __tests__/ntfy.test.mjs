@@ -151,6 +151,15 @@ describe("ntfy payload — biên token symbol", () => {
     }
   });
 
+  it("Unicode token symbol được giữ trong body nhưng header hợp lệ với undici", () => {
+    const { headers, body } = payload("sudden_drain", { loanSymbol: "đồng🚀\nToken" });
+    expect(body).toContain("đồng🚀");
+    expect(headers.Title).not.toContain("🚀");
+    expect(headers.Title).not.toContain("\n");
+    expect(() => new Request("https://ntfy.sh/morpho-test", { method: "POST", headers, body })).not.toThrow();
+    assertLatin1Safe(headers, "unicode symbol");
+  });
+
   it("symbol null ⇒ KHÔNG in chữ \"null\" vào header/body", () => {
     // Production dùng `symbol || ""` cho Title và `|| "?"` cho body — khác bản sao cũ trong test
     // (bản cũ khẳng định null biến thành chuỗi "null", tức là khẳng định hành vi production không có).

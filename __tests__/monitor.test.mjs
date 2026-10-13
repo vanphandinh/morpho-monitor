@@ -166,10 +166,8 @@ describe("monitor anti-spam scenarios (integration)", () => {
 });
 
 /**
- * monitor.mjs có side effect ở module-level (loadMarkets/setInterval) nên không
- * import được ⇒ kiểm hợp đồng TĨNH trên nguồn, cùng cách `webapp.test.mjs` làm với
- * webapp.html. Mục đích: chặn lớp lỗi "code có nhưng không được gọi tới" — đúng
- * lớp lỗi đã khiến R1 không chạy ở production (audit vòng 2, D1).
+ * Static bootstrap wiring checks complement the production createMonitor()
+ * behavior tests in monitor-cycle.test.mjs.
  */
 describe("monitor.mjs — wiring cảnh báo vòng đời (D2)", () => {
   const src = fs.readFileSync(new URL("../monitor.mjs", import.meta.url), "utf8");
@@ -181,19 +179,21 @@ describe("monitor.mjs — wiring cảnh báo vòng đời (D2)", () => {
   });
 
   it("chỉ chuyển tiếp kind đã biết — kind lạ không bịa thông báo", () => {
-    expect(src).toContain("LIFECYCLE_PROBLEM_KINDS.has(problem?.kind)");
-    const kinds = src.match(/LIFECYCLE_PROBLEM_KINDS = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "";
-    expect(kinds).toContain('"config"');
-    expect(kinds).toContain('"invalid"');
+    // Only config is sent immediately from `problems`; invalid goes through
+    // the persistent outbox. The behavioral guard lives in monitor-cycle tests.
+    expect(src).toContain('problem?.kind !== "config"');
+    expect(src).toContain('lifecycleAlerts.notify(problem.kind');
   });
 
   it("mọi kind monitor gửi đều được kênh cảnh báo NHẬN (không rơi vào unknown_kind)", () => {
-    // Chống lệch giữa hai module: đổi tên kind ở một nơi là test này đỏ ngay.
-    const kinds = [...(src.match(/LIFECYCLE_PROBLEM_KINDS = new Set\(\[([^\]]*)\]\)/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    expect(kinds).toEqual(["config", "invalid"]);
-    for (const kind of kinds) {
+    // Direct alerts and durable outbox alerts must all be recognized by the
+    // shared message builder before the monitor attempts delivery.
+    expect(src).toContain('drainAlerts: () => drainLifecycleAlerts({');
+    expect(src).toContain('send: (alert) => postNtfy(');
+    for (const kind of ["config", "invalid", "expired", "superseded", "stuck", "conflict"]) {
       expect(shouldSendLifecycleAlert(kind, "m@7", { lastSentAt: null })).toEqual({ send: true, reason: "ok" });
     }
+    expect(shouldSendLifecycleAlert("unknown", "m@7")).toEqual({ send: false, reason: "unknown_kind" });
   });
 
   it("mỗi chu kỳ checkMarkets đều gọi cảnh báo sau broadcast", () => {

@@ -1,6 +1,7 @@
 import { keccak256 } from "viem";
 import { parseBundleKey, marketBundles, consumedWatermark, readRegistry, TERMINAL_STATUSES } from "./presigned-store.mjs";
 import { isConfigVerifyError } from "./presign-verify.mjs";
+import { queueBundleAlert } from "./presigned-alert-queue.mjs";
 
 /**
  * Presigned transaction lifecycle.
@@ -124,11 +125,13 @@ function expireSameNonceSiblings(registry, claimId, claimNonce, now = () => Date
   for (const [id, other] of Object.entries(registry.bundles)) {
     if (id === claimId) continue;
     if (Number(other.nonce) !== claimNonce) continue;
-    if (TERMINAL_STATUSES.has(other.status)) continue;
+    if (TERMINAL_STATUSES.has(other.status) || other.status === "expired") continue;
+    const previousStatus = other.status;
     other.status = "expired";
     // Mốc để purge đo ân hạn (chẩn đoán 2026-09-26); record cũ thiếu field thì purge lùi về
     // updatedAt/createdAt.
     other.expiredAt = new Date(now()).toISOString();
+    queueBundleAlert(other, { kind: "expired", id, detail: `same nonce ${claimNonce} consumed by claim ${claimId} (previous status ${previousStatus})` }, now);
   }
 }
 
@@ -214,6 +217,7 @@ async function releaseSuperseded({ filePath, claim, claimNonce, txHash, updateRe
     bundle.status = SUPERSEDED_STATUS;
     bundle.reason = SUPERSEDED_REASON;
     bundle.terminalAt = new Date(now()).toISOString();
+    queueBundleAlert(bundle, { kind: "superseded", id: claim.id, detail: evidence }, now);
     delete bundle.rawTx; // never rebroadcast these bytes again
     expireSameNonceSiblings(registry, claim.id, claimNonce, now);
   });
@@ -253,6 +257,7 @@ export async function purgeExpiredRungs({ filePath, updateRegistry, now = () => 
   const victims = [];
   for (const [key, bundle] of Object.entries(registry.bundles ?? {})) {
     if (bundle?.status !== "expired") continue;
+    if (bundle.lifecycleAlerts?.some((alert) => alert.state !== "sent")) continue;
     const nonce = Number(bundle.nonce);
     if (!Number.isFinite(nonce)) continue; // nonce lạ ⇒ để người vận hành đối soát tay
     const age = t - Date.parse(bundle.expiredAt ?? bundle.updatedAt ?? bundle.createdAt ?? "");
@@ -270,6 +275,7 @@ export async function purgeExpiredRungs({ filePath, updateRegistry, now = () => 
         // Trạng thái đổi giữa hai lần đọc (chu kỳ/tiến trình khác vừa claim hoặc xoá) ⇒ bỏ qua,
         // không xoá mù.
         if (!bundle || bundle.status !== "expired") continue;
+        if (bundle.lifecycleAlerts?.some((alert) => alert.state !== "sent")) continue;
         delete reg.bundles[key];
         // Nâng mốc TRƯỚC khi record biến mất khỏi file — nếu không, nonce này "sống lại".
         reg.consumedNonce = Math.max(Number(reg.consumedNonce) || -1, nonce, consumedWatermark(reg));
@@ -338,13 +344,14 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
     // KHÔNG làm mất nó (audit A.2) — trước đây mốc được tính lại từ record và
     // có thể biến mất cùng record.
     const consumedNonce = consumedWatermark(registry);
-    for (const [, bundle] of entries) {
+    for (const [id, bundle] of entries) {
       if (bundle.status !== "pending") continue;
       const value = Number(bundle.nonce);
       if (value < Number(nonce) || value <= consumedNonce) {
         bundle.status = "expired";
         // Mốc để purge đo ân hạn (chẩn đoán 2026-09-26).
         bundle.expiredAt = new Date(now()).toISOString();
+        queueBundleAlert(bundle, { kind: "expired", id, detail: `pending nonce ${nonce}; consumed registry watermark ${consumedNonce}` }, now);
       }
     }
 
@@ -404,6 +411,7 @@ export async function broadcastEligible({ client, lenderAddress, filePath, snaps
           // như vậy: chốt `invalid` (không còn claimable) và báo cho người vận hành.
           bundle.status = "invalid";
           bundle.error = verified.error;
+          queueBundleAlert(bundle, { kind: "invalid", id: key, marketId: bundleMarketId, detail: verified.error }, now);
           problems.push({ id: key, marketId: bundleMarketId, nonce: nonceValue, kind: "invalid", error: verified.error });
         }
         continue;

@@ -176,6 +176,21 @@ describe("presign API (production handler over real HTTP)", () => {
     expect(fs.readFileSync(registryPath, "utf8")).toBe(before);
   });
 
+  it("DELETE an expired rung retains an unsent lifecycle alert for the notification worker", async () => {
+    const key = `${MARKET_A}@7`;
+    seedRegistry({ [key]: {
+      marketId: MARKET_A, nonce: 7, status: "expired", withdrawals: [],
+      lifecycleAlerts: [{ kind: "expired", state: "pending", attempts: 0,
+        queuedAt: "2026-10-13T08:00:00.000Z", info: { id: key, marketId: MARKET_A, nonce: 7 } }],
+    } });
+    const resp = await api("DELETE", `/api/presign?market=${MARKET_A}&nonce=7`);
+    expect(resp.status).toBe(200);
+    const stored = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+    expect(stored.bundles[key]).toBeUndefined();
+    expect(Object.values(stored.orphanedLifecycleAlerts)).toHaveLength(1);
+    expect(Object.values(stored.orphanedLifecycleAlerts)[0]).toMatchObject({ kind: "expired", state: "pending" });
+  });
+
   it("POST /api/presign strips client-supplied lifecycle fields", async () => {
     seedRegistry({});
     // verifyPresignedBundle sẽ fail trên signedTx giả, nhưng field lifecycle

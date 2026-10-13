@@ -66,7 +66,7 @@ function trackedMjsFiles() {
 
 function runOxlint(scope) {
   try {
-    const stdout = execFileSync(process.execPath, [OXLINT_BIN, ...OXLINT_FLAGS, scope], {
+    const stdout = execFileSync(process.execPath, [OXLINT_BIN, "--format", "json", ...OXLINT_FLAGS, scope], {
       cwd: ROOT,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -83,9 +83,14 @@ const tracked = trackedMjsFiles();
 const result = runOxlint(scope);
 process.stdout.write(result.output);
 
-// Con số do oxlint báo ("Finished in 18ms on 80 files with 97 rules using 16 threads").
-const scannedMatch = result.output.match(/\bon (\d+) files\b/);
-const scanned = scannedMatch ? Number(scannedMatch[1]) : null;
+// Oxlint 1.85 emits no text summary on success; its JSON output reports
+// `number_of_files` on both success and lint errors. Still fail closed if this
+// contract changes or the subprocess returns malformed output.
+let scanned = null;
+try {
+  const count = JSON.parse(result.output).number_of_files;
+  if (Number.isSafeInteger(count) && count >= 0) scanned = count;
+} catch { /* invalid output cannot prove coverage */ }
 
 let coverageFailed = false;
 if (scanned === null) {

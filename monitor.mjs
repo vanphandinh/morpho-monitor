@@ -11,17 +11,10 @@ import { createCheckScheduler, createWssWatcher } from "./monitor-triggers.mjs";
 import { createWssConnect } from "./wss-connect.mjs";
 import { broadcastEligible as runPresignedBroadcast } from "./presigned-broadcast.mjs";
 import { dispatchNotifications } from "./notification-dispatch.mjs";
-import { createLifecycleAlerter, postNtfy } from "./lifecycle-alert.mjs";
+import { createLifecycleAlerter, postNtfy, safeNtfyHeader } from "./lifecycle-alert.mjs";
+import { drainLifecycleAlerts } from "./presigned-alert-queue.mjs";
 import { sendVoipNotification } from "./voip.mjs";
 import { retryStartup } from "./startup-retry.mjs";
-
-/**
- * Kind của `problems` mà broadcastEligible có thể trả (audit D2).
- *
- * Audit P1.5: hằng số + vòng đời chu kỳ nằm ở đây thay vì module-level, để
- * `createMonitor` import được trong vitest mà không bật timer/handler toàn cục.
- */
-const LIFECYCLE_PROBLEM_KINDS = new Set(["config", "invalid"]);
 
 /**
  * Payload ntfy cho một chu kỳ cảnh báo (audit vòng 5, O4).
@@ -41,11 +34,11 @@ export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, mar
   const drained = scenario === "sudden_drain";
   return {
     headers: {
-      Title: drained ? `Morpho: liquidity drain ${loanToken.symbol || ""}` : `Morpho: liquidity available ${loanToken.symbol || ""}`,
+      Title: safeNtfyHeader(drained ? `Morpho: liquidity drain ${loanToken.symbol || ""}` : `Morpho: liquidity available ${loanToken.symbol || ""}`),
       Tags: drained ? "warning,chart_with_downwards_trend" : "moneybag",
       Priority: "4",
       Markdown: "yes",
-      Click: link,
+      Click: encodeURI(link),
     },
     body: [
       `**${drained ? "Liquidity drain warning" : "Liquidity available"}**`,
@@ -73,6 +66,7 @@ export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, mar
  * @param {string[]} [deps.marketIds]
  * @param {{ readSnapshots: (ids?: string[]) => Promise<object> }} deps.reader
  * @param {object} deps.lifecycleAlerts - `createLifecycleAlerter(...)` (hoặc fake có `.notify`)
+ * @param {() => Promise<object>} [deps.drainAlerts] - flush durable lifecycle alerts
  * @param {(snapshot:object, scenario:string) => Promise<object>} deps.sendNotification
  * @param {(snapshots:Map<string,object>) => Promise<object>} deps.broadcastEligible
  * @param {object} deps.config - ngưỡng/chu kỳ (xem bootstrap)
@@ -87,6 +81,7 @@ export function createMonitor({
   marketIds = markets.map((market) => market.id),
   reader,
   lifecycleAlerts,
+  drainAlerts = async () => {},
   sendNotification,
   broadcastEligible,
   config,
@@ -107,24 +102,24 @@ export function createMonitor({
 
   /**
    * Biến kết quả broadcastEligible thành cảnh báo (R1). Chỉ báo khi BẬC THANG KHÔNG
-   * TIẾN: claim đã tự nhả vì bị tx khác thay thế (`superseded`), claim cần đối
-   * soát tay (`stuck`), hay xung đột nonce (`conflict`). Kết quả thông tin
-   * (idle/terminal-only) không báo gì. Kind lạ bị bỏ qua để kênh cảnh báo không
-   * bao giờ tự bịa thông báo.
+   * TIẾN: claim cần đối soát tay (`stuck`) hoặc xung đột nonce (`conflict`).
+   * `superseded` và `invalid` được gửi bởi durable outbox, vì vậy không được
+   * gửi tức thời tại đây. Kết quả idle/terminal-only không tạo thông báo.
    */
   async function alertOnLifecycle(result) {
     if (!result) return;
     const marketId = result.marketId ?? result.bundle?.marketId ?? null;
     const nonce = result.nonce ?? result.bundle?.nonce ?? null;
     const tier = result.bundle?.broadcastingTier ?? null;
-    if (result.superseded) await lifecycleAlerts.notify("superseded", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
-    else if (result.conflict) await lifecycleAlerts.notify("conflict", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
+    // Superseded and invalid transitions are persisted by the broadcaster; the
+    // outbox is their only delivery path, avoiding duplicate push notifications.
+    if (result.conflict) await lifecycleAlerts.notify("conflict", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
     else if (result.stuck) await lifecycleAlerts.notify("stuck", { id: result.id, marketId, nonce, tier, detail: result.diagnostic });
 
     // D2: vấn đề verify của chu kỳ (không loại trừ claim — một chu kỳ có thể vừa claim
     // một rung vừa phát hiện rung khác hỏng/lệch cấu hình).
     for (const problem of result.problems ?? []) {
-      if (!LIFECYCLE_PROBLEM_KINDS.has(problem?.kind)) continue;
+      if (problem?.kind !== "config") continue;
       await lifecycleAlerts.notify(problem.kind, {
         id: problem.id,
         marketId: problem.marketId,
@@ -135,6 +130,12 @@ export function createMonitor({
   }
 
   async function checkMarkets(ids = marketIds) {
+    async function flushAlerts() {
+      try { await drainAlerts(); }
+      catch (err) { logger.error(`[monitor] lifecycle outbox failed (will retry): ${err?.message || err}`); }
+    }
+    // Drain before RPC I/O, so retry works even while the market reader is down.
+    await flushAlerts();
     try {
       resetDaily();
       const { snapshots, failures } = await reader.readSnapshots(ids);
@@ -156,6 +157,9 @@ export function createMonitor({
     } catch (err) {
       // RPC outage / any cycle failure: log per cycle, keep the loop alive (M5).
       logger.error(`[monitor] check cycle failed (loop continues): ${err?.message || err}`);
+    } finally {
+      // Transitions just persisted by broadcastEligible can notify in this cycle.
+      await flushAlerts();
     }
   }
 
@@ -220,6 +224,10 @@ async function main() {
     marketIds,
     reader,
     lifecycleAlerts,
+    drainAlerts: () => drainLifecycleAlerts({
+      filePath: PRESIGNED_FILE, updateRegistry,
+      send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
+    }),
     sendNotification: (snapshot, scenario) => dispatchNotifications({
       sendNtfy: () => sendNtfyNotification(snapshot, scenario),
       sendVoip: () => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
