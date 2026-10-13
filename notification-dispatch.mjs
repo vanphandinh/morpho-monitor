@@ -1,8 +1,27 @@
 /** Deliver notification channels independently; quota is controlled only by ntfy. */
-export async function dispatchNotifications({ sendNtfy, sendVoip, voipEnabled = false }) {
+export async function dispatchNotifications({ sendNtfy, sendVoip, voipEnabled = false, onNtfySettled, voipInFlight, voipKey }) {
   const ntfy = Promise.resolve().then(sendNtfy);
-  const voip = voipEnabled && sendVoip ? Promise.resolve().then(sendVoip) : Promise.resolve();
-  const [ntfyResult, voipResult] = await Promise.allSettled([ntfy, voip]);
+  // Publish the quota-relevant outcome immediately. VoIP may keep polling for
+  // much longer, and must not reserve ntfy capacity while it does so.
+  const reportedNtfy = ntfy.then(
+    (value) => { onNtfySettled?.({ ntfyDelivered: true, ntfyError: null }); return value; },
+    (error) => { onNtfySettled?.({ ntfyDelivered: false, ntfyError: error }); throw error; },
+  );
+  let voip = Promise.resolve();
+  if (voipEnabled && sendVoip) {
+    voip = voipInFlight && voipKey != null ? voipInFlight.get(voipKey) : null;
+    if (!voip) {
+      voip = Promise.resolve().then(sendVoip);
+      if (voipInFlight && voipKey != null) {
+        voipInFlight.set(voipKey, voip);
+        // A retry of ntfy may overlap a still-ringing VoIP call. Share that
+        // in-flight call rather than dial the same market twice.
+        const clear = () => { if (voipInFlight.get(voipKey) === voip) voipInFlight.delete(voipKey); };
+        void voip.then(clear, clear);
+      }
+    }
+  }
+  const [ntfyResult, voipResult] = await Promise.allSettled([reportedNtfy, voip]);
   const voipStatus = !voipEnabled || !sendVoip ? "disabled"
     : voipResult.status === "rejected" ? "failed"
       : (voipResult.value?.status ?? "unknown");

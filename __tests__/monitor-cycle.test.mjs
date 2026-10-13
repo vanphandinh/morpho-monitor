@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createMonitor } from "../monitor.mjs";
+import { dispatchNotifications } from "../notification-dispatch.mjs";
 import { broadcastEligible } from "../presigned-broadcast.mjs";
 import { drainLifecycleAlerts } from "../presigned-alert-queue.mjs";
 import { updateRegistry } from "../presigned-store.mjs";
@@ -29,7 +30,7 @@ const snap = (over = {}) => ({
   ...over,
 });
 
-function makeDeps({ initial = [snap()], broadcastResult = null, broadcastImpl, lifecycleNotify, delivery = { ntfyDelivered: true }, sendImpl, readError = null, now, maxNotificationsPerDay = 10, drainAlerts = vi.fn(async () => {}) } = {}) {
+function makeDeps({ initial = [snap()], broadcastResult = null, broadcastImpl, lifecycleNotify, delivery = { ntfyDelivered: true }, sendImpl, readError = null, now, maxNotificationsPerDay = 10, notificationCooldownMs = 0, drainAlerts = vi.fn(async () => {}) } = {}) {
   let snapshots = initial;
   const notified = [];
   const alerts = [];
@@ -45,13 +46,13 @@ function makeDeps({ initial = [snap()], broadcastResult = null, broadcastImpl, l
     markets: [{ id: MARKET_A, minLiquidity: "1", suddenDrainMultiplier: 2 }],
     reader,
     lifecycleAlerts: { notify: vi.fn(async (kind, info) => { alerts.push({ kind, info }); return lifecycleNotify ? lifecycleNotify(kind, info) : { sent: true }; }) },
-    sendNotification: vi.fn(async (snapshot, scenario) => {
+    sendNotification: vi.fn(async (snapshot, scenario, onNtfySettled) => {
       notified.push({ id: snapshot.id, scenario });
-      return sendImpl ? sendImpl(snapshot, scenario) : delivery;
+      return sendImpl ? sendImpl(snapshot, scenario, onNtfySettled) : delivery;
     }),
     broadcastEligible: broadcast,
     drainAlerts,
-    config: { notificationCooldownMs: 0, maxNotificationsPerDay, wssDebounceMs: 1, monitorIntervalMs: 1, wssUrls: [], morphoBlueAddress: MORPHO },
+    config: { notificationCooldownMs, maxNotificationsPerDay, wssDebounceMs: 1, monitorIntervalMs: 1, wssUrls: [], morphoBlueAddress: MORPHO },
     logger: { log: () => {}, warn: () => {}, error: (m) => errors.push(m) },
     ...(now ? { now } : {}),
   });
@@ -179,6 +180,80 @@ describe("createMonitor — chu kỳ check", () => {
     } finally { release({ ntfyDelivered: true }); }
     await monitor.waitForNotifications();
   });
+  it("charges a delayed ntfy success to the day in which it is delivered", async () => {
+    let currentTime = Date.now();
+    let release;
+    const oldSend = new Promise((resolve) => { release = resolve; });
+    const sendImpl = vi.fn().mockImplementationOnce(() => oldSend).mockResolvedValue({ ntfyDelivered: true });
+    const high = { market: { liquidity: 25_000_000n } };
+    const low = { market: { liquidity: 1_000_000n } };
+    const { monitor, setSnapshots } = makeDeps({
+      initial: [snap(high), snap({ ...high, id: MARKET_B })],
+      maxNotificationsPerDay: 1, sendImpl, now: () => currentTime,
+    });
+    try {
+      await monitor.checkMarkets();
+      setSnapshots([snap(low), snap({ ...high, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(sendImpl).toHaveBeenCalledOnce());
+      currentTime += 86_400_000;
+      await monitor.checkMarkets(); // rolls the quota window while A is in flight
+      release({ ntfyDelivered: true });
+      await monitor.waitForNotifications();
+      setSnapshots([snap(low), snap({ ...low, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await monitor.waitForNotifications();
+      expect(sendImpl).toHaveBeenCalledOnce();
+    } finally { release({ ntfyDelivered: true }); }
+  });
+  it("a failed ntfy frees daily quota even while its VoIP call is still pending", async () => {
+    let releaseVoip;
+    const voipPending = new Promise((resolve) => { releaseVoip = resolve; });
+    const sendImpl = vi.fn((snapshot, _scenario, onNtfySettled) => dispatchNotifications({
+      sendNtfy: snapshot.id === MARKET_A ? () => Promise.reject(new Error("offline")) : async () => {},
+      sendVoip: () => voipPending,
+      voipEnabled: snapshot.id === MARKET_A,
+      onNtfySettled,
+    }));
+    const initial = [snap({ market: { liquidity: 25_000_000n } }), snap({ id: MARKET_B, market: { liquidity: 25_000_000n } })];
+    const { monitor, notified, setSnapshots } = makeDeps({ initial, sendImpl, maxNotificationsPerDay: 1 });
+    try {
+      await monitor.checkMarkets();
+      setSnapshots([snap({ market: { liquidity: 1_000_000n } })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(sendImpl).toHaveBeenCalledOnce());
+      await Promise.resolve();
+      setSnapshots([snap({ id: MARKET_B, market: { liquidity: 1_000_000n } })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(sendImpl).toHaveBeenCalledTimes(2));
+      expect(notified.map(({ id }) => id)).toEqual([MARKET_A, MARKET_B]);
+    } finally { releaseVoip({ sent: false, status: "failed" }); }
+    await monitor.waitForNotifications();
+  });
+  it("retries ntfy without starting overlapping VoIP calls for the same market", async () => {
+    let releaseVoip;
+    const voipPending = new Promise((resolve) => { releaseVoip = resolve; });
+    const voip = vi.fn(() => voipPending);
+    const voipInFlight = new Map();
+    let ntfyAttempts = 0;
+    const sendImpl = vi.fn((snapshot, _scenario, onNtfySettled) => dispatchNotifications({
+      sendNtfy: () => ++ntfyAttempts === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(),
+      sendVoip: voip, voipEnabled: true, onNtfySettled, voipInFlight, voipKey: snapshot.id,
+    }));
+    const { monitor, setSnapshots } = makeDeps({
+      initial: [snap({ market: { liquidity: 25_000_000n } })], sendImpl,
+    });
+    try {
+      await monitor.checkMarkets();
+      setSnapshots([snap({ market: { liquidity: 1_000_000n } })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(ntfyAttempts).toBe(1));
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(ntfyAttempts).toBe(2));
+      expect(voip).toHaveBeenCalledOnce();
+    } finally { releaseVoip({ sent: true, status: "completed" }); }
+    await monitor.waitForNotifications();
+  });
   it("chu kỳ đầu chỉ khởi tạo state, KHÔNG thông báo", async () => {
     const { monitor, notified } = makeDeps();
     await monitor.checkMarkets();
@@ -206,6 +281,42 @@ describe("createMonitor — chu kỳ check", () => {
     await monitor.waitForNotifications();
     expect(monitor.stateFor(MARKET_A).hasNotifiedThisCycle).toBe(false);
     expect(errors.join(" ")).toMatch(/ntfy failed/);
+  });
+
+  it("retries a failed ntfy alert while the market remains in the same danger zone", async () => {
+    const sendImpl = vi.fn().mockResolvedValueOnce({ ntfyDelivered: false, ntfyError: new Error("offline") })
+      .mockResolvedValue({ ntfyDelivered: true });
+    const { monitor, setSnapshots } = makeDeps({ initial: [snap({ market: { liquidity: 25_000_000n } })], sendImpl });
+    await monitor.checkMarkets();
+    setSnapshots([snap({ market: { liquidity: 1_000_000n } })]);
+    await monitor.checkMarkets();
+    await monitor.waitForNotifications();
+    await monitor.checkMarkets();
+    await monitor.waitForNotifications();
+    expect(sendImpl).toHaveBeenCalledTimes(2);
+    expect(monitor.stateFor(MARKET_A).hasNotifiedThisCycle).toBe(true);
+  });
+
+  it("an old notification completing after exit does not start cooldown for a new zone entry", async () => {
+    let release;
+    const first = new Promise((resolve) => { release = resolve; });
+    const sendImpl = vi.fn().mockImplementationOnce(() => first).mockResolvedValue({ ntfyDelivered: true });
+    const { monitor, setSnapshots } = makeDeps({
+      initial: [snap({ market: { liquidity: 25_000_000n } })],
+      sendImpl, notificationCooldownMs: 60 * 60_000,
+    });
+    await monitor.checkMarkets();
+    setSnapshots([snap({ market: { liquidity: 1_000_000n } })]);
+    await monitor.checkMarkets();
+    await vi.waitFor(() => expect(sendImpl).toHaveBeenCalledOnce());
+    setSnapshots([snap({ market: { liquidity: 25_000_000n } })]);
+    await monitor.checkMarkets();
+    release({ ntfyDelivered: true });
+    await monitor.waitForNotifications();
+    setSnapshots([snap({ market: { liquidity: 1_000_000n } })]);
+    await monitor.checkMarkets();
+    await monitor.waitForNotifications();
+    expect(sendImpl).toHaveBeenCalledTimes(2);
   });
 
   it("reader lỗi ⇒ chu kỳ không ném ra ngoài, chỉ log (loop sống tiếp)", async () => {

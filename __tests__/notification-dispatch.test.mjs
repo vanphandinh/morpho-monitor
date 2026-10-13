@@ -31,4 +31,19 @@ describe("dispatchNotifications", () => {
     expect(result.voipStatus).toBe("disabled");
     expect(result.voipDelivered).toBe(false);
   });
+  it("reports ntfy failure before a slow VoIP call finishes", async () => {
+    let releaseVoip;
+    const voipPending = new Promise((resolve) => { releaseVoip = resolve; });
+    const onNtfySettled = vi.fn();
+    const dispatch = dispatchNotifications({
+      sendNtfy: () => Promise.reject(new Error("offline")),
+      sendVoip: () => voipPending, voipEnabled: true, onNtfySettled,
+    });
+    try {
+      await vi.waitFor(() => expect(onNtfySettled).toHaveBeenCalledOnce());
+      expect(onNtfySettled.mock.calls[0][0].ntfyDelivered).toBe(false);
+      expect(onNtfySettled.mock.calls[0][0].ntfyError.message).toBe("offline");
+    } finally { releaseVoip({ sent: true, status: "completed" }); }
+    expect((await dispatch).voipDelivered).toBe(true);
+  });
 });

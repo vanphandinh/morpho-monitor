@@ -490,7 +490,9 @@ describe("verifyPublicRpcs — chu trình catalog → probe → cache", () => {
     // Chu kỳ 2: 304 — fetch lại (revalidate) nhưng KHÔNG parse body
     const r2 = await verifyPublicRpcs({ cachePath, minEndpoints: 1, fetchImpl: fetcher, timeoutMs: 1000, interRequestDelayMs: 0, log: () => {} });
     expect(r2.ok).toBe(true);
-    expect(r2.urls).toEqual(r1.urls);
+    // Each verification probes again and sorts by measured latency; equal
+    // candidates can legitimately appear in a different order.
+    expect([...r2.urls].sort()).toEqual([...r1.urls].sort());
     expect(catalogFetches).toBe(2);
     expect(catalogParses).toBe(1); // json() không được gọi lại ở chu kỳ 304
   });

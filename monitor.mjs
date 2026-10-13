@@ -128,6 +128,7 @@ export function createMonitor({
   function stateFor(id) { if (!states.has(id)) states.set(id, {
     lastSeenLiquidity: null, hasNotifiedThisCycle: false, lastNotificationTime: 0,
     lastInZone: null, notificationGeneration: 0, pendingGeneration: null,
+    retryFromLiquidity: null,
   }); return states.get(id); }
   function resetDaily() { if (now() - dayStart >= 86_400_000) { notificationsToday = 0; dayStart = now(); } }
 
@@ -181,29 +182,47 @@ export function createMonitor({
         if (state.lastInZone === true && !inZone) {
           state.notificationGeneration++;
           state.hasNotifiedThisCycle = false;
+          state.retryFromLiquidity = null;
+        }
+        // Remember the edge that entered the danger zone until ntfy succeeds.
+        // Otherwise a failed/limited first attempt can never retry because the
+        // next snapshot no longer contains a fresh edge.
+        if (inZone && state.lastInZone !== true && state.lastSeenLiquidity !== null) {
+          state.retryFromLiquidity = state.lastSeenLiquidity;
         }
         state.lastInZone = inZone;
         if (state.lastSeenLiquidity === null) { state.lastSeenLiquidity = liquidity; logger.log(`[monitor] initialized ${snapshot.id}: ${formatTokenAmount(liquidity, snapshot.loanToken.decimals, snapshot.loanToken.symbol)}`); continue; }
-        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: notificationsToday + (pendingByDay.get(dayStart) ?? 0), notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
+        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.retryFromLiquidity ?? state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: notificationsToday + (pendingByDay.get(dayStart) ?? 0), notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
         if (decision.shouldNotify && state.pendingGeneration !== state.notificationGeneration) {
           const generation = state.notificationGeneration;
           const notificationDay = dayStart;
           state.pendingGeneration = generation;
           pendingByDay.set(notificationDay, (pendingByDay.get(notificationDay) ?? 0) + 1);
           runInBackground(`ntfy/VoIP for ${snapshot.id}`, async () => {
-            try {
-              const delivery = await sendNotification(snapshot, decision.scenario);
+            let accounted = false;
+            const onNtfySettled = (delivery) => {
+              if (accounted) return;
+              accounted = true;
               if (delivery?.ntfyDelivered) {
-                state.lastNotificationTime = now();
-                if (state.notificationGeneration === generation && state.lastInZone) state.hasNotifiedThisCycle = true;
-                if (dayStart === notificationDay) notificationsToday++;
+                if (state.notificationGeneration === generation && state.lastInZone) {
+                  state.lastNotificationTime = now();
+                  state.hasNotifiedThisCycle = true;
+                  state.retryFromLiquidity = null;
+                }
+                // A request started in the previous quota window can finish
+                // today; charge the window in which ntfy actually delivered.
+                resetDaily();
+                notificationsToday++;
               } else logger.error(`[monitor] ntfy failed for ${snapshot.id}: ${delivery?.ntfyError?.message || "unknown error"}`);
-            } finally {
               if (state.pendingGeneration === generation) state.pendingGeneration = null;
               const remaining = (pendingByDay.get(notificationDay) ?? 1) - 1;
               if (remaining) pendingByDay.set(notificationDay, remaining);
               else pendingByDay.delete(notificationDay);
-            }
+            };
+            try {
+              const delivery = await sendNotification(snapshot, decision.scenario, onNtfySettled);
+              onNtfySettled(delivery); // Support callers that return only a final result.
+            } catch (err) { onNtfySettled({ ntfyDelivered: false, ntfyError: err }); }
           });
         }
         state.lastSeenLiquidity = liquidity;
@@ -263,6 +282,7 @@ async function main() {
     () => createMarketReader({ client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets })
   );
   console.log(`[monitor] ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), topic=${topic}`);
+  const voipInFlight = new Map();
 
   const sendNtfyNotification = async (snapshot, scenario) => {
     const { market, position, loanToken, collateralToken, id } = snapshot;
@@ -285,10 +305,12 @@ async function main() {
       filePath: PRESIGNED_FILE, updateRegistry,
       send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
     }),
-    sendNotification: (snapshot, scenario) => dispatchNotifications({
+    sendNotification: (snapshot, scenario, onNtfySettled) => dispatchNotifications({
       sendNtfy: () => sendNtfyNotification(snapshot, scenario),
       sendVoip: () => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
       voipEnabled: Boolean(VOIP_SECRET_KEY),
+      onNtfySettled,
+      voipInFlight, voipKey: snapshot.id,
     }),
     broadcastEligible: (snapshots) => runPresignedBroadcast({
       client: publicClient, lenderAddress: LENDER_ADDRESS, filePath: PRESIGNED_FILE, snapshots,
