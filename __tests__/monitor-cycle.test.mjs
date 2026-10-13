@@ -10,7 +10,7 @@ import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMonitor } from "../monitor.mjs";
+import { createMonitor, createLiquidityNotificationSender } from "../monitor.mjs";
 import { dispatchNotifications } from "../notification-dispatch.mjs";
 import { broadcastEligible } from "../presigned-broadcast.mjs";
 import { drainLifecycleAlerts } from "../presigned-alert-queue.mjs";
@@ -30,7 +30,7 @@ const snap = (over = {}) => ({
   ...over,
 });
 
-function makeDeps({ initial = [snap()], broadcastResult = null, broadcastImpl, lifecycleNotify, delivery = { ntfyDelivered: true }, sendImpl, readError = null, now, maxNotificationsPerDay = 10, notificationCooldownMs = 0, drainAlerts = vi.fn(async () => {}) } = {}) {
+function makeDeps({ initial = [snap()], broadcastResult = null, broadcastImpl, lifecycleNotify, delivery = { ntfyDelivered: true }, sendImpl, readError = null, now, maxNotificationsPerDay = 10, voipEnabled = false, notificationCooldownMs = 0, drainAlerts = vi.fn(async () => {}) } = {}) {
   let snapshots = initial;
   const notified = [];
   const alerts = [];
@@ -46,13 +46,13 @@ function makeDeps({ initial = [snap()], broadcastResult = null, broadcastImpl, l
     markets: [{ id: MARKET_A, minLiquidity: "1", suddenDrainMultiplier: 2 }],
     reader,
     lifecycleAlerts: { notify: vi.fn(async (kind, info) => { alerts.push({ kind, info }); return lifecycleNotify ? lifecycleNotify(kind, info) : { sent: true }; }) },
-    sendNotification: vi.fn(async (snapshot, scenario, onNtfySettled, generation) => {
+    sendNotification: vi.fn(async (snapshot, scenario, onNtfySettled, generation, channels) => {
       notified.push({ id: snapshot.id, scenario });
-      return sendImpl ? sendImpl(snapshot, scenario, onNtfySettled, generation) : delivery;
+      return sendImpl ? sendImpl(snapshot, scenario, onNtfySettled, generation, channels) : delivery;
     }),
     broadcastEligible: broadcast,
     drainAlerts,
-    config: { notificationCooldownMs, maxNotificationsPerDay, wssDebounceMs: 1, monitorIntervalMs: 1, wssUrls: [], morphoBlueAddress: MORPHO },
+    config: { notificationCooldownMs, maxNotificationsPerDay, voipEnabled, wssDebounceMs: 1, monitorIntervalMs: 1, wssUrls: [], morphoBlueAddress: MORPHO },
     logger: { log: () => {}, warn: () => {}, error: (m) => errors.push(m) },
     ...(now ? { now } : {}),
   });
@@ -180,6 +180,117 @@ describe("createMonitor — chu kỳ check", () => {
     } finally { release({ ntfyDelivered: true }); }
     await monitor.waitForNotifications();
   });
+  it("sends VoIP on a new danger-zone entry while yesterday's pending ntfy reserves today's quota", async () => {
+    let currentTime = Date.now();
+    let releaseOld;
+    const pendingOld = new Promise((resolve) => { releaseOld = resolve; });
+    const ntfy = vi.fn().mockImplementationOnce(() => pendingOld).mockResolvedValue(undefined);
+    const voip = vi.fn().mockResolvedValue({ sent: true, status: "completed" });
+    const sendImpl = vi.fn(createLiquidityNotificationSender({
+      sendNtfy: (snapshot) => ntfy(snapshot.id),
+      sendVoip: (snapshot) => voip(snapshot.id),
+      voipEnabled: true,
+    }));
+    const high = { market: { liquidity: 25_000_000n } };
+    const low = { market: { liquidity: 1_000_000n } };
+    const { monitor, setSnapshots, broadcast } = makeDeps({
+      initial: [snap(high), snap({ ...high, id: MARKET_B })],
+      maxNotificationsPerDay: 1, voipEnabled: true, sendImpl, now: () => currentTime,
+    });
+    try {
+      await monitor.checkMarkets();
+      setSnapshots([snap(low), snap({ ...high, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(ntfy).toHaveBeenCalledTimes(1));
+      currentTime += 86_400_000;
+      setSnapshots([snap(low), snap({ ...low, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(voip).toHaveBeenCalledWith(MARKET_B));
+      expect(ntfy).toHaveBeenCalledTimes(1);
+      await monitor.checkMarkets();
+      expect(voip.mock.calls.filter(([id]) => id === MARKET_B)).toHaveLength(1);
+      expect(broadcast).toHaveBeenCalledTimes(4);
+    } finally { releaseOld(); }
+    await monitor.waitForNotifications();
+  });
+  it("sends VoIP once per entry when ntfy quota is zero, including after re-entry", async () => {
+    const ntfy = vi.fn(async () => {});
+    const voip = vi.fn(async () => ({ sent: true, status: "completed" }));
+    const sendImpl = createLiquidityNotificationSender({ sendNtfy: ntfy, sendVoip: voip, voipEnabled: true });
+    const high = snap({ market: { liquidity: 25_000_000n } });
+    const low = snap({ market: { liquidity: 1_000_000n } });
+    const { monitor, setSnapshots, broadcast } = makeDeps({
+      initial: [high], maxNotificationsPerDay: 0, voipEnabled: true, sendImpl,
+    });
+    await monitor.checkMarkets();
+    setSnapshots([low]);
+    await monitor.checkMarkets();
+    await monitor.waitForNotifications();
+    await monitor.checkMarkets();
+    expect(ntfy).not.toHaveBeenCalled();
+    expect(voip).toHaveBeenCalledOnce();
+    expect(monitor.stateFor(MARKET_A).hasNotifiedThisCycle).toBe(false);
+    setSnapshots([high]);
+    await monitor.checkMarkets();
+    setSnapshots([low]);
+    await monitor.checkMarkets();
+    await monitor.waitForNotifications();
+    expect(voip).toHaveBeenCalledTimes(2);
+    expect(broadcast).toHaveBeenCalledTimes(5);
+  });
+  it("retries ntfy after an old reservation fails without redialing VoIP for the same entry", async () => {
+    let currentTime = Date.now();
+    let rejectOld;
+    const oldNtfy = new Promise((_, reject) => { rejectOld = reject; });
+    const ntfy = vi.fn((snapshot) => snapshot.id === MARKET_A ? oldNtfy : Promise.resolve());
+    const voip = vi.fn(async () => ({ sent: true, status: "completed" }));
+    const sendImpl = createLiquidityNotificationSender({ sendNtfy: ntfy, sendVoip: voip, voipEnabled: true });
+    const high = { market: { liquidity: 25_000_000n } };
+    const low = { market: { liquidity: 1_000_000n } };
+    const { monitor, setSnapshots } = makeDeps({
+      initial: [snap(high), snap({ ...high, id: MARKET_B })],
+      maxNotificationsPerDay: 1, voipEnabled: true, sendImpl, now: () => currentTime,
+    });
+    try {
+      await monitor.checkMarkets();
+      setSnapshots([snap(low), snap({ ...high, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(ntfy).toHaveBeenCalledOnce());
+      currentTime += 86_400_000;
+      setSnapshots([snap(low), snap({ ...low, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await vi.waitFor(() => expect(voip).toHaveBeenCalledTimes(2));
+      expect(ntfy).toHaveBeenCalledOnce();
+      rejectOld(new Error("offline"));
+      await monitor.waitForNotifications();
+      setSnapshots([snap(high), snap({ ...low, id: MARKET_B })]);
+      await monitor.checkMarkets();
+      await monitor.waitForNotifications();
+      expect(ntfy.mock.calls.map(([snapshot]) => snapshot.id)).toEqual([MARKET_A, MARKET_B]);
+      expect(voip.mock.calls.map(([snapshot]) => snapshot.id)).toEqual([MARKET_A, MARKET_B]);
+      expect(monitor.stateFor(MARKET_B).hasNotifiedThisCycle).toBe(true);
+    } finally { rejectOld(new Error("offline")); }
+  });
+  it("production VoIP key deduplicates in-flight calls per market and entry generation", async () => {
+    let releaseVoip;
+    const pendingVoip = new Promise((resolve) => { releaseVoip = resolve; });
+    const voip = vi.fn(() => pendingVoip);
+    const ntfy = vi.fn();
+    const sender = createLiquidityNotificationSender({ sendNtfy: ntfy, sendVoip: voip, voipEnabled: true });
+    const voipOnly = { ntfy: false, voip: true };
+    const sends = [
+      sender(snap(), "sudden_drain", undefined, 0, voipOnly),
+      sender(snap(), "sudden_drain", undefined, 0, voipOnly),
+      sender(snap(), "sudden_drain", undefined, 1, voipOnly),
+      sender(snap({ id: MARKET_B }), "sudden_drain", undefined, 0, voipOnly),
+    ];
+    try {
+      await vi.waitFor(() => expect(voip).toHaveBeenCalledTimes(3));
+      expect(ntfy).not.toHaveBeenCalled();
+    } finally { releaseVoip({ sent: true, status: "completed" }); }
+    const results = await Promise.all(sends);
+    expect(results.every(({ ntfyDelivered, voipDelivered }) => !ntfyDelivered && voipDelivered)).toBe(true);
+  });
   it("charges a delayed ntfy success to the day in which it is delivered", async () => {
     let currentTime = Date.now();
     let release;
@@ -294,12 +405,12 @@ describe("createMonitor — chu kỳ check", () => {
     const voip = vi.fn(() => voipPending);
     const voipInFlight = new Map();
     let ntfyAttempts = 0;
-    const sendImpl = vi.fn((snapshot, _scenario, onNtfySettled, generation) => dispatchNotifications({
+    const sendImpl = vi.fn(createLiquidityNotificationSender({
       sendNtfy: () => ++ntfyAttempts === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(),
-      sendVoip: voip, voipEnabled: true, onNtfySettled, voipInFlight, voipKey: `${snapshot.id}:${generation}`,
+      sendVoip: voip, voipEnabled: true, voipInFlight,
     }));
     const { monitor, setSnapshots } = makeDeps({
-      initial: [snap({ market: { liquidity: 25_000_000n } })], sendImpl,
+      initial: [snap({ market: { liquidity: 25_000_000n } })], sendImpl, voipEnabled: true,
     });
     try {
       await monitor.checkMarkets();
@@ -316,12 +427,11 @@ describe("createMonitor — chu kỳ check", () => {
     const releases = [];
     const voip = vi.fn(() => new Promise((resolve) => { releases.push(resolve); }));
     const voipInFlight = new Map();
-    const sendImpl = vi.fn((snapshot, _scenario, onNtfySettled, generation) => dispatchNotifications({
-      sendNtfy: async () => {}, sendVoip: voip, voipEnabled: true,
-      onNtfySettled, voipInFlight, voipKey: `${snapshot.id}:${generation}`,
+    const sendImpl = vi.fn(createLiquidityNotificationSender({
+      sendNtfy: async () => {}, sendVoip: voip, voipEnabled: true, voipInFlight,
     }));
     const { monitor, setSnapshots, broadcast } = makeDeps({
-      initial: [snap({ market: { liquidity: 25_000_000n } })], sendImpl,
+      initial: [snap({ market: { liquidity: 25_000_000n } })], sendImpl, voipEnabled: true,
     });
     try {
       await monitor.checkMarkets();

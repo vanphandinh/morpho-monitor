@@ -53,6 +53,18 @@ export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, mar
   };
 }
 
+/** Production notification wiring and VoIP deduplication, shared with integration tests. */
+export function createLiquidityNotificationSender({ sendNtfy, sendVoip, voipEnabled = false, voipInFlight = new Map() }) {
+  return (snapshot, scenario, onNtfySettled, generation, channels = { ntfy: true, voip: true }) => dispatchNotifications({
+    sendNtfy: channels.ntfy ? () => sendNtfy(snapshot, scenario) : undefined,
+    sendVoip: channels.voip && voipEnabled ? () => sendVoip(snapshot, scenario) : undefined,
+    voipEnabled,
+    onNtfySettled,
+    voipInFlight,
+    voipKey: `${snapshot.id}:${generation}`,
+  });
+}
+
 /**
  * Orchestration của monitor — mọi I/O đi qua tham số (audit P1.5).
  *
@@ -67,7 +79,7 @@ export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, mar
  * @param {{ readSnapshots: (ids?: string[]) => Promise<object> }} deps.reader
  * @param {object} deps.lifecycleAlerts - `createLifecycleAlerter(...)` (hoặc fake có `.notify`)
  * @param {() => Promise<object>} [deps.drainAlerts] - flush durable lifecycle alerts
- * @param {(snapshot:object, scenario:string) => Promise<object>} deps.sendNotification
+ * @param {(snapshot:object, scenario:string, onNtfySettled:Function, generation:number, channels:{ntfy:boolean,voip:boolean}) => Promise<object>} deps.sendNotification
  * @param {(snapshots:Map<string,object>) => Promise<object>} deps.broadcastEligible
  * @param {object} deps.config - ngưỡng/chu kỳ (xem bootstrap)
  * @param {Function} [deps.createScheduler]
@@ -130,7 +142,7 @@ export function createMonitor({
   function stateFor(id) { if (!states.has(id)) states.set(id, {
     lastSeenLiquidity: null, hasNotifiedThisCycle: false, lastNotificationTime: 0,
     lastInZone: null, notificationGeneration: 0, pendingGeneration: null,
-    retryFromLiquidity: null,
+    retryFromLiquidity: null, voipAttemptedGeneration: null,
   }); return states.get(id); }
   function resetDaily() { if (now() - dayStart >= 86_400_000) { notificationsToday = 0; dayStart = now(); } }
 
@@ -194,15 +206,20 @@ export function createMonitor({
         }
         state.lastInZone = inZone;
         if (state.lastSeenLiquidity === null) { state.lastSeenLiquidity = liquidity; logger.log(`[monitor] initialized ${snapshot.id}: ${formatTokenAmount(liquidity, snapshot.loanToken.decimals, snapshot.loanToken.symbol)}`); continue; }
-        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.retryFromLiquidity ?? state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: notificationsToday + pendingNotifications, notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: config.maxNotificationsPerDay });
-        if (decision.shouldNotify && state.pendingGeneration !== state.notificationGeneration) {
-          const generation = state.notificationGeneration;
-          state.pendingGeneration = generation;
-          pendingNotifications++;
+        // Daily quota limits ntfy only. VoIP is independently attempted once per entry.
+        const decision = shouldNotify({ liquidity, lastSeenLiquidity: state.retryFromLiquidity ?? state.lastSeenLiquidity, supplyAssets, hasNotifiedThisCycle: state.hasNotifiedThisCycle, lastNotificationTime: state.lastNotificationTime, notificationsToday: 0, notificationDayStart: dayStart, minLiquidityThreshold: snapshot.minLiquidityWei, suddenDrainMultiplier: multiplier, notificationCooldownMs: config.notificationCooldownMs, maxNotificationsPerDay: Infinity });
+        const generation = state.notificationGeneration;
+        const sendNtfy = decision.shouldNotify && state.pendingGeneration !== generation
+          && notificationsToday + pendingNotifications < config.maxNotificationsPerDay;
+        const sendVoip = decision.shouldNotify && Boolean(config.voipEnabled)
+          && state.voipAttemptedGeneration !== generation;
+        if (sendNtfy || sendVoip) {
+          if (sendNtfy) { state.pendingGeneration = generation; pendingNotifications++; }
+          if (sendVoip) state.voipAttemptedGeneration = generation;
           runInBackground(`ntfy/VoIP for ${snapshot.id}`, async () => {
             let accounted = false;
             const onNtfySettled = (delivery) => {
-              if (accounted) return;
+              if (!sendNtfy || accounted) return;
               accounted = true;
               if (delivery?.ntfyDelivered) {
                 if (state.notificationGeneration === generation && state.lastInZone) {
@@ -219,9 +236,12 @@ export function createMonitor({
               pendingNotifications--;
             };
             try {
-              const delivery = await sendNotification(snapshot, decision.scenario, onNtfySettled, generation);
+              const delivery = await sendNotification(snapshot, decision.scenario, onNtfySettled, generation, { ntfy: sendNtfy, voip: sendVoip });
               onNtfySettled(delivery); // Support callers that return only a final result.
-            } catch (err) { onNtfySettled({ ntfyDelivered: false, ntfyError: err }); }
+            } catch (err) {
+              if (sendNtfy) onNtfySettled({ ntfyDelivered: false, ntfyError: err });
+              else logger.error(`[monitor] VoIP dispatch failed for ${snapshot.id}: ${err?.message || err}`);
+            }
           });
         }
         state.lastSeenLiquidity = liquidity;
@@ -281,7 +301,6 @@ async function main() {
     () => createMarketReader({ client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets })
   );
   console.log(`[monitor] ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), topic=${topic}`);
-  const voipInFlight = new Map();
 
   const sendNtfyNotification = async (snapshot, scenario) => {
     const { market, position, loanToken, collateralToken, id } = snapshot;
@@ -304,12 +323,10 @@ async function main() {
       filePath: PRESIGNED_FILE, updateRegistry,
       send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
     }),
-    sendNotification: (snapshot, scenario, onNtfySettled, generation) => dispatchNotifications({
-      sendNtfy: () => sendNtfyNotification(snapshot, scenario),
-      sendVoip: () => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
+    sendNotification: createLiquidityNotificationSender({
+      sendNtfy: sendNtfyNotification,
+      sendVoip: (snapshot, scenario) => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
       voipEnabled: Boolean(VOIP_SECRET_KEY),
-      onNtfySettled,
-      voipInFlight, voipKey: `${snapshot.id}:${generation}`,
     }),
     broadcastEligible: (snapshots) => runPresignedBroadcast({
       client: publicClient, lenderAddress: LENDER_ADDRESS, filePath: PRESIGNED_FILE, snapshots,
@@ -324,6 +341,7 @@ async function main() {
       monitorIntervalMs: MONITOR_INTERVAL_MS,
       notificationCooldownMs: NOTIFICATION_COOLDOWN_MS,
       maxNotificationsPerDay: MAX_NOTIFICATIONS_PER_DAY,
+      voipEnabled: Boolean(VOIP_SECRET_KEY),
       wssUrls: WSS_URLS,
       wssDebounceMs: WSS_DEBOUNCE_MS,
       morphoBlueAddress: MORPHO_BLUE_ADDRESS,
