@@ -47,6 +47,7 @@ export function defaultBlockFallback() {
  * @param {Array<{id: string}>} deps.markets - configured market allow-list
  * @param {string} deps.lenderAddress - only this sender may be captured
  * @param {string} deps.morphoBlueAddress - Morpho Blue contract
+ * @param {number} deps.chainId - chain the proxy pretends to be (CHAIN_ID)
  * @param {object} deps.client - viem public client (robust round-robin)
  * @param {Array} [deps.capturedTxs] - shared capture buffer (mutated in place)
  * @param {{ number: string, hash: string, baseFee: bigint }} [deps.blockFallback]
@@ -56,11 +57,17 @@ export function createRpcDispatcher({
   markets,
   lenderAddress,
   morphoBlueAddress,
+  chainId,
   client,
   capturedTxs = [],
   blockFallback = defaultBlockFallback(),
   logger = console,
 }) {
+  if (!Number.isSafeInteger(Number(chainId)) || Number(chainId) <= 0) {
+    throw new Error(`createRpcDispatcher: chainId không hợp lệ: ${chainId}`);
+  }
+  const numericChainId = Number(chainId);
+  const chainIdHex = `0x${numericChainId.toString(16)}`;
   const warn = (msg) => logger?.warn?.(msg);
   const log = (msg) => logger?.log?.(msg);
   const assertConfiguredMarket = (marketId) => requireConfiguredMarket(markets, marketId);
@@ -93,6 +100,7 @@ export function createRpcDispatcher({
         const check = await assertCaptureTx(signedTx, {
           morphoBlueAddress,
           lenderAddress,
+          chainId: numericChainId,
         });
         if (!check.ok) {
           warn(`[proxy] ❌ Từ chối capture: ${check.error}`);
@@ -138,7 +146,7 @@ export function createRpcDispatcher({
 
       // === METHODS MOCKED FOR METAMASK ===
       case "eth_chainId":
-        return "0x1";
+        return chainIdHex;
 
       case "eth_blockNumber":
         try {
@@ -357,7 +365,7 @@ export function createRpcDispatcher({
       // "RPC này có phải proxy của mình không" qua curl. Node thật/public sẽ
       // trả "method not found" ⇒ phân biệt được proxy với node khác.
       case "morpho_proxyInfo":
-        return { server: "morpho-proxy", chainId: 1 };
+        return { server: "morpho-proxy", chainId: numericChainId };
 
       case "web3_sha3":
         return params[0] ? "0x" + "00".repeat(32) : null;
@@ -370,7 +378,7 @@ export function createRpcDispatcher({
 
       // === NET METHODS ===
       case "net_version":
-        return "1";
+        return String(numericChainId);
 
       case "net_listening":
         return true;
@@ -429,6 +437,7 @@ function safeStringify(obj) {
  * @param {Array<{id: string}>} deps.markets
  * @param {string} deps.lenderAddress
  * @param {string} deps.morphoBlueAddress
+ * @param {number} deps.chainId
  * @param {object} deps.client
  * @param {Array} deps.capturedTxs
  * @param {string} [deps.webappUrl] - base URL of the webapp (SSRF-safe relay target)
@@ -444,6 +453,7 @@ export function createProxyRequestHandler({
   markets,
   lenderAddress,
   morphoBlueAddress,
+  chainId,
   client,
   capturedTxs = [],
   blockFallback,
@@ -461,6 +471,7 @@ export function createProxyRequestHandler({
     markets,
     lenderAddress,
     morphoBlueAddress,
+    chainId,
     client,
     capturedTxs,
     blockFallback,
@@ -578,7 +589,7 @@ export function createProxyRequestHandler({
           const bundle = {
             version: 2,
             createdAt: new Date().toISOString(),
-            chainId: 1,
+            chainId: Number(chainId),
             morphoBlueAddress: meta.morphoBlueAddress || morphoBlueAddress,
             marketId: requireConfiguredMarket(markets, meta.marketId),
             lenderAddress: meta.lenderAddress || lenderAddress,
@@ -593,6 +604,7 @@ export function createProxyRequestHandler({
 
           // Verify Morpho withdraw calldata trước khi POST sang webapp
           const verified = await verifyPresignedBundle(bundle, {
+            chainId,
             morphoBlueAddress,
             lenderAddress,
             marketId: requireConfiguredMarket(markets, meta.marketId),

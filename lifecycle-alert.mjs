@@ -65,10 +65,11 @@ export function shouldSendLifecycleAlert(kind, id, { lastSentAt = null, now = Da
  * Nội dung cảnh báo (thuần): tiếng Việt, nêu rõ hậu quả và hành động cụ thể.
  * @returns {{ title: string, tags: string, priority: string, message: string } | null}
  */
-export function buildLifecycleAlert(kind, { id, marketId, nonce, tier, detail } = {}) {
+export function buildLifecycleAlert(kind, { id, marketId, nonce, tier, detail, chain } = {}) {
   const spec = ALERT_KINDS[kind];
   if (!spec) return null;
   const header = [
+    chain ? `Chain: ${chain.name} (${chain.id})` : null,
     `Market: ${short(marketId)}`,
     nonce != null ? `Nonce: ${nonce}` : null,
     tier ? `Tier: ${tier}` : null,
@@ -185,7 +186,7 @@ export async function postNtfy({ fetchImpl = fetch, server, topic, alert, timeou
  * Bọc cooldown quanh một hàm gửi. `notify` không bao giờ throw ra ngoài: lỗi gửi
  * chỉ được log (monitor không được chết vì kênh thông báo).
  */
-export function createLifecycleAlerter({ send, cooldownMs = LIFECYCLE_ALERT_COOLDOWN_MS, retryMs = 5 * 60_000, now = () => Date.now(), logger = console } = {}) {
+export function createLifecycleAlerter({ send, cooldownMs = LIFECYCLE_ALERT_COOLDOWN_MS, retryMs = 5 * 60_000, now = () => Date.now(), logger = console, chain = null } = {}) {
   const lastSent = new Map();
   const nextRetry = new Map();
   const inFlight = new Set();
@@ -201,7 +202,7 @@ export function createLifecycleAlerter({ send, cooldownMs = LIFECYCLE_ALERT_COOL
       if (now() < (nextRetry.get(key) ?? 0)) return { sent: false, reason: "retry_wait" };
       const decision = shouldSendLifecycleAlert(kind, id, { lastSentAt: lastSent.get(key) ?? null, now: now(), cooldownMs });
       if (!decision.send) return { sent: false, reason: decision.reason };
-      const alert = buildLifecycleAlert(kind, { ...info, id });
+      const alert = buildLifecycleAlert(kind, { ...info, id, chain });
       if (!alert) return { sent: false, reason: "unknown_kind" };
       inFlight.add(key);
       try {

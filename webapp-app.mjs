@@ -17,9 +17,8 @@
  */
 
 import { createWalletClient, custom } from "viem";
-import { mainnet } from "viem/chains";
 import { getWalletProviderName } from "./webapp-wallet.mjs";
-import { SERVER_LENDER_ADDRESS, SERVER_MARKETS, state } from "./webapp-state.mjs";
+import { CHAIN, CHAIN_HEX, CHAIN_ID, CHAIN_NAME, EXPLORER_URL, NATIVE_CURRENCY, RPC_URLS, SERVER_LENDER_ADDRESS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 import { clearSession, getProxyUrl, hideError, renderRpcVerifiedNote, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
 import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
@@ -127,38 +126,42 @@ async function connectWallet() {
       return;
     }
 
+    if (!CHAIN_HEX || !CHAIN) {
+      throw new Error("Thiếu cấu hình chain trong webapp — kiểm tra config/chains.json.");
+    }
+
     const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
     state.currentAccount = accounts[0];
 
-    // Ensure mainnet
+    // Ensure the configured chain (metadata injected by the server).
     const chainId = await window.ethereum.request({ method: "eth_chainId" });
-    if (chainId !== "0x1") {
+    if (String(chainId).toLowerCase() !== CHAIN_HEX) {
       try {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x1" }],
+          params: [{ chainId: CHAIN_HEX }],
         });
       } catch (switchError) {
         if (switchError.code === 4902) {
           await window.ethereum.request({
             method: "wallet_addEthereumChain",
             params: [{
-              chainId: "0x1",
-              chainName: "Ethereum Mainnet",
-              nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
-              rpcUrls: ["https://ethereum-rpc.publicnode.com"],
-              blockExplorerUrls: ["https://etherscan.io"],
+              chainId: CHAIN_HEX,
+              chainName: CHAIN_NAME,
+              nativeCurrency: NATIVE_CURRENCY,
+              rpcUrls: RPC_URLS.length > 0 ? [RPC_URLS[0]] : [],
+              ...(EXPLORER_URL ? { blockExplorerUrls: [EXPLORER_URL] } : {}),
             }],
           });
         } else {
-          throw new Error("Vui lòng chuyển sang Ethereum Mainnet trong ví.");
+          throw new Error(`Vui lòng chuyển sang ${CHAIN_NAME || `chain ${CHAIN_ID}`} trong ví.`);
         }
       }
     }
 
     state.walletClient = createWalletClient({
       account: state.currentAccount,
-      chain: mainnet,
+      chain: CHAIN,
       transport: custom(window.ethereum),
     });
 
@@ -191,14 +194,14 @@ async function connectWallet() {
       });
 
       window.ethereum.on("chainChanged", (chainId) => {
-        if (chainId === "0x1") {
-          // Returned to Ethereum mainnet — refresh market data
+        if (String(chainId).toLowerCase() === CHAIN_HEX) {
+          // Returned to the configured chain — refresh market data
           fetchAllData().then(() => {
             renderMarketInfo();
             renderPosition();
           }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
         } else {
-          showTxResult("warn", "⚠️ Vui lòng chuyển về Ethereum Mainnet để sử dụng.");
+          showTxResult("warn", `⚠️ Vui lòng chuyển về ${CHAIN_NAME || `chain ${CHAIN_ID}`} để sử dụng.`);
           document.getElementById("btn-withdraw").disabled = true;
           document.getElementById("btn-withdraw-all").disabled = true;
         }
@@ -282,14 +285,14 @@ async function addProxyNetwork() {
     await window.ethereum.request({
       method: "wallet_addEthereumChain",
       params: [{
-        chainId: "0x1",
-        chainName: "Ethereum Proxy Sign",
-        nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+        chainId: CHAIN_HEX,
+        chainName: `${CHAIN_NAME || `Chain ${CHAIN_ID}`} Proxy Sign`,
+        nativeCurrency: NATIVE_CURRENCY,
         rpcUrls: [PROXY_RPC],
-        blockExplorerUrls: ["https://etherscan.io"],
+        ...(EXPLORER_URL ? { blockExplorerUrls: [EXPLORER_URL] } : {}),
       }],
     });
-    showPresignSuccess("✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.");
+    showPresignSuccess(`✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>${CHAIN_NAME || `Chain ${CHAIN_ID}`} Proxy Sign</b>.`);
     document.getElementById("btn-add-proxy-network").textContent = "✅ Đã Thêm";
     document.getElementById("btn-add-proxy-network").disabled = true;
   } catch (err) {
@@ -301,16 +304,16 @@ async function addProxyNetwork() {
       // MetaMask) — nút webapp không thể thêm mạng hộ user.
       showPresignError(
         `Ví ${wallet === "ambire" ? "Ambire" : "này"} chặn <code>wallet_addEthereumChain</code> ngay trong app ("doesn't has corresponding handler") — nút webapp không thể thêm mạng hộ bạn.<br><br>` +
-        `<b>Cách thủ công:</b> mở app ví → Settings/Networks → chọn Ethereum Mainnet → thay RPC URL bằng:<br>` +
+        `<b>Cách thủ công:</b> mở app ví → Settings/Networks → chọn ${CHAIN_NAME || `chain ${CHAIN_ID}`} → thay RPC URL bằng:<br>` +
         `<code>${PROXY_RPC}</code><br>` +
         `<small>(ký xong nhớ đổi lại RPC cũ)</small>`
       );
     } else if (msg.includes("chain ID") || msg.includes("already") || msg.includes("exist")) {
       // Wallet từ chối thêm chainId trùng → hướng dẫn manual
       showPresignError(
-        `${wallet === "rabby" ? "Rabby" : "Ví"} không cho thêm chainId=1 trùng lặp.<br><br>` +
+        `${wallet === "rabby" ? "Rabby" : "Ví"} không cho thêm chainId=${CHAIN_ID} trùng lặp.<br><br>` +
         `<b>Cách thủ công:</b><br>` +
-        `Vào Settings → Networks → Ethereum → đổi RPC thành:<br>` +
+        `Vào Settings → Networks → ${CHAIN_NAME || `chain ${CHAIN_ID}`} → đổi RPC thành:<br>` +
         `<code>${PROXY_RPC}</code><br>` +
         `<small>(ký xong nhớ đổi lại RPC cũ)</small>`
       );
@@ -338,6 +341,20 @@ function setLoadingText(text) {
   if (p) p.textContent = text;
 }
 
+/** Manual add-network instructions: RPC + chain metadata, independent of RPC health. */
+function renderProxyConfigMeta() {
+  const proxyUrlEl = document.getElementById("presign-proxy-url-display");
+  if (proxyUrlEl) proxyUrlEl.textContent = getProxyUrl();
+  const proxyChainIdEl = document.getElementById("presign-proxy-chain-id");
+  if (proxyChainIdEl) proxyChainIdEl.textContent = CHAIN_ID ?? "—";
+  const proxySymbolEl = document.getElementById("presign-proxy-symbol");
+  if (proxySymbolEl) proxySymbolEl.textContent = NATIVE_CURRENCY?.symbol ?? "—";
+  const proxyNameEl = document.getElementById("presign-proxy-name");
+  if (proxyNameEl) proxyNameEl.textContent = `${CHAIN_NAME || `Chain ${CHAIN_ID}`} Proxy Sign`;
+  const proxyNoteEl = document.getElementById("presign-proxy-chain-note");
+  if (proxyNoteEl) proxyNoteEl.textContent = `Sau khi ký xong, đổi lại RPC về mạng ${CHAIN_NAME || `chain ${CHAIN_ID}`} thật.`;
+}
+
 async function init() {
   // Only accept an explicit market from the server allow-list. Links from
   // notifications can therefore select a market without trusting arbitrary
@@ -351,6 +368,9 @@ async function init() {
     showError("Thiếu market hoặc lender address. Kiểm tra cấu hình server (.env).");
     return;
   }
+  // Chain metadata phải hiện cả khi RPC công cộng chết: người dùng vẫn cần
+  // đúng Chain ID/RPC khi thêm mạng proxy thủ công.
+  renderProxyConfigMeta();
 
   try {
     // Boot thử lại: RPC chớp đúng lúc mở trang thì thử RPC khác thay vì lỗi ngay.
@@ -392,9 +412,6 @@ async function init() {
     renderWalletCompatibility();
     // Lớp hybrid RPC (2026-09-27): dòng nhỏ "đã kiểm chứng lúc …" — ẩn khi lớp động tắt.
     renderRpcVerifiedNote();
-    // Populate proxy URL
-    const proxyUrlEl = document.getElementById("presign-proxy-url-display");
-    if (proxyUrlEl) proxyUrlEl.textContent = getProxyUrl();
 
     document.getElementById("loading").style.display = "none";
     updateAuthUI();

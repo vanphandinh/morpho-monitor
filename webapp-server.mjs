@@ -23,6 +23,8 @@ import {
   PUBLIC_RPC_REFRESH_HOURS,
   PUBLIC_RPC_HEALTH_PATH,
   PUBLIC_RPC_CACHE_MAX_AGE_HOURS,
+  CHAIN_ID,
+  MORPHO_BLUE_ADDRESS,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
@@ -70,6 +72,8 @@ try {
     htmlContent,
     lenderAddress: LENDER_ADDRESS,
     proxyRpcUrl: PROXY_RPC_URL,
+    chainId: CHAIN_ID,
+    morphoBlueAddress: MORPHO_BLUE_ADDRESS,
     operatorOverrodePublicRpcs: process.env.PUBLIC_RPC_URLS !== undefined,
     refreshEnabled: PUBLIC_RPC_REFRESH_HOURS > 0,
     refreshHoursMs: refreshHoursToMs(PUBLIC_RPC_REFRESH_HOURS),
@@ -179,6 +183,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("");
   console.log(`  🌐 Webapp đang chạy tại: ${proto}://0.0.0.0:${PORT}`);
   console.log(`  📱 Local:               ${proto}://localhost:${PORT}`);
+  console.log(`  ⛓️  Chain:              ${servingConfig.chainName} (${servingConfig.chainId}) — Morpho ${servingConfig.morphoBlueAddress}`);
   console.log(`  🔌 Proxy RPC (browser): ${servingConfig.proxyRpcUrl}`);
   console.log(`  📡 Browser RPC URLs:    ${servingConfig.rpcUrls.length} endpoint(s)` +
     (servingConfig.rpcVerifiedAt ? ` (verified ${servingConfig.rpcVerifiedAt})` : " (fallback tĩnh)"));

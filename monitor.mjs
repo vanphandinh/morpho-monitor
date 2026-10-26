@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, PRESIGN_EXPIRED_RETENTION_MINUTES, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
+import { CHAIN, CHAIN_ID, CHAIN_NAME, LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, PRESIGN_EXPIRED_RETENTION_MINUTES, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
 import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "./monitor-rules.mjs";
-import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
+import { createRobustPublicClient, addGlobalErrorHandlers, assertClientChain } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
 import { createMarketReader } from "./market-reader.mjs";
 import { updateRegistry } from "./presigned-store.mjs";
@@ -29,7 +29,7 @@ import { retryStartup } from "./startup-retry.mjs";
  *
  * @returns {{ headers: Record<string,string>, body: string }}
  */
-export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, market, position, webappUrl, lenderAddress }) {
+export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, market, position, webappUrl, lenderAddress, chain = CHAIN }) {
   const link = `${webappUrl}?market=${id}&lender=${lenderAddress}`;
   const drained = scenario === "sudden_drain";
   return {
@@ -43,6 +43,7 @@ export function buildNtfyPayload({ scenario, id, loanToken, collateralToken, mar
     body: [
       `**${drained ? "Liquidity drain warning" : "Liquidity available"}**`,
       "",
+      `**Chain:** ${chain.name} (${chain.id})`,
       `**Market:** ${collateralToken.symbol || "?"}/${loanToken.symbol || "?"}`,
       `**Liquidity:** ${formatTokenAmount(market.liquidity, loanToken.decimals, loanToken.symbol)}`,
       `**Position:** ${formatTokenAmount(position.supplyAssets, loanToken.decimals, loanToken.symbol)}`,
@@ -99,7 +100,7 @@ export function createMonitor({
   config,
   createScheduler = createCheckScheduler,
   createWatcher = createWssWatcher,
-  connect = createWssConnect({ address: config.morphoBlueAddress }),
+  connect = createWssConnect({ address: config.morphoBlueAddress, expectedChainId: config.chainId ?? CHAIN_ID }),
   logger = console,
   now = () => Date.now(),
 } = {}) {
@@ -285,28 +286,30 @@ async function main() {
   // Audit vòng 2: 2s sticky để các lần đọc liên tiếp trong cùng chu kỳ nhìn CÙNG một
   // node — đặc biệt cặp bằng chứng receipt → nonce khi nhả claim (xoay sang node khác
   // sẽ trộn hai góc nhìn lệch nhau). Chỉ bật ở monitor để giữ blast radius nhỏ.
-  const publicClient = createRobustPublicClient(RPC_URLS, { stickyMs: 2_000 });
+  const publicClient = createRobustPublicClient(RPC_URLS, { chain: CHAIN.chain, stickyMs: 2_000 });
+  await assertClientChain(publicClient, CHAIN_ID);
   const topic = NTFY_TOPIC || `morpho-monitor-${crypto.randomBytes(4).toString("hex")}`;
 
   // R1: claim bị tx khác thay thế / cần đối soát tay / xung đột nonce là những ca
   // "bậc thang không thể tiến". Kênh này KHÔNG tiêu quota thanh khoản.
   const lifecycleAlerts = createLifecycleAlerter({
     send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
+    chain: CHAIN,
   });
 
   // O3: RPC có thể chưa sẵn sàng lúc container vừa lên — thử lại có giới hạn (~30s). Lỗi
   // config (MARKET_PARAMS_ZERO) KHÔNG bị thử lại: `retryStartup` ném ngay. `loadMarkets` ở
   // trên cũng nằm ngoài retry nên thiếu/sai MARKETS_FILE vẫn chết ngay như trước.
   const reader = await retryStartup(
-    () => createMarketReader({ client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets })
+    () => createMarketReader({ chainId: CHAIN_ID, client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets })
   );
-  console.log(`[monitor] ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), topic=${topic}`);
+  console.log(`[monitor] ${CHAIN_NAME} (${CHAIN_ID}) — ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), ${WSS_URLS.length} WSS, topic=${topic}`);
 
   const sendNtfyNotification = async (snapshot, scenario) => {
     const { market, position, loanToken, collateralToken, id } = snapshot;
     const { headers, body } = buildNtfyPayload({
       scenario, id, loanToken, collateralToken, market, position,
-      webappUrl: WEBAPP_URL, lenderAddress: LENDER_ADDRESS,
+      webappUrl: WEBAPP_URL, lenderAddress: LENDER_ADDRESS, chain: CHAIN,
     });
     const response = await fetch(`${NTFY_SERVER}/${topic}`, {
       method: "POST", headers, body, signal: AbortSignal.timeout(NTFY_ALERT_TIMEOUT_MS),
@@ -325,7 +328,7 @@ async function main() {
     }),
     sendNotification: createLiquidityNotificationSender({
       sendNtfy: sendNtfyNotification,
-      sendVoip: (snapshot, scenario) => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario),
+      sendVoip: (snapshot, scenario) => sendVoipNotification(snapshot.market, snapshot.loanToken, snapshot.collateralToken, snapshot.position, scenario, { chainName: CHAIN_NAME }),
       voipEnabled: Boolean(VOIP_SECRET_KEY),
     }),
     broadcastEligible: (snapshots) => runPresignedBroadcast({
@@ -334,7 +337,7 @@ async function main() {
       // Chẩn đoán 2026-09-26: dọn rung `expired` quá ân hạn (env PRESIGN_EXPIRED_RETENTION_MINUTES,
       // 0 = ngay chu kỳ kế tiếp). Purge không RPC nên vẫn chạy khi registry idle.
       expiredRetentionMs: PRESIGN_EXPIRED_RETENTION_MINUTES * 60_000,
-      verifyBundle: (bundle, id) => verifyPresignedBundle(bundle, { morphoBlueAddress: MORPHO_BLUE_ADDRESS, lenderAddress: LENDER_ADDRESS, marketId: id }),
+      verifyBundle: (bundle, id) => verifyPresignedBundle(bundle, { chainId: CHAIN_ID, morphoBlueAddress: MORPHO_BLUE_ADDRESS, lenderAddress: LENDER_ADDRESS, marketId: id }),
       isEligible: (snapshot) => shouldBroadcastPresigned(snapshot.market.liquidity, computeDrainThreshold(snapshot.position.supplyAssets, snapshot.suddenDrainMultiplier), snapshot.minLiquidityWei),
     }),
     config: {
@@ -345,6 +348,7 @@ async function main() {
       wssUrls: WSS_URLS,
       wssDebounceMs: WSS_DEBOUNCE_MS,
       morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+      chainId: CHAIN_ID,
     },
   });
 

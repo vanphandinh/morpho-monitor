@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import {
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
+  CHAIN_ID,
   PROXY_RPC_URL,
   WEBAPP_PASSWORD,
   MAX_BODY_BYTES,
@@ -516,7 +517,9 @@ export function createRequestHandler({
         }
         const incoming = sanitizePendingBundle(parsed);
         incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
+        incoming.chainId = CHAIN_ID; // server sở hữu chain — không tin client
         const verified = await verifyPresignedBundle(incoming, {
+          chainId: CHAIN_ID,
           morphoBlueAddress: MORPHO_BLUE_ADDRESS,
           lenderAddress: LENDER_ADDRESS,
           marketId,
@@ -628,6 +631,7 @@ export function createRequestHandler({
 
           // Re-verify sau merge — tier cũ giữ lại cũng phải hợp lệ
           const mergedVerified = await verifyPresignedBundle(merged, {
+            chainId: CHAIN_ID,
             morphoBlueAddress: MORPHO_BLUE_ADDRESS,
             lenderAddress: LENDER_ADDRESS,
             marketId,

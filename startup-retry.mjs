@@ -19,7 +19,15 @@
  * Mã lỗi bắt buộc phải FATAL (không thử lại). Test ghim sự khớp với `MARKET_PARAMS_ZERO` của
  * `market-reader.mjs` để hai hằng số không lệch nhau.
  */
-export const FATAL_STARTUP_CODES = new Set(["MARKET_PARAMS_ZERO"]);
+export const FATAL_STARTUP_CODES = new Set([
+  "MARKET_PARAMS_ZERO",
+  "CHAIN_ID_MISMATCH",
+  "MORPHO_ADDRESS_MISMATCH",
+  "UNSUPPORTED_CHAIN",
+  "MISSING_RPC_URLS",
+  "CHAIN_CONFIG_INVALID",
+  "CHAIN_CONFIG_MISSING",
+]);
 
 /** Lịch thử lại mặc định: 5 lần, tổng chờ ~30s. */
 export const STARTUP_RETRY = { attempts: 5, delaysMs: [2_000, 4_000, 8_000, 16_000] };

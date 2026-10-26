@@ -11,6 +11,9 @@ node_modules/
 .env.local
 .env.*.local
 config/markets.json
+config/markets.*.json
+!config/markets.example.json
+!config/markets.*.example.json
 
 # ============================================================
 # Build artifacts

@@ -1,14 +1,19 @@
 services:
   morpho:
     build: .
-    container_name: morpho
+    # Mỗi chain một compose project (docker compose -p morpho-base …) VÀ một
+    # CONTAINER_NAME riêng. Compose không tự đổi container_name theo -p, nên hai
+    # clone để mặc định sẽ tranh tên "morpho" và clone thứ hai không start được.
+    container_name: ${CONTAINER_NAME:-morpho}
     restart: unless-stopped
     environment:
       # Trong container phải listen mọi interface; host publish 8545 cho MetaMask mobile.
       PROXY_HOST: "0.0.0.0"
+    # Map đúng port trong container: clone Base/Monad đổi WEBAPP_PORT/PROXY_PORT
+    # trong .env (3001/8546…) để không đụng deployment ETH trên cùng host.
     ports:
-      - "3000:3000"              # webapp
-      - "8545:8545"              # proxy RPC (public) — capture gated by lender sender check
+      - "${WEBAPP_PORT:-3000}:${WEBAPP_PORT:-3000}"   # webapp
+      - "${PROXY_PORT:-8545}:${PROXY_PORT:-8545}"     # proxy RPC (public) — capture gated by lender sender check
     volumes:
       - ./.env:/app/.env:ro
       - ./config:/app/config:ro

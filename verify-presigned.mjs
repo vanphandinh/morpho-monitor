@@ -145,6 +145,7 @@ async function verifyBundle(bundle, { label, marketId, filePath }) {
     console.log(`   gas:               ${tx.gas?.toString() || "N/A"}`);
 
     const result = await verifyWithdrawCalldata(w.signedTx, {
+      chainId: bundle.chainId,
       morphoBlueAddress: bundle.morphoBlueAddress,
       lenderAddress: bundle.lenderAddress,
       marketId: marketId ?? bundle.marketId,

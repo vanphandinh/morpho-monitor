@@ -1,5 +1,5 @@
 import { createPublicClient, createWalletClient, http } from "viem";
-import { mainnet } from "viem/chains";
+import { CHAIN, CHAIN_ID } from "./shared.mjs";
 
 // ============================================================
 // CIRCUIT BREAKER — per-URL failure tracking
@@ -330,7 +330,8 @@ export function createRoundRobinTransport(urls, opts = {}) {
  * circuit breaker per URL, and retry with exponential backoff.
  *
  * @param {string[]} urls - Array of RPC endpoint URLs
- * @param {{ stickyMs?: number }} [opts] - `stickyMs` giữ các request liên tiếp trên
+ * @param {{ chain?: import("viem").Chain, stickyMs?: number }} [opts] - `chain` mặc định
+ *   là chain của deployment (`CHAIN`); `stickyMs` giữ các request liên tiếp trên
  *   cùng một endpoint (xem `createRoundRobinTransport`). Mặc định 0 = tắt.
  * @returns {import("viem").PublicClient}
  */
@@ -340,7 +341,7 @@ export function createRobustPublicClient(urls, opts = {}) {
   }
 
   return createPublicClient({
-    chain: mainnet,
+    chain: opts.chain ?? CHAIN.chain,
     transport: createRoundRobinTransport(urls, {
       // 1 retry = 2 total passes through the full URL rotation.
       // The per-URL retry is handled inside circuitHttp (retryCount=1).
@@ -352,18 +353,42 @@ export function createRobustPublicClient(urls, opts = {}) {
 }
 
 /**
+ * Assert that an RPC client actually points at the configured chain. A wrong
+ * CHAIN_ID + RPC_URLS pair must fail before signing, never after.
+ * @param {import("viem").PublicClient} client
+ * @param {number} [expectedChainId]
+ * @returns {Promise<number>}
+ */
+export async function assertClientChain(client, expectedChainId = CHAIN_ID) {
+  const actual = Number(await client.getChainId());
+  const expected = Number(expectedChainId);
+  if (actual !== expected) {
+    const err = new Error(
+      `❌ RPC trả chainId ${actual}, nhưng cấu hình là ${expected}.\n` +
+        "   → Kiểm tra RPC_URLS và CHAIN_ID trong .env; không ký/rút khi lệch chain."
+    );
+    err.code = "CHAIN_ID_MISMATCH";
+    err.expected = expected;
+    err.actual = actual;
+    throw err;
+  }
+  return actual;
+}
+
+/**
  * Create a viem wallet client with the same robust transport.
  *
  * @param {string[]} urls - Array of RPC endpoint URLs
+ * @param {{ chain?: import("viem").Chain }} [opts]
  * @returns {import("viem").WalletClient}
  */
-export function createRobustWalletClient(urls) {
+export function createRobustWalletClient(urls, opts = {}) {
   if (!urls || urls.length === 0) {
     throw new Error("createRobustWalletClient: urls must be a non-empty array");
   }
 
   return createWalletClient({
-    chain: mainnet,
+    chain: opts.chain ?? CHAIN.chain,
     transport: createRoundRobinTransport(urls, {
       retryCount: 1,
       retryDelay: 500,

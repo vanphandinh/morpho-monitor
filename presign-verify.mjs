@@ -91,6 +91,7 @@ export function computeMarketId(marketParams) {
  * @param {string} expected.morphoBlueAddress
  * @param {string} expected.lenderAddress
  * @param {string} expected.marketId
+ * @param {number} [expected.chainId] - chain the bundle must be signed for (CHAIN_ID)
  * @param {string|number|bigint|null} [expected.nonce]
  * @param {string} [expected.amountWei] - for fixed-amount tiers
  * @param {string} [expected.sharesWei] - for all-shares tiers
@@ -124,8 +125,16 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
     };
   }
 
-  if (tx.chainId != null && Number(tx.chainId) !== 1) {
-    return { ok: false, code: VERIFY_BUNDLE_INVALID, error: `chainId ${tx.chainId} !== 1` };
+  // Chain-binding của chữ ký: bundle ký cho Base/Monad không được broadcast qua
+  // RPC Ethereum và ngược lại. Nếu caller không truyền chain (CLI verify bundle
+  // cũ), bỏ qua kiểm này; production luôn truyền chainId từ config.
+  if (expected.chainId != null && Number(expected.chainId) > 0 &&
+      tx.chainId != null && Number(tx.chainId) !== Number(expected.chainId)) {
+    return {
+      ok: false,
+      code: VERIFY_BUNDLE_INVALID,
+      error: `chainId ${tx.chainId} !== ${expected.chainId}`,
+    };
   }
 
   if (expected.nonce != null && expected.nonce !== "" && Number(tx.nonce) !== Number(expected.nonce)) {
@@ -345,6 +354,7 @@ export async function verifyPresignedBundle(bundle, config = {}) {
   const morphoBlueAddress = config.morphoBlueAddress || bundle.morphoBlueAddress;
   const lenderAddress = config.lenderAddress || bundle.lenderAddress;
   const marketId = config.marketId || bundle.marketId;
+  const chainId = config.chainId ?? bundle.chainId;
 
   if (!morphoBlueAddress) return { ok: false, code: VERIFY_CONFIG_MISSING, error: "missing morphoBlueAddress" };
   if (!lenderAddress) return { ok: false, code: VERIFY_CONFIG_MISSING, error: "missing lenderAddress" };
@@ -364,6 +374,12 @@ export async function verifyPresignedBundle(bundle, config = {}) {
       config.morphoBlueAddress.toLowerCase() !== bundle.morphoBlueAddress.toLowerCase()) {
     return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: "bundle.morphoBlueAddress !== config Morpho" };
   }
+  // Bundle tự khai chain (v2 cũ có thể có chainId=1): đổi CHAIN_ID mà vẫn dùng
+  // registry cũ phải là CONFIG_MISMATCH, không phải bundle hỏng.
+  if (config.chainId != null && bundle.chainId != null &&
+      Number(config.chainId) !== Number(bundle.chainId)) {
+    return { ok: false, code: VERIFY_CONFIG_MISMATCH, error: "bundle.chainId !== config chainId" };
+  }
 
   const txNonces = [];
   for (let i = 0; i < bundle.withdrawals.length; i++) {
@@ -372,6 +388,7 @@ export async function verifyPresignedBundle(bundle, config = {}) {
       morphoBlueAddress,
       lenderAddress,
       marketId,
+      chainId,
       nonce: bundle.nonce,
       amountWei: w.amountWei,
       sharesWei: w.sharesWei,

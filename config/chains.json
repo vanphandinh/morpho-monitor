@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "chains": [
+    {
+      "id": 1,
+      "name": "Ethereum",
+      "viemChain": "mainnet",
+      "morphoBlueAddress": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
+      "explorerUrl": "https://etherscan.io",
+      "explorerName": "Etherscan",
+      "nativeCurrency": { "name": "Ether", "symbol": "ETH", "decimals": 18 },
+      "publicRpcUrls": [
+        "https://ethereum-rpc.publicnode.com",
+        "https://eth.drpc.org",
+        "https://eth-mainnet.public.blastapi.io",
+        "https://gateway.tenderly.co/public/mainnet",
+        "https://1rpc.io/eth",
+        "https://eth.blockrazor.xyz",
+        "https://rpc-eth.blockmachine.io",
+        "https://rpc.mevblocker.io"
+      ],
+      "wsRpcUrls": ["wss://ethereum-rpc.publicnode.com"]
+    },
+    {
+      "id": 8453,
+      "name": "Base",
+      "viemChain": "base",
+      "morphoBlueAddress": "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
+      "explorerUrl": "https://basescan.org",
+      "explorerName": "Basescan",
+      "nativeCurrency": { "name": "Ether", "symbol": "ETH", "decimals": 18 },
+      "publicRpcUrls": [
+        "https://mainnet.base.org",
+        "https://base-rpc.publicnode.com",
+        "https://base.drpc.org",
+        "https://base-mainnet.public.blastapi.io"
+      ],
+      "wsRpcUrls": ["wss://base-rpc.publicnode.com"]
+    },
+    {
+      "id": 143,
+      "name": "Monad",
+      "viemChain": "monad",
+      "morphoBlueAddress": "0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee",
+      "explorerUrl": "https://monadscan.com",
+      "explorerName": "Monadscan",
+      "nativeCurrency": { "name": "Monad", "symbol": "MON", "decimals": 18 },
+      "publicRpcUrls": [
+        "https://rpc.monad.xyz",
+        "https://rpc1.monad.xyz",
+        "https://monad.drpc.org",
+        "https://monad-rpc.huginn.tech"
+      ],
+      "wsRpcUrls": ["wss://rpc.monad.xyz"]
+    }
+  ]
+}

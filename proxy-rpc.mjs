@@ -22,6 +22,8 @@ import {
   MARKETS_FILE,
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
+  CHAIN_ID,
+  CHAIN_NAME,
   PROXY_RPC_RATE_LIMIT,
   PROXY_ALLOW_PUBLIC_RPC,
 } from "./shared.mjs";
@@ -58,7 +60,7 @@ const configuredMarkets = loadMarkets(MARKETS_FILE);
 // retry with backoff, and circuit breaker per URL.
 // Used for forwarding eth_getTransactionCount + startup block fetch.
 const publicClient = createRobustPublicClient(RPC_URLS);
-console.log(`[proxy] Khởi tạo với ${RPC_URLS.length} RPC endpoint(s)`);
+console.log(`[proxy] Chain: ${CHAIN_NAME} (${CHAIN_ID}) — Khởi tạo với ${RPC_URLS.length} RPC endpoint(s)`);
 
 // Fetch real block number once at startup for realistic mock
 const blockFallback = defaultBlockFallback();
@@ -85,6 +87,7 @@ const handler = createProxyRequestHandler({
   markets: configuredMarkets,
   lenderAddress: LENDER_ADDRESS,
   morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+  chainId: CHAIN_ID,
   client: publicClient,
   capturedTxs,
   blockFallback,

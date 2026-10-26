@@ -5,10 +5,9 @@
  */
 
 import { createPublicClient, http } from "viem";
-import { mainnet } from "viem/chains";
 import { computeBorrowAssets, computeLiquidity, computeSupplyAssets, computeUtilization, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
 import { esc, formatToken, row } from "./webapp-render.mjs";
-import { ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
+import { CHAIN, CHAIN_ID, CHAIN_NAME, ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 
 /**
  * Fallback transport — bản rút gọn của server-side round-robin transport.
@@ -44,12 +43,20 @@ function fallbackTransport(urls, opts = {}) {
 }
 
 export async function createRpcClient() {
+  if (RPC_URLS.length === 0) {
+    throw new Error("Thiếu danh sách RPC cho browser (PUBLIC_RPC_URLS/config/chains.json) — không thể đọc dữ liệu on-chain.");
+  }
   const client = createPublicClient({
-    chain: mainnet,
+    chain: CHAIN || undefined,
     transport: fallbackTransport(RPC_URLS, { timeout: 15000 }),
   });
-  // Startup health check — chỉ fail nếu TẤT CẢ URL đều down
-  await client.getChainId();
+  // Startup health check — chỉ fail nếu TẤT CẢ URL đều down. Đồng thời chặn
+  // cấu hình sai chain: RPC trả chain khác CHAIN_ID là dữ liệu của chain khác,
+  // không được hiển thị/làm nền cho giao dịch.
+  const actualChainId = await client.getChainId();
+  if (CHAIN_ID && actualChainId !== CHAIN_ID) {
+    throw new Error(`RPC đang trả chain ${actualChainId}, nhưng cấu hình là ${CHAIN_NAME || CHAIN_ID} (${CHAIN_ID}). Kiểm tra PUBLIC_RPC_URLS / CHAIN_ID.`);
+  }
   return client;
 }
 
@@ -57,6 +64,9 @@ export async function createRpcClient() {
 // FETCH DATA
 // ============================================================
 export async function fetchAllData() {
+  if (!MORPHO_BLUE) {
+    throw new Error("Thiếu địa chỉ Morpho Blue trong cấu hình webapp — kiểm tra config/chains.json.");
+  }
   // Fetch market params
   const params = await state.publicClient.readContract({
     address: MORPHO_BLUE,

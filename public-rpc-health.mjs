@@ -39,8 +39,15 @@ import { urlLooksCredentialed } from "./webapp-config.mjs";
 // thì còn phải qua 4 lớp guard trước khi tới browser.
 export const CHAINLIST_CATALOG_URL = "https://chainlist.org/rpcs.json";
 
-/** chainId Ethereum mainnet — lớp này chỉ phục vụ webapp trên chain 1. */
-const ETH_MAINNET_CHAIN_ID = 1;
+// Probe generic cho mọi Morpho deployment: `idToMarketParams(bytes32)` với
+// marketId 0 trả về tuple rỗng (view, không revert trên Morpho Blue). Nhờ vậy
+// không còn phụ thuộc USDC/Etherscan của Ethereum.
+const ID_TO_MARKET_PARAMS_SELECTOR = "0x2c3c9157";
+const ZERO_MARKET_ID = "0".repeat(64);
+// Dùng khi caller không truyền probeCall/morphoBlueAddress (test cũ): vẫn kiểm
+// được endpoint CÓ eth_call/eth_getLogs, không phụ thuộc contract của chain nào.
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const DEFAULT_CHAIN_ID = 1; // legacy default cho caller cũ; production luôn truyền CHAIN_ID
 
 /** Nhịp giữa 2 request liên tiếp tới CÙNG một endpoint (ms) — không tự tạo burst. */
 const PROBE_INTER_REQUEST_DELAY_MS = 150;
@@ -67,12 +74,12 @@ function isPrivateHost(hostname) {
 }
 
 /**
- * Ứng viên thô từ catalog: chain 1 + https + tracking "none". Trả về MẢNG URL
+ * Ứng viên thô từ catalog: chain được chọn + https + tracking "none". Trả về MẢNG URL
  * duy nhất (giữ thứ tự catalog). Entry thiếu url sai dạng bị bỏ qua lặng lẽ.
  */
-export function extractCandidates(catalog) {
+export function extractCandidates(catalog, chainId = DEFAULT_CHAIN_ID) {
   if (!Array.isArray(catalog)) return [];
-  const eth = catalog.find((c) => Number(c?.chainId) === ETH_MAINNET_CHAIN_ID);
+  const eth = catalog.find((c) => Number(c?.chainId) === Number(chainId));
   if (!eth || !Array.isArray(eth.rpc)) return [];
   const seen = new Set();
   const urls = [];
@@ -183,7 +190,7 @@ async function rpcRequest(url, method, params, { timeoutMs, fetchImpl, origin })
  *
  * Tiêu chí PASS (tất cả):
  *  - OPTIONS preflight có ACAO (browser gọi trực tiếp được)
- *  - chainId === 0x1
+ *  - chainId khớp chain đang cấu hình
  *  - đủ eth_blockNumber, eth_call, eth_getLogs, eth_getTransactionReceipt, eth_feeHistory
  *  - POST response có ACAO
  *  - KHÔNG dính 429/-32005/timeout/mạng trong suốt vòng (mỗi loại lỗi tạm thời retry đúng 1 lần)
@@ -192,12 +199,19 @@ async function rpcRequest(url, method, params, { timeoutMs, fetchImpl, origin })
  * @param {number} [opts.timeoutMs] - timeout mỗi request (default PUBLIC_RPC_PROBE_TIMEOUT_MS).
  * @param {number} [opts.interRequestDelayMs] - nhịp giữa 2 request liên tiếp
  *   (default 150ms). Test truyền 0 để chạy nhanh.
+ * @param {number} [opts.chainId] - chain phải khớp (production truyền CHAIN_ID).
+ * @param {{to: string, data: string}} [opts.probeCall] - eth_call chỉ đọc để kiểm tra
+ *   contract của chain; mặc định Morpho.idToMarketParams(0) khi có morphoBlueAddress.
+ * @param {string} [opts.morphoBlueAddress] - địa chỉ cho eth_call/eth_getLogs.
  */
 export async function probePublicRpc(url, {
   timeoutMs = PUBLIC_RPC_PROBE_TIMEOUT_MS,
   interRequestDelayMs = PROBE_INTER_REQUEST_DELAY_MS,
   fetchImpl = fetch,
   origin = "https://morpho-webapp.local",
+  chainId: expectedChainId = DEFAULT_CHAIN_ID,
+  probeCall = null,
+  morphoBlueAddress = null,
 } = {}) {
   const call = (method, params) => rpcRequest(url, method, params, { timeoutMs, fetchImpl, origin });
   const delay = () => new Promise((r) => setTimeout(r, interRequestDelayMs));
@@ -229,17 +243,21 @@ export async function probePublicRpc(url, {
 
   const chainId = await withTransientRetry(() => call("eth_chainId", []));
   if (!chainId.ok) return { ok: false, latencyMs: chainId.latencyMs, reason: `chainId: ${chainId.error}` };
-  if (chainId.result !== "0x1") return { ok: false, latencyMs: chainId.latencyMs, reason: `chainId=${chainId.result} (không phải mainnet)` };
+  const expectedHex = "0x" + Number(expectedChainId).toString(16);
+  if (String(chainId.result).toLowerCase() !== expectedHex) {
+    return { ok: false, latencyMs: chainId.latencyMs, reason: `chainId=${chainId.result} (không phải ${expectedHex})` };
+  }
   if (!chainId.cors) return { ok: false, latencyMs: chainId.latencyMs, reason: "POST không có access-control-allow-origin" };
 
-  const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
-  const SELECTOR_DECIMALS = "0x313ce567";
-  const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
-
+  const ethCallProbe = probeCall ?? {
+    to: morphoBlueAddress ?? ZERO_ADDRESS,
+    data: morphoBlueAddress ? `${ID_TO_MARKET_PARAMS_SELECTOR}${ZERO_MARKET_ID}` : "0x",
+  };
+  const logAddress = morphoBlueAddress ?? probeCall?.to ?? ZERO_ADDRESS;
   const checks = [
     ["eth_blockNumber", []],
-    ["eth_call", [{ to: USDC, data: SELECTOR_DECIMALS }, "latest"]],
-    ["eth_getLogs", [{ address: MORPHO_BLUE, fromBlock: "latest", toBlock: "latest" }]],
+    ["eth_call", [ethCallProbe, "latest"]],
+    ["eth_getLogs", [{ address: logAddress, fromBlock: "latest", toBlock: "latest" }]],
     ["eth_getTransactionReceipt", ["0x" + "a".repeat(64)]],
     ["eth_feeHistory", ["0x5", "latest", [10, 50, 90]]],
   ];
@@ -290,10 +308,10 @@ export async function probeCandidates(urls, opts = {}) {
  * chu kỳ sau gửi If-None-Match, nhận 304 thì tái dùng candidateUrls (không
  * parse lại catalog ~2.3MB). Cache v1 cũ thiếu 2 trường vẫn đọc được.
  */
-function cacheToJSON(verifiedAt, rows, { catalogEtag = null, candidateUrls = [] } = {}) {
+function cacheToJSON(verifiedAt, rows, { catalogEtag = null, candidateUrls = [], chainId } = {}) {
   const probe = {};
   for (const r of rows) probe[r.url] = { latencyMs: r.latencyMs };
-  return { version: 1, verifiedAt, catalogEtag, candidateUrls, urls: rows.map((r) => r.url), probe };
+  return { version: 1, chainId: Number(chainId), verifiedAt, catalogEtag, candidateUrls, urls: rows.map((r) => r.url), probe };
 }
 
 /**
@@ -328,6 +346,9 @@ export async function verifyPublicRpcs({
   interRequestDelayMs = PROBE_INTER_REQUEST_DELAY_MS,
   fetchImpl = fetch,
   now = Date.now,
+  chainId = DEFAULT_CHAIN_ID,
+  probeCall = null,
+  morphoBlueAddress = null,
   log = (msg) => console.log(msg),
 } = {}) {
   const startedAt = now();
@@ -345,19 +366,19 @@ export async function verifyPublicRpcs({
     } else {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const catalog = await res.json();
-      candidates = extractCandidates(catalog);
+      candidates = extractCandidates(catalog, chainId);
       etagToStore = res.headers?.get?.("etag") ?? null;
     }
   } catch (err) {
     return { ok: false, urls: [], reason: `catalog: ${err?.message || err}` };
   }
   if (candidates.length === 0) {
-    return { ok: false, urls: [], reason: "catalog không còn ứng viên https key-less nào cho chain 1" };
+    return { ok: false, urls: [], reason: `catalog không còn ứng viên https key-less nào cho chain ${chainId}` };
   }
 
-  log(`[public-rpc-health] catalog: ${candidates.length} ứng viên key-less (https, tracking=none) cho chain 1 — bắt đầu probe…`);
+  log(`[public-rpc-health] catalog: ${candidates.length} ứng viên key-less (https, tracking=none) cho chain ${chainId} — bắt đầu probe…`);
 
-  const probed = await probeCandidates(candidates, { timeoutMs, interRequestDelayMs, fetchImpl });
+  const probed = await probeCandidates(candidates, { timeoutMs, interRequestDelayMs, fetchImpl, chainId, probeCall, morphoBlueAddress });
   const passing = probed.filter((r) => r.ok);
   log(
     `[public-rpc-health] probe xong: ${passing.length}/${probed.length} đạt` +
@@ -381,7 +402,7 @@ export async function verifyPublicRpcs({
 
   const chosen = passing.slice(0, maxEndpoints);
   const verifiedAt = new Date(now()).toISOString();
-  const payload = cacheToJSON(verifiedAt, chosen, { catalogEtag: etagToStore, candidateUrls: candidates });
+  const payload = cacheToJSON(verifiedAt, chosen, { catalogEtag: etagToStore, candidateUrls: candidates, chainId });
   const dir = path.dirname(cachePath);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${cachePath}.tmp`;
@@ -396,7 +417,7 @@ export async function verifyPublicRpcs({
  * (dưới maxAgeHours kể từ verifiedAt), ngược lại null — caller rơi về danh sách tĩnh.
  * Cache hỏng/không đọc được được đổi tên thành *.corrupt để không đọc lại mãi mãi.
  */
-export function readVerifiedCache(cachePath, { maxAgeHours = 48, now = Date.now } = {}) {
+export function readVerifiedCache(cachePath, { maxAgeHours = 48, now = Date.now, chainId = null } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(cachePath, "utf8");
@@ -414,6 +435,13 @@ export function readVerifiedCache(cachePath, { maxAgeHours = 48, now = Date.now 
     try { fs.renameSync(cachePath, `${cachePath}.corrupt`); } catch { /* ignore */ }
     return null;
   }
+  if (chainId != null) {
+    // Cache v1 cũ không có chainId ⇒ coi là chain 1 (deployment ETH duy nhất
+    // trước multi-chain). Cache của chain khác không được dùng cho deployment
+    // này (nếu operator share path giữa các clone).
+    const cachedChain = parsed.chainId == null ? DEFAULT_CHAIN_ID : Number(parsed.chainId);
+    if (cachedChain !== Number(chainId)) return null;
+  }
   const verifiedMs = Date.parse(parsed.verifiedAt);
   if (!Number.isFinite(verifiedMs)) {
     try { fs.renameSync(cachePath, `${cachePath}.corrupt`); } catch { /* ignore */ }
@@ -421,5 +449,5 @@ export function readVerifiedCache(cachePath, { maxAgeHours = 48, now = Date.now 
   }
   const ageHours = (now() - verifiedMs) / 3_600_000;
   if (ageHours > maxAgeHours) return null; // cũ — không xoá (làm bằng chứng), chỉ bỏ qua
-  return { urls: parsed.urls.filter((u) => typeof u === "string" && u.startsWith("https://")), verifiedAt: parsed.verifiedAt };
+  return { urls: parsed.urls.filter((u) => typeof u === "string" && u.startsWith("https://")), verifiedAt: parsed.verifiedAt, chainId: parsed.chainId ?? DEFAULT_CHAIN_ID };
 }
