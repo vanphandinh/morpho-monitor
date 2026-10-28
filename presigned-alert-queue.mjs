@@ -26,7 +26,7 @@ export const LIFECYCLE_LEASE_MS = 30_000;
  */
 export async function drainLifecycleAlerts({
   filePath, updateRegistry, send, now = () => Date.now(), logger = console,
-  batchSize = 5, concurrency = 2, leaseMs = LIFECYCLE_LEASE_MS,
+  batchSize = 5, concurrency = 2, leaseMs = LIFECYCLE_LEASE_MS, chain = null,
 } = {}) {
   // Avoid writing the registry every 30 seconds when no alert is due.
   const elapsed = (timestamp, at) => !timestamp || !Number.isFinite(Date.parse(timestamp)) || Date.parse(timestamp) <= at;
@@ -80,7 +80,7 @@ export async function drainLifecycleAlerts({
       const task = leased[index++];
       let error = null;
       try {
-        const alert = buildLifecycleAlert(task.alert.kind, task.alert.info);
+        const alert = buildLifecycleAlert(task.alert.kind, { ...task.alert.info, chain });
         if (!alert) throw new Error(`unsupported alert kind ${task.alert.kind}`);
         await send(alert);
       } catch (err) {

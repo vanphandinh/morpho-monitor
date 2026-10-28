@@ -7,7 +7,21 @@
  * nhận `proxyRpcUrl: undefined` rồi rơi về `http://127.0.0.1:8545` — trên VPS
  * qua HTTPS địa chỉ đó trỏ về máy của user, không phải server.
  */
-import { LENDER_ADDRESS, PROXY_RPC_URL, PUBLIC_RPC_URLS, PUBLIC_RPC_REFRESH_HOURS, WEBAPP_PASSWORD, PROXY_RPC_RATE_LIMIT, PROXY_ALLOW_PUBLIC_RPC } from "./shared.mjs";
+import {
+  LENDER_ADDRESS,
+  PROXY_RPC_URL,
+  PUBLIC_RPC_URLS,
+  PUBLIC_RPC_REFRESH_HOURS,
+  WEBAPP_PASSWORD,
+  PROXY_RPC_RATE_LIMIT,
+  PROXY_ALLOW_PUBLIC_RPC,
+  CHAIN_ID,
+  CHAIN_NAME,
+  NATIVE_CURRENCY,
+  EXPLORER_URL,
+  EXPLORER_NAME,
+  MORPHO_BLUE_ADDRESS,
+} from "./shared.mjs";
 import { RECOVERY_THRESHOLD_MS } from "./presigned-broadcast.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -37,6 +51,12 @@ export function buildWebappConfig({
   verifiedRpcUrls = null,
   verifiedAt = null,
   refreshHours = PUBLIC_RPC_REFRESH_HOURS,
+  chainId = CHAIN_ID,
+  chainName = CHAIN_NAME,
+  nativeCurrency = NATIVE_CURRENCY,
+  explorerUrl = EXPLORER_URL,
+  explorerName = EXPLORER_NAME,
+  morphoBlueAddress = MORPHO_BLUE_ADDRESS,
 } = {}) {
   if (!Array.isArray(markets) || markets.length === 0) {
     throw new Error("❌ Không có market nào được cấu hình — kiểm tra config/markets.json (MARKETS_FILE).");
@@ -48,6 +68,15 @@ export function buildWebappConfig({
       "❌ Thiếu LENDER_ADDRESS trong .env — webapp cần địa chỉ ví lender để xác thực và hiển thị vị thế.\n" +
       "   → Đặt LENDER_ADDRESS=0x... (ví lender) trong .env rồi khởi động lại webapp."
     );
+  }
+
+  const numericChainId = Number(chainId);
+  if (!Number.isSafeInteger(numericChainId) || numericChainId <= 0) {
+    throw new Error(`❌ CHAIN_ID không hợp lệ: ${chainId}. Kiểm tra CHAIN_ID trong .env hoặc config/chains.json.`);
+  }
+  const morpho = typeof morphoBlueAddress === "string" ? morphoBlueAddress.trim() : "";
+  if (!/^0x[0-9a-fA-F]{40}$/.test(morpho)) {
+    throw new Error(`❌ Chain ${numericChainId} thiếu địa chỉ Morpho Blue hợp lệ — kiểm tra config/chains.json.`);
   }
 
   const proxyUrl = typeof proxyRpcUrl === "string" ? proxyRpcUrl.trim() : "";
@@ -96,6 +125,24 @@ export function buildWebappConfig({
     lenderAddress: lender,
     proxyRpcUrl: proxyUrl,
     rpcUrls: effectiveRpcUrls,
+    // Metadata chain (thay cho `mainnet` hardcode): browser dùng đúng chain để
+    // switch/add network, ký EIP-712/transaction và mở explorer.
+    chainId: numericChainId,
+    chainIdHex: `0x${numericChainId.toString(16)}`,
+    chainName,
+    nativeCurrency,
+    explorerUrl,
+    explorerName,
+    morphoBlueAddress: morpho,
+    chain: {
+      id: numericChainId,
+      name: chainName,
+      nativeCurrency,
+      rpcUrls: { default: { http: effectiveRpcUrls } },
+      blockExplorers: explorerUrl
+        ? { default: { name: explorerName, url: explorerUrl } }
+        : undefined,
+    },
     // Lớp hybrid: browser chỉ HIỂN THỊ lần kiểm chứng gần nhất (webapp-shell);
     // null = chưa từng probe thành công hoặc lớp động tắt.
     rpcVerifiedAt: typeof verifiedAt === "string" && verified ? verifiedAt : null,

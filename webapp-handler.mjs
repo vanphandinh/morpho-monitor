@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import {
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
+  CHAIN_ID,
   PROXY_RPC_URL,
   WEBAPP_PASSWORD,
   MAX_BODY_BYTES,
@@ -516,7 +517,11 @@ export function createRequestHandler({
         }
         const incoming = sanitizePendingBundle(parsed);
         incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
+        // Verify TRƯỚC khi stamp chain: bundle khai chain khác bị từ chối với
+        // lỗi chainId rõ ràng (không bị overwrite rồi báo nhầm là bundle hỏng).
+        // Chữ ký vẫn được kiểm chainId thật ở verifyWithdrawCalldata.
         const verified = await verifyPresignedBundle(incoming, {
+          chainId: CHAIN_ID,
           morphoBlueAddress: MORPHO_BLUE_ADDRESS,
           lenderAddress: LENDER_ADDRESS,
           marketId,
@@ -524,6 +529,8 @@ export function createRequestHandler({
         if (!verified.ok) {
           throw Object.assign(new Error(`Calldata verify failed: ${verified.error}`), { code: MARKET_INPUT_INVALID });
         }
+        // Server sở hữu chain trong registry — không lưu chainId do client gửi.
+        incoming.chainId = CHAIN_ID;
 
         let outcome;
         await updateRegistry(presignedPath, async (registry) => {
@@ -628,6 +635,7 @@ export function createRequestHandler({
 
           // Re-verify sau merge — tier cũ giữ lại cũng phải hợp lệ
           const mergedVerified = await verifyPresignedBundle(merged, {
+            chainId: CHAIN_ID,
             morphoBlueAddress: MORPHO_BLUE_ADDRESS,
             lenderAddress: LENDER_ADDRESS,
             marketId,

@@ -425,8 +425,10 @@
         <div class="banner info" style="margin-bottom:8px;font-size:0.85rem">
           <strong>🔧 Thêm thủ công:</strong><br>
           <b>RPC URL:</b> <code id="presign-proxy-url-display">—</code><br>
-          <b>Chain ID:</b> 1 &nbsp;|&nbsp; <b>Symbol:</b> ETH &nbsp;|&nbsp; <b>Name:</b> Ethereum Proxy Sign<br>
-          <small>Sau khi ký xong, đổi lại RPC về mạng Ethereum thật.</small>
+          <b>Chain ID:</b> <span id="presign-proxy-chain-id">—</span> &nbsp;|&nbsp;
+          <b>Symbol:</b> <span id="presign-proxy-symbol">—</span> &nbsp;|&nbsp;
+          <b>Name:</b> <span id="presign-proxy-name">—</span><br>
+          <small id="presign-proxy-chain-note">Sau khi ký xong, đổi lại RPC về mạng thật.</small>
         </div>
         <div class="row">
           <span class="label">Nonce:</span>
@@ -521,8 +523,8 @@
 
   <!-- Security note -->
   <div class="banner info" style="margin-top:24px">
-    <strong>🔒 Bảo mật:</strong> Webapp này chỉ tương tác với Morpho Blue contract chính thức
-    (<span class="address">0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb</span>).
+    <strong>🔒 Bảo mật:</strong> Webapp này chỉ tương tác với Morpho Blue contract của chain đang chạy
+    (<span class="address" id="morpho-blue-address">—</span>).
     Tiền luôn được gửi về chính ví của bạn. Luôn kiểm tra kỹ transaction trên ví trước khi ký.
   </div>
 

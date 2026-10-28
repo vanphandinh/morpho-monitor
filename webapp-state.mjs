@@ -29,27 +29,28 @@ export const CLAIM_RECOVERY_MS = Number(CFG.claimRecoveryMs) > 0 ? Number(CFG.cl
 // R4: ngân sách xác minh tx (TX_VERIFY_ATTEMPTS / TX_VERIFY_DELAY_MS) nay nằm
 // trong webapp-logic.mjs cùng với txVisibleOnChain() — xem module đó.
 
-export const MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
+// Chain metadata do server inject (webapp-config.mjs → buildWebappConfig).
+// Không còn `mainnet`/`0x1`/Etherscan hardcode trong bất kỳ module browser nào:
+// cùng một bundle chạy đúng trên Ethereum, Base hay Monad khi config đổi.
+export const CHAIN = CFG.chain || null;
+export const CHAIN_ID = CHAIN?.id ?? (Number(CFG.chainId) > 0 ? Number(CFG.chainId) : null);
+export const CHAIN_HEX = CHAIN_ID ? `0x${CHAIN_ID.toString(16)}` : null;
+export const CHAIN_NAME = CHAIN?.name || CFG.chainName || "";
+export const NATIVE_CURRENCY = CHAIN?.nativeCurrency || CFG.nativeCurrency || { name: "Ether", symbol: "ETH", decimals: 18 };
+export const EXPLORER_URL = CFG.explorerUrl || "";
+export const EXPLORER_NAME = CFG.explorerName || "Block explorer";
+
+// Địa chỉ Morpho Blue của chain đang chạy — server inject từ config/chains.json.
+// Không fallback về địa chỉ Ethereum: nếu config thiếu, mọi request sẽ fail rõ
+// ràng thay vì gửi tiền tới contract của chain khác.
+export const MORPHO_BLUE = CFG.morphoBlueAddress || "";
 
 // M2 + Round-4 phụ lục (2026-09-25): KHÔNG hardcode URL kèm API key trong
 // file được phục vụ công khai. Danh sách thật do server inject qua
-// window.MORPHO_CONFIG.rpcUrls (derive từ PUBLIC_RPC_URLS — 8 endpoint
-// key-less đã probe thật; xem webapp-config.mjs). Fallback dưới đây chỉ
-// chạy khi server không inject config, và KHÔNG chứa endpoint ankr
-// key-less — đã chết (ankr bắt buộc API key, probe 2026-09-25), cũng
-// KHÔNG chứa meowrpc — 429 thất thường (probe 2026-09-27).
-export const RPC_URLS = (Array.isArray(CFG.rpcUrls) && CFG.rpcUrls.length > 0)
-  ? CFG.rpcUrls
-  : [
-    "https://ethereum-rpc.publicnode.com",
-    "https://eth.drpc.org",
-    "https://eth-mainnet.public.blastapi.io",
-    "https://gateway.tenderly.co/public/mainnet",
-    "https://1rpc.io/eth",
-    "https://eth.blockrazor.xyz",
-    "https://rpc-eth.blockmachine.io",
-    "https://rpc.mevblocker.io",
-  ];
+// window.MORPHO_CONFIG.rpcUrls (derive từ PUBLIC_RPC_URLS — endpoint key-less
+// đã probe thật; xem webapp-config.mjs). Không còn danh sách ETH fallback:
+// chain khác sẽ nhận RPC của chính nó, và config thiếu thì UI báo lỗi rõ.
+export const RPC_URLS = Array.isArray(CFG.rpcUrls) ? CFG.rpcUrls.filter((u) => typeof u === "string" && u.trim()) : [];
 
 // Lớp hybrid (2026-09-27): server probe định kỳ và ghi "lần kiểm chứng gần
 // nhất" vào config. Browser chỉ DÙNG ĐỂ HIỂN THỊ (dòng nhỏ dưới header),
@@ -136,8 +137,10 @@ export const state = {
   marketParams: null,
   marketData: null,
   positionData: null,
-  loanToken: { decimals: 6, symbol: "USDC" },
-  collateralToken: { decimals: 18, symbol: "dCOMP" },
+  // Chưa có metadata on-chain ⇒ không giả định token của chain nào.
+  // Nhãn trung tính để Base/Monad không bao giờ hiện USDC/dCOMP trước khi fetch xong.
+  loanToken: { decimals: 6, symbol: "—" },
+  collateralToken: { decimals: 18, symbol: "—" },
   presignedNonce: null,
   // Stepper nonce (2026-09-25): sàn = nonce on-chain lần fetch gần nhất.
   // Chỉnh nonce (±) chỉ được phép sau khi đã có sàn này.

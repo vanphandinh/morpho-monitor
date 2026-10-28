@@ -105,6 +105,22 @@ export function webappConfig(overrides = {}) {
     // MỘT url duy nhất: `fallbackTransport` chọn điểm bắt đầu ngẫu nhiên, nhiều url ⇒ trace
     // không tất định giữa hai lần chạy. Đây là lý do phải ép còn một.
     rpcUrls: ["http://127.0.0.1:1"],
+    // Chain metadata: browser dùng đúng chain để switch/add network và ký tx.
+    // Test giữ chain 1 để fixture signed-withdraw (chainId 1) khớp.
+    chainId: 1,
+    chainIdHex: "0x1",
+    chainName: "Ethereum",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    explorerUrl: "https://etherscan.io",
+    explorerName: "Etherscan",
+    morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+    chain: {
+      id: 1,
+      name: "Ethereum",
+      nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+      rpcUrls: { default: { http: ["http://127.0.0.1:1"] } },
+      blockExplorers: { default: { name: "Etherscan", url: "https://etherscan.io" } },
+    },
     ...overrides,
   };
 }

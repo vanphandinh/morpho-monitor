@@ -22,11 +22,15 @@ import {
   MARKETS_FILE,
   LENDER_ADDRESS,
   MORPHO_BLUE_ADDRESS,
+  CHAIN_ID,
+  CHAIN_NAME,
+  CHAIN,
   PROXY_RPC_RATE_LIMIT,
   PROXY_ALLOW_PUBLIC_RPC,
 } from "./shared.mjs";
-import { createRobustPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
+import { createChainBoundPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
+import { retryStartup } from "./startup-retry.mjs";
 import { createProxyRequestHandler, defaultBlockFallback, RPC_METHOD_ALLOW_LIST } from "./proxy-dispatcher.mjs";
 import { assertProxyAuthConfig } from "./webapp-config.mjs";
 
@@ -54,11 +58,25 @@ try {
 // Market allow-list next: config errors must fail fast with an actionable message.
 const configuredMarkets = loadMarkets(MARKETS_FILE);
 
-// Robust public client with round-robin across all RPC URLs,
-// retry with backoff, and circuit breaker per URL.
+// Public client chỉ dùng các URL đã probe đúng CHAIN_ID. Mỗi URL sai chain bị
+// loại trước khi bất kỳ eth_call/eth_getLogs/nonce nào được gửi tới nó.
 // Used for forwarding eth_getTransactionCount + startup block fetch.
-const publicClient = createRobustPublicClient(RPC_URLS);
-console.log(`[proxy] Khởi tạo với ${RPC_URLS.length} RPC endpoint(s)`);
+let publicClient;
+let activeRpcCount = 0;
+// Lúc container vừa lên, RPC có thể chưa sẵn sàng — thử lại có giới hạn. Sai
+// chain là FATAL (retryStartup ném ngay), lỗi mạng mới được thử lại; nếu bỏ
+// ngoài retry thì proxy chết ngay cả khi block fallback vẫn dùng được.
+try {
+  await retryStartup(async () => {
+    const bound = await createChainBoundPublicClient(RPC_URLS);
+    publicClient = bound.client;
+    activeRpcCount = bound.urls.length;
+  }, { label: "proxy" });
+} catch (err) {
+  console.error(`❌ ${err.message}`);
+  process.exit(1);
+}
+console.log(`[proxy] Chain: ${CHAIN_NAME} (${CHAIN_ID}) — Khởi tạo với ${activeRpcCount}/${RPC_URLS.length} RPC endpoint(s)`);
 
 // Fetch real block number once at startup for realistic mock
 const blockFallback = defaultBlockFallback();
@@ -85,6 +103,7 @@ const handler = createProxyRequestHandler({
   markets: configuredMarkets,
   lenderAddress: LENDER_ADDRESS,
   morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+  chainId: CHAIN_ID,
   client: publicClient,
   capturedTxs,
   blockFallback,
@@ -135,8 +154,8 @@ server.listen(PORT, BIND_HOST, () => {
   console.log(`     1. Settings → Networks → Add Network`);
   const hintHost = (BIND_HOST === "0.0.0.0" || BIND_HOST === "::") ? "<your-host>" : BIND_HOST;
   console.log(`     2. RPC URL: ${proto}://${hintHost}:${PORT}`);
-  console.log(`     3. Chain ID: 1`);
-  console.log(`     4. Symbol: ETH`);
+  console.log(`     3. Chain ID: ${CHAIN_ID}`);
+  console.log(`     4. Symbol: ${CHAIN.chain.nativeCurrency.symbol}`);
   console.log("");
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   console.log("  Nhấn Ctrl+C để dừng");

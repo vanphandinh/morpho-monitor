@@ -81,7 +81,10 @@ async function bundleFor(nonce, { amountWei = "50000000000" } = {}) {
   };
 }
 
-describe("verify-presigned CLI — registry v2", () => {
+// Mỗi test spawn một tiến trình Node thật; dưới tải song song của full suite,
+// 5s mặc định không đủ (đo đơn lẻ đã 1.5–3.8s). Giữ nguyên assertion, chỉ nới
+// timeout cho subprocess — không bỏ qua test nào.
+describe("verify-presigned CLI — registry v2", { timeout: 20_000 }, () => {
   it("valid registry → exit 0 với tổng hợp theo market", async () => {
     const file = writeRegistry({ version: 2, bundles: { [MARKET_A]: await bundleFor(7) } });
     const { code, stdout } = await runCli([file]);
@@ -133,7 +136,7 @@ describe("verify-presigned CLI — registry v2", () => {
   });
 });
 
-describe("verify-presigned CLI — bare bundle back-compat", () => {
+describe("verify-presigned CLI — bare bundle back-compat", { timeout: 20_000 }, () => {
   it("bundle hợp lệ → exit 0", async () => {
     const file = writeRegistry(await bundleFor(7));
     const { code, stdout } = await runCli([file]);

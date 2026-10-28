@@ -19,7 +19,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PUBLIC_RPC_HEALTH_PATH, PUBLIC_RPC_MAX_ENDPOINTS, PUBLIC_RPC_URLS } from "../shared.mjs";
+import { PUBLIC_RPC_HEALTH_PATH, PUBLIC_RPC_MIN_ENDPOINTS, PUBLIC_RPC_MAX_ENDPOINTS, PUBLIC_RPC_URLS, CHAIN_ID, MORPHO_BLUE_ADDRESS } from "../shared.mjs";
 import { extractCandidates, probeCandidates, CHAINLIST_CATALOG_URL } from "../public-rpc-health.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,8 +44,8 @@ if (urlsArg) {
     console.error(`[probe-tay] ❌ catalog HTTP ${res.status}`);
     process.exit(1);
   }
-  candidates = extractCandidates(await res.json());
-  console.log(`[probe-tay] ${candidates.length} ứng viên key-less (https, tracking=none) cho chain 1`);
+  candidates = extractCandidates(await res.json(), CHAIN_ID);
+  console.log(`[probe-tay] ${candidates.length} ứng viên key-less (https, tracking=none) cho chain ${CHAIN_ID}`);
 }
 
 if (candidates.length === 0) {
@@ -53,7 +53,7 @@ if (candidates.length === 0) {
   process.exit(1);
 }
 
-const results = await probeCandidates(candidates, { timeoutMs: 8000 });
+const results = await probeCandidates(candidates, { timeoutMs: 8000, chainId: CHAIN_ID, morphoBlueAddress: MORPHO_BLUE_ADDRESS });
 
 console.log("\n=== KẾT QUẢ PROBE (sắp xếp: đạt + nhanh nhất trước) ===");
 for (const r of results) {
@@ -65,14 +65,22 @@ console.log(`\nTổng: ${passing.length}/${results.length} đạt.`);
 
 if (outArg) {
   const { writeFileSync, mkdirSync } = await import("node:fs");
-  mkdirSync(path.dirname(outPath), { recursive: true });
   // Script tay chỉ GHI khi có --out (mặc định ghi đúng cache server đọc như
   // verifyPublicRpcs làm — nhưng chỉ khi đạt ngưỡng tối thiểu để không cụt hóa).
   // Cắt theo PUBLIC_RPC_MAX_ENDPOINTS Y NHƯ server-side: không nhất quán thì
   // cache tay có thể nhét endpoint chậm (stakely 1961ms trên VPS) vượt cap 8.
   const chosen = passing.slice(0, PUBLIC_RPC_MAX_ENDPOINTS);
+  if (chosen.length < PUBLIC_RPC_MIN_ENDPOINTS) {
+    console.error(
+      `[probe-tay] ❌ chỉ ${chosen.length}/${results.length} endpoint đạt ` +
+        `(< ngưỡng tối thiểu ${PUBLIC_RPC_MIN_ENDPOINTS}) — KHÔNG ghi cache, giữ nguyên file cũ.`
+    );
+    process.exit(1);
+  }
+  mkdirSync(path.dirname(outPath), { recursive: true });
   const payload = {
     version: 1,
+    chainId: CHAIN_ID,
     verifiedAt: new Date().toISOString(),
     urls: chosen.map((r) => r.url),
     probe: Object.fromEntries(chosen.map((r) => [r.url, { latencyMs: r.latencyMs }])),

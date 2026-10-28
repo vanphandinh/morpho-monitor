@@ -73,6 +73,22 @@ describe("production WSS watcher", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("urls rỗng (WSS_URLS=) ⇒ HTTP-only: không connect, không hẹn retry", async () => {
+    vi.useFakeTimers();
+    const connect = vi.fn();
+    const logger = { warn: vi.fn(), log: vi.fn() };
+    const watcher = createWssWatcher({ ...baseArgs, urls: [], connect, logger });
+
+    await watcher.start();
+    expect(connect).not.toHaveBeenCalled();
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining("HTTP-only"));
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(connect).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+    watcher.close();
+  });
+
   it("closes partial subscriptions and the connection when a later watch throws", async () => {
     const unwatchers = [vi.fn(), vi.fn()];
     let calls = 0;

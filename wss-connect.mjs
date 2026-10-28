@@ -74,8 +74,12 @@ export function closeTransport(client) {
  *   watcher's failover never leaks a socket.
  * - `close` returns the boolean from `closeTransport` (synchronous).
  */
+/** Error code: WSS endpoint answered a different chain than the deployment. */
+export const WSS_CHAIN_MISMATCH = "WSS_CHAIN_MISMATCH";
+
 export function createWssConnect({
   address,
+  expectedChainId = null,
   abi = blueAbi,
   createClient = createPublicClient,
   webSocketTransport = webSocket,
@@ -83,9 +87,19 @@ export function createWssConnect({
   return async (url) => {
     const client = createClient({ transport: webSocketTransport(url) });
     try {
-      await client.getChainId();
+      const actual = Number(await client.getChainId());
+      if (expectedChainId != null && actual !== Number(expectedChainId)) {
+        const err = new Error(
+          `WSS ${url} trả chainId ${actual}, nhưng deployment là ${expectedChainId}.`
+        );
+        err.code = WSS_CHAIN_MISMATCH;
+        err.expected = Number(expectedChainId);
+        err.actual = actual;
+        err.url = url;
+        throw err;
+      }
     } catch (err) {
-      // Probe thất bại → tự đóng transport, không để connection mồ côi.
+      // Probe thất bại hoặc sai chain → tự đóng transport, không để connection mồ côi.
       closeTransport(client);
       throw err;
     }

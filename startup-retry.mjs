@@ -19,7 +19,15 @@
  * Mã lỗi bắt buộc phải FATAL (không thử lại). Test ghim sự khớp với `MARKET_PARAMS_ZERO` của
  * `market-reader.mjs` để hai hằng số không lệch nhau.
  */
-export const FATAL_STARTUP_CODES = new Set(["MARKET_PARAMS_ZERO"]);
+export const FATAL_STARTUP_CODES = new Set([
+  "MARKET_PARAMS_ZERO",
+  "CHAIN_ID_MISMATCH",
+  "MORPHO_ADDRESS_MISMATCH",
+  "UNSUPPORTED_CHAIN",
+  "MISSING_RPC_URLS",
+  "CHAIN_CONFIG_INVALID",
+  "CHAIN_CONFIG_MISSING",
+]);
 
 /** Lịch thử lại mặc định: 5 lần, tổng chờ ~30s. */
 export const STARTUP_RETRY = { attempts: 5, delaysMs: [2_000, 4_000, 8_000, 16_000] };
@@ -45,6 +53,7 @@ export function isRetryableStartupError(err) {
  * @param {(err: any) => boolean} [opts.isRetryable]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {{ error: Function }} [opts.log]
+ * @param {string} [opts.label] - tiền tố log (monitor/proxy/webapp)
  */
 export async function retryStartup(fn, {
   attempts = STARTUP_RETRY.attempts,
@@ -52,6 +61,7 @@ export async function retryStartup(fn, {
   isRetryable = isRetryableStartupError,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   log = console,
+  label = "monitor",
 } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -64,7 +74,7 @@ export async function retryStartup(fn, {
       if (attempt === attempts) break;
       const delay = delaysMs[Math.min(attempt - 1, delaysMs.length - 1)] ?? 0;
       log.error(
-        `[monitor] khởi động lần ${attempt}/${attempts} thất bại: ${err?.message || err} — thử lại sau ${Math.round(delay / 1000)}s`
+        `[${label}] khởi động lần ${attempt}/${attempts} thất bại: ${err?.message || err} — thử lại sau ${Math.round(delay / 1000)}s`
       );
       await sleep(delay);
     }

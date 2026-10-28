@@ -24,6 +24,8 @@ import { verifyPublicRpcs, readVerifiedCache } from "./public-rpc-health.mjs";
  * @param {string} deps.htmlContent - webapp.html raw (đọc 1 lần lúc boot)
  * @param {string} deps.lenderAddress - LENDER_ADDRESS (truyền rõ cho builder — không phụ thuộc env ngầm)
  * @param {string} deps.proxyRpcUrl - PROXY_RPC_URL (truyền rõ cho builder)
+ * @param {number} [deps.chainId] - CHAIN_ID (cho probe/cache chain-scoped)
+ * @param {string} [deps.morphoBlueAddress] - Morpho của chain (probe eth_call/getLogs)
  * @param {boolean} deps.operatorOverrodePublicRpcs - PUBLIC_RPC_URLS set trong env?
  * @param {boolean} deps.refreshEnabled - PUBLIC_RPC_REFRESH_HOURS > 0?
  * @param {number} [deps.refreshHoursMs] - chu kỳ refresh nền (ms) khi refreshEnabled
@@ -40,6 +42,8 @@ export function createHybridRpcServing({
   htmlContent,
   lenderAddress,
   proxyRpcUrl,
+  chainId,
+  morphoBlueAddress,
   operatorOverrodePublicRpcs,
   refreshEnabled,
   refreshHoursMs,
@@ -62,6 +66,8 @@ export function createHybridRpcServing({
       markets,
       lenderAddress,
       proxyRpcUrl,
+      ...(chainId ? { chainId } : {}),
+      ...(morphoBlueAddress ? { morphoBlueAddress } : {}),
       verifiedRpcUrls,
       verifiedAt: verifiedRpcAt,
     });
@@ -71,7 +77,7 @@ export function createHybridRpcServing({
   // Boot: đọc cache verified TRƯỚC khi build lần đầu — request đầu tiên sau
   // restart đã dùng danh sách tốt nhất đã biết, không phải đợi chu kỳ probe.
   if (refreshEnabled && !operatorOverrodePublicRpcs) {
-    const cached = readCache(cachePath, { maxAgeHours });
+    const cached = readCache(cachePath, { maxAgeHours, chainId });
     if (cached) {
       verifiedRpcUrls = cached.urls;
       verifiedRpcAt = cached.verifiedAt;
@@ -92,7 +98,7 @@ export function createHybridRpcServing({
     }
     if (!refreshEnabled) return false; // PUBLIC_RPC_REFRESH_HOURS=0 — luôn dùng danh sách tĩnh
     try {
-      const result = await verify({ cachePath });
+      const result = await verify({ cachePath, chainId, morphoBlueAddress });
       if (result.ok) {
         verifiedRpcUrls = result.urls;
         verifiedRpcAt = result.verifiedAt || verifiedRpcAt;

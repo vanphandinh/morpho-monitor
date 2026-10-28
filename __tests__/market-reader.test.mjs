@@ -190,3 +190,54 @@ describe("market-reader — cache metadata token", () => {
     expect(fetchTokenById).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("market-reader — chain không có Multicall3", () => {
+  const chainWithoutMulticall = () => Object.assign(
+    new Error("Chain does not support contract multicall3"),
+    { name: "ChainDoesNotSupportContract" }
+  );
+
+  it("readSnapshots fallback sang readContract và giữ cùng blockNumber", async () => {
+    const readContract = vi.fn(async ({ functionName }) => (
+      functionName === "market"
+        ? [1_000_000_000n, 1_000_000_000n, 200_000_000n, 0n, 1_000_000n, 0n]
+        : [500n, 0n, 0n]
+    ));
+    const client = {
+      getBlockNumber: vi.fn(async () => 77n),
+      multicall: vi.fn(async () => { throw chainWithoutMulticall(); }),
+      readContract,
+    };
+
+    const r = await reader(client);
+    const { blockNumber, snapshots, failures } = await r.readSnapshots();
+
+    expect(client.multicall).toHaveBeenCalledTimes(1);
+    expect(readContract).toHaveBeenCalledTimes(4);
+    expect(readContract.mock.calls[0][0].blockNumber).toBe(77n);
+    expect(blockNumber).toBe(77n);
+    expect(snapshots.size).toBe(2);
+    expect(failures.size).toBe(0);
+  });
+
+  it("defaultFetchToken fallback đọc decimals/symbol bằng readContract", async () => {
+    const client = {
+      multicall: vi.fn(async () => { throw chainWithoutMulticall(); }),
+      readContract: vi.fn(async ({ functionName }) => (
+        functionName === "decimals" ? 6 : "USDC"
+      )),
+    };
+
+    const r = await createMarketReader({
+      client,
+      lenderAddress: LENDER,
+      morphoBlueAddress: MORPHO,
+      markets: markets(),
+      fetchParams: async () => params(),
+    });
+
+    expect(r.markets[0].loanToken).toMatchObject({ symbol: "USDC", decimals: 6 });
+    expect(client.multicall).toHaveBeenCalledTimes(2); // loan + collateral
+    expect(client.readContract).toHaveBeenCalledTimes(4);
+  });
+});

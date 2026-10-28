@@ -7,10 +7,9 @@
  */
 
 import { encodeFunctionData, formatUnits, parseUnits } from "viem";
-import { mainnet } from "viem/chains";
 import { retryTransient, stepNonce } from "./webapp-logic.mjs";
 import { esc } from "./webapp-render.mjs";
-import { MORPHO_ABI, MORPHO_BLUE, state } from "./webapp-state.mjs";
+import { CHAIN, CHAIN_ID, MORPHO_ABI, MORPHO_BLUE, state } from "./webapp-state.mjs";
 import { clearSession, getAuthHeaders, getProxyUrl, isAuthenticated, showPresignError, showPresignSuccess, updateAuthUI } from "./webapp-shell.mjs";
 import { fetchExistingBundle, refreshPresignOverview, renderPresignWithdrawAllInfo } from "./webapp-presign-bundles.mjs";
 
@@ -678,7 +677,7 @@ export async function signAllTiers() {
         gas: 200000n,
         maxFeePerGas: presignedGas.maxFeePerGas,
         maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas,
-        chain: mainnet,
+        chain: CHAIN || undefined,
         account: state.currentAccount,
       });
 
@@ -798,7 +797,7 @@ export async function signWithdrawAll() {
       gas: 200000n,
       maxFeePerGas: presignedGas.maxFeePerGas,
       maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas,
-      chain: mainnet,
+      chain: CHAIN || undefined,
       account: state.currentAccount,
     });
 
@@ -868,6 +867,7 @@ function buildPresignedBundle() {
 
   return {
     tiers,
+    chainId: CHAIN_ID,
     morphoBlueAddress: MORPHO_BLUE,
     marketId: state.marketId,
     lenderAddress: state.lenderAddress,

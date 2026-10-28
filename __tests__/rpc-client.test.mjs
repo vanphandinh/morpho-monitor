@@ -8,7 +8,11 @@ import {
   circuits,
   createRoundRobinTransport,
   isPermanentEndpointError,
+  probeChainIds,
+  assertUrlsOnChain,
+  createChainBoundPublicClient,
 } from "../rpc-client.mjs";
+import { isRetryableStartupError } from "../startup-retry.mjs";
 
 // Track which URLs were actually called through the mocked HTTP transport
 const rpcCallLog = vi.hoisted(() => []);
@@ -625,5 +629,84 @@ describe("endpoint chết vĩnh viễn (401/403, API key disabled) — audit vò
 
     expect(getCircuit(tempUrl).backoffMs).toBe(120_000);
     expect(getCircuit(permUrl).backoffMs).toBe(600_000);
+  });
+});
+
+describe("chain binding — từng endpoint", () => {
+  const BASE_OK = "https://base-ok.example/rpc";
+  const ETH_WRONG = "https://eth-wrong.example/rpc?apikey=secret";
+
+  it("probeChainIds phân loại đúng, đúng/sai/không phản hồi", async () => {
+    const report = await probeChainIds([BASE_OK, ETH_WRONG, "https://down.example/rpc"], {
+      expectedChainId: 8453,
+      probe: async (url) => {
+        if (url === BASE_OK) return 8453;
+        if (url === ETH_WRONG) return 1;
+        throw new Error("timeout");
+      },
+    });
+
+    expect(report.matching).toEqual([BASE_OK]);
+    expect(report.mismatched).toEqual([{ url: ETH_WRONG, chainId: 1 }]);
+    expect(report.unreachable).toHaveLength(1);
+  });
+
+  it("có endpoint đúng ⇒ chỉ warn, không throw; endpoint đúng được dùng", async () => {
+    const warns = [];
+    const report = await assertUrlsOnChain([BASE_OK, ETH_WRONG], 8453, {
+      probe: async (url) => (url === BASE_OK ? 8453 : 1),
+      log: { warn: (msg) => warns.push(msg) },
+    });
+
+    expect(report.matching).toEqual([BASE_OK]);
+    expect(warns.some((m) => m.includes("eth-wrong.example"))).toBe(true);
+    // Không in API key/path đầy đủ vào log.
+    expect(warns.join(" ")).not.toContain("apikey");
+    expect(warns.join(" ")).not.toContain("secret");
+  });
+
+  it("tất cả endpoint trả sai chain ⇒ CHAIN_ID_MISMATCH (fatal), details chỉ có hostname", async () => {
+    const err = await assertUrlsOnChain([ETH_WRONG], 8453, {
+      probe: async () => 1,
+      log: { warn: () => {} },
+    }).catch((e) => e);
+
+    expect(err.code).toBe("CHAIN_ID_MISMATCH");
+    expect(isRetryableStartupError(err)).toBe(false);
+    expect(err.details.mismatched).toEqual([{ endpoint: "eth-wrong.example", chainId: 1 }]);
+    expect(JSON.stringify(err.details)).not.toContain("secret");
+    expect(err.message).toContain("eth-wrong.example");
+  });
+
+  it("tất cả endpoint không phản hồi ⇒ RPC_CHAIN_PROBE_FAILED (retryable)", async () => {
+    const err = await assertUrlsOnChain([BASE_OK], 8453, {
+      probe: async () => { throw new Error("ECONNREFUSED"); },
+      log: { warn: () => {} },
+    }).catch((e) => e);
+
+    expect(err.code).toBe("RPC_CHAIN_PROBE_FAILED");
+    expect(isRetryableStartupError(err)).toBe(true);
+  });
+
+  it("danh sách rỗng ⇒ MISSING_RPC_URLS (fatal), không gọi probe", async () => {
+    let called = false;
+    const err = await assertUrlsOnChain([], 8453, {
+      probe: async () => { called = true; return 8453; },
+    }).catch((e) => e);
+
+    expect(err.code).toBe("MISSING_RPC_URLS");
+    expect(called).toBe(false);
+  });
+
+  it("createChainBoundPublicClient chỉ dùng URL đúng chain", async () => {
+    const bound = await createChainBoundPublicClient([BASE_OK, ETH_WRONG], {
+      expectedChainId: 8453,
+      probe: async (url) => (url === BASE_OK ? 8453 : 1),
+      log: { warn: () => {} },
+    });
+
+    expect(bound.urls).toEqual([BASE_OK]);
+    expect(bound.client).toBeDefined();
+    expect(bound.report.matching).toEqual([BASE_OK]);
   });
 });

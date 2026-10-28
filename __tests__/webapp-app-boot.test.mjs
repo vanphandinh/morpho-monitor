@@ -25,6 +25,8 @@ import { browserSources } from "./helpers/browser-modules.mjs";
 import { installBrowserEnv, readWebappHtml } from "./helpers/dom-stub.mjs";
 
 const html = readWebappHtml();
+// Địa chỉ Monad khác Ethereum: nếu banner còn hardcode 0xBBBB… test này đỏ.
+const MONAD_MORPHO = "0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee";
 /** id app tự chèn rồi tra lại (vd `tx-verify-note`) — hợp lệ nếu module nào đó sinh `id="x"`. */
 const selfInjectedIds = new Set(
   browserSources().flatMap((source) => [...source.matchAll(/id="([^"]+)"/g)].map((m) => m[1]))
@@ -41,6 +43,7 @@ beforeAll(async () => {
       markets: [{ id: "0x" + "a".repeat(64), minLiquidity: "5000", suddenDrainMultiplier: 2 }],
       lenderAddress: "0x" + "1".repeat(40),
       proxyRpcUrl: "http://127.0.0.1:8545",
+      morphoBlueAddress: MONAD_MORPHO,
       rpcUrls: ["http://127.0.0.1:1"], // endpoint chết: không rời khỏi máy, và fetch đã bị thay
     },
     selfInjectedIds,
@@ -73,6 +76,8 @@ describe("webapp-app.mjs — module evaluate được trong môi trường giố
 
     await listeners[0](); // = init() của app
 
+    // Banner bảo mật phải hiện đúng Morpho Blue của chain đang cấu hình, không phải Ethereum.
+    expect(env.elements.get("morpho-blue-address").textContent).toBe(MONAD_MORPHO);
     // init() đã chạy tới nhánh catch: banner lỗi có nội dung, loading đã tắt.
     expect(env.elements.get("error-banner").textContent).toContain("❌");
     expect(env.elements.get("error-banner").style.display).toBe("block");

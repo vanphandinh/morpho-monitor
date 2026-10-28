@@ -497,6 +497,37 @@ describe("verifyPublicRpcs — chu trình catalog → probe → cache", () => {
     expect(catalogParses).toBe(1); // json() không được gọi lại ở chu kỳ 304
   });
 
+  it("cache candidate của chain khác KHÔNG được dùng để revalidate 304", async () => {
+    const cachePath = tmpFile();
+    const etag = '"W/base-cache"';
+    // Cache này được tạo bởi deployment Base; deployment ETH dùng chung path
+    // không được gửi If-None-Match với candidate của Base.
+    fs.writeFileSync(cachePath, JSON.stringify({
+      version: 1,
+      chainId: 8453,
+      verifiedAt: new Date().toISOString(),
+      urls: ["https://base.example.com/rpc"],
+      probe: {},
+      catalogEtag: etag,
+      candidateUrls: ["https://base.example.com/rpc"],
+    }));
+    let sawIfNoneMatch = false;
+    const fetcher = async (url, init = {}) => {
+      if (url === CHAINLIST_CATALOG_URL) {
+        if (init.headers?.["if-none-match"]) sawIfNoneMatch = true;
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => CATALOG };
+      }
+      return makeGoodFetcher()(url, init);
+    };
+    const r = await verifyPublicRpcs({
+      cachePath, chainId: 1, minEndpoints: 1,
+      fetchImpl: fetcher, timeoutMs: 1000, interRequestDelayMs: 0, log: () => {},
+    });
+    expect(sawIfNoneMatch).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(r.urls).toContain(GOOD_RPC);
+  });
+
   it("cache cũ v1 (thiếu catalogEtag/candidateUrls) ⇒ chu kỳ sau fetch 200 bình thường, không gửi If-None-Match", async () => {
     const cachePath = tmpFile();
     fs.writeFileSync(cachePath, JSON.stringify({ version: 1, verifiedAt: new Date().toISOString(), urls: [GOOD_RPC], probe: {} }));
@@ -523,7 +554,7 @@ describe("readVerifiedCache — tuổi + shape + hỏng", () => {
   it("cache tươi + đúng shape ⇒ trả urls + verifiedAt", () => {
     const p = tmpFile();
     fs.writeFileSync(p, JSON.stringify({ version: 1, verifiedAt: new Date().toISOString(), urls: [GOOD_RPC], probe: {} }));
-    const r = readVerifiedCache(p, { maxAgeHours: 48 });
+    const r = readVerifiedCache(p, { maxAgeHours: 48, minEndpoints: 1 });
     expect(r).not.toBe(null);
     expect(r.urls).toEqual([GOOD_RPC]);
   });
@@ -569,7 +600,31 @@ describe("readVerifiedCache — tuổi + shape + hỏng", () => {
       urls: [GOOD_RPC, "http://evil.example.com", 42],
       probe: {},
     }));
-    const r = readVerifiedCache(p, { maxAgeHours: 48 });
+    const r = readVerifiedCache(p, { maxAgeHours: 48, minEndpoints: 1 });
     expect(r.urls).toEqual([GOOD_RPC]);
+  });
+
+  it("cache dưới ngưỡng tối thiểu ⇒ null, KHÔNG xoá/rename file", () => {
+    const p = tmpFile();
+    fs.writeFileSync(p, JSON.stringify({
+      version: 1,
+      verifiedAt: new Date().toISOString(),
+      urls: [GOOD_RPC, SLOW_RPC],
+      probe: {},
+    }));
+    expect(readVerifiedCache(p, { maxAgeHours: 48, minEndpoints: 4 })).toBe(null);
+    expect(fs.existsSync(p)).toBe(true);
+    expect(fs.existsSync(p + ".corrupt")).toBe(false);
+  });
+
+  it("ngưỡng thấp hơn ⇒ cache 2 URL vẫn dùng được (caller chủ động hạ ngưỡng)", () => {
+    const p = tmpFile();
+    fs.writeFileSync(p, JSON.stringify({
+      version: 1,
+      verifiedAt: new Date().toISOString(),
+      urls: [GOOD_RPC, SLOW_RPC],
+      probe: {},
+    }));
+    expect(readVerifiedCache(p, { maxAgeHours: 48, minEndpoints: 2 }).urls).toEqual([GOOD_RPC, SLOW_RPC]);
   });
 });

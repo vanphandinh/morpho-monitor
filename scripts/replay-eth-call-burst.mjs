@@ -6,8 +6,8 @@
  * Mô phỏng đúng pattern nghi vấn:
  *   Phase A — burst số lượng: 4 đợt × 12 eth_call nhỏ đồng thời (như Ambire poll portfolio).
  *   Phase B — payload lớn: 2 đợt × 4 eth_call ~32KB + stateOverride (multicall sim thật).
- * Chạy QUA createRobustPublicClient của project (round-robin + retry×2 + circuit breaker)
- * nên circuit OPEN / "RPC Request failed" xuất hiện y như production.
+ * Chạy QUA createChainBoundPublicClient của project (lọc chain từng URL + round-robin
+ * + circuit breaker) nên circuit OPEN / "RPC Request failed" xuất hiện y như production.
  *
  * RED (exit 1) khi: có request hỏng tầng transport / timeout, HOẶC ≥1 URL bị
  * circuit breaker ghi nhận failure. GREEN (exit 0) = không tái hiện.
@@ -16,19 +16,18 @@
  *   node --env-file=.env scripts/replay-eth-call-burst.mjs
  *   docker compose --profile debug run --rm probe-burst
  */
-import { createRobustPublicClient, circuits } from "../rpc-client.mjs";
+import { createChainBoundPublicClient, circuits } from "../rpc-client.mjs";
+import { CHAIN_ID, CHAIN_NAME, MORPHO_BLUE_ADDRESS, RPC_URLS } from "../shared.mjs";
 
-const RPC_URLS = (process.env.RPC_URLS ?? "https://ethereum-rpc.publicnode.com")
-  .split(",")
-  .map((u) => u.trim())
-  .filter(Boolean);
-const MORPHO = process.env.MORPHO_BLUE_ADDRESS
-  ?? "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb";
+const MORPHO = MORPHO_BLUE_ADDRESS;
+const SELECTOR_ID_TO_MARKET_PARAMS = "0x2c3c9157";
+const ZERO_MARKET_ID = "0".repeat(64);
 
-const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
-const SEL_DECIMALS = "0x313ce567";
-
-const smallParams = () => [{ to: USDC, data: SEL_DECIMALS }, "latest"];
+// Gọi view không revert trên Morpho Blue của chain đang chạy — không phụ thuộc USDC.
+const smallParams = () => [
+  { to: MORPHO, data: SELECTOR_ID_TO_MARKET_PARAMS + ZERO_MARKET_ID },
+  "latest",
+];
 const bigParams = (i) => {
   // ~32KB data → Morpho Blue fallback revert nhanh; kích thước là điều ta đo,
   // execution cost không quan trọng. 1/2 call kèm stateOverride như Ambire.
@@ -50,7 +49,7 @@ function classify(err) {
   return "other";
 }
 
-const client = createRobustPublicClient(RPC_URLS);
+const { client } = await createChainBoundPublicClient(RPC_URLS);
 const tally = { transport: 0, timeout: 0, revert: 0, other: 0, ok: 0 };
 const firstErrs = new Map();
 
@@ -74,7 +73,7 @@ async function wave(label, n, paramsFor) {
   return bad;
 }
 
-console.log(`[DEBUG-br2] Replay burst qua ${RPC_URLS.length} endpoint — ${new Date().toISOString()}`);
+console.log(`[DEBUG-br2] Replay burst ${CHAIN_NAME} (${CHAIN_ID}) qua ${RPC_URLS.length} endpoint — ${new Date().toISOString()}`);
 const t0 = Date.now();
 
 for (let w = 1; w <= 4; w++) await wave(`Phase A đợt ${w}/4 (12 nhỏ)`, 12, smallParams);

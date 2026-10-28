@@ -92,13 +92,15 @@ export function clearVoipTokenCache() {
  * @param {object} collateralToken - Token metadata (symbol, decimals)
  * @param {object} position - Vị thế lender (supplyAssets)
  * @param {string} scenario - "sudden_drain" | "liquidity_appeared"
+ * @param {string|null} [chainName] - Tên chain (Base/Monad) để TTS nói rõ deployment
  * @returns {string} Tin nhắn tiếng Việt có dấu
  */
-export function buildVoipMessage(market, loanToken, collateralToken, position, scenario) {
+export function buildVoipMessage(market, loanToken, collateralToken, position, scenario, chainName = null) {
   const loanSymbol = toTtsFriendly(loanToken?.symbol);
   const collateralSymbol = toTtsFriendly(collateralToken?.symbol);
   const loanDecimals = loanToken?.decimals ?? 18;
   const isSuddenDrain = scenario === "sudden_drain";
+  const chainPrefix = chainName ? `Trên ${chainName}. ` : "";
 
   const liquidityStr = formatTokenAmount(market.liquidity, loanDecimals, loanSymbol);
   const supplyStr = formatTokenAmount(position.supplyAssets, loanDecimals, loanSymbol);
@@ -107,7 +109,7 @@ export function buildVoipMessage(market, loanToken, collateralToken, position, s
 
   if (isSuddenDrain) {
     return (
-      `Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol} & ${loanSymbol} đã giảm mạnh. ` +
+      `${chainPrefix}Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol} & ${loanSymbol} đã giảm mạnh. ` +
       `Thanh khoản hiện tại: ${liquidityStr}. ` +
       `Vị thế của bạn: ${supplyStr}. ` +
       `Tỉ lệ sử dụng: ${utilizationStr}. ` +
@@ -116,7 +118,7 @@ export function buildVoipMessage(market, loanToken, collateralToken, position, s
     );
   } else {
     return (
-      `Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol} & ${loanSymbol}. ` +
+      `${chainPrefix}Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol} & ${loanSymbol}. ` +
       `Thanh khoản hiện tại: ${liquidityStr}. ` +
       `Vị thế của bạn: ${supplyStr}. ` +
       `Tỉ lệ sử dụng: ${utilizationStr}. ` +
@@ -369,6 +371,7 @@ export async function sendVoipNotification(
     target = VOIP_TARGET,
     maxRetries = VOIP_MAX_RETRIES,
     retryDelayMs = VOIP_RETRY_DELAY_MS,
+    chainName = null,
   } = {}
 ) {
   // Không có secret key → tắt tính năng VoIP
@@ -382,7 +385,8 @@ export async function sendVoipNotification(
     loanToken,
     collateralToken,
     position,
-    scenario
+    scenario,
+    chainName
   );
 
   // Đảm bảo không vượt quá 500 ký tự

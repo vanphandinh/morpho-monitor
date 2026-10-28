@@ -5,10 +5,9 @@
  */
 
 import { createPublicClient, http } from "viem";
-import { mainnet } from "viem/chains";
 import { computeBorrowAssets, computeLiquidity, computeSupplyAssets, computeUtilization, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
 import { esc, formatToken, row } from "./webapp-render.mjs";
-import { ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
+import { CHAIN, CHAIN_ID, CHAIN_NAME, ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 
 /**
  * Fallback transport — bản rút gọn của server-side round-robin transport.
@@ -43,20 +42,69 @@ function fallbackTransport(urls, opts = {}) {
   };
 }
 
-export async function createRpcClient() {
-  const client = createPublicClient({
-    chain: mainnet,
-    transport: fallbackTransport(RPC_URLS, { timeout: 15000 }),
+/**
+ * Chọn URL từ kết quả probe. Pure để test được không cần browser/RPC.
+ * expectedChainId null/không hợp lệ ⇒ giữ hành vi cũ: dùng toàn bộ URL.
+ * @param {Array<{url: string, chainId: number|null}>} probes
+ * @param {number|null} expectedChainId
+ * @returns {string[]}
+ */
+export function selectChainRpcUrls(probes, expectedChainId) {
+  const expected = Number(expectedChainId);
+  if (!Number.isSafeInteger(expected) || expected <= 0) {
+    return probes.map((p) => p?.url).filter((url) => typeof url === "string" && url.trim());
+  }
+  return probes.filter((p) => Number(p?.chainId) === expected).map((p) => p.url);
+}
+
+/** Probe eth_chainId của một URL bằng một client riêng, timeout ngắn. */
+async function probeBrowserChainId(url) {
+  const probe = createPublicClient({
+    transport: http(url, { timeout: 2_000, retryCount: 0 }),
   });
-  // Startup health check — chỉ fail nếu TẤT CẢ URL đều down
-  await client.getChainId();
-  return client;
+  return Number(await probe.getChainId());
+}
+
+export async function createRpcClient() {
+  if (RPC_URLS.length === 0) {
+    throw new Error("Thiếu danh sách RPC cho browser (PUBLIC_RPC_URLS/config/chains.json) — không thể đọc dữ liệu on-chain.");
+  }
+
+  // Không chỉ kiểm một URL: probe TẤT CẢ song song rồi chỉ dùng URL đúng chain.
+  // Một endpoint sai chain không được phép trả eth_call/eth_getLogs/nonce.
+  let usableUrls = RPC_URLS;
+  if (CHAIN_ID) {
+    const settled = await Promise.allSettled(
+      RPC_URLS.map(async (url) => ({ url, chainId: await probeBrowserChainId(url) }))
+    );
+    const probes = settled.map((result, index) => result.status === "fulfilled"
+      ? result.value
+      : { url: RPC_URLS[index], chainId: null });
+    usableUrls = selectChainRpcUrls(probes, CHAIN_ID);
+    if (usableUrls.length === 0) {
+      const sawWrongChain = probes.some((p) => Number.isSafeInteger(p.chainId));
+      const err = new Error(
+        `❌ Không có RPC endpoint nào trả đúng chain ${CHAIN_ID}${CHAIN_NAME ? ` (${CHAIN_NAME})` : ""}.\n` +
+          "   → Kiểm tra PUBLIC_RPC_URLS / CHAIN_ID; không đọc dữ liệu của chain khác."
+      );
+      err.code = sawWrongChain ? "CHAIN_ID_MISMATCH" : "RPC_CHAIN_PROBE_FAILED";
+      throw err;
+    }
+  }
+
+  return createPublicClient({
+    chain: CHAIN || undefined,
+    transport: fallbackTransport(usableUrls, { timeout: 15000 }),
+  });
 }
 
 // ============================================================
 // FETCH DATA
 // ============================================================
 export async function fetchAllData() {
+  if (!MORPHO_BLUE) {
+    throw new Error("Thiếu địa chỉ Morpho Blue trong cấu hình webapp — kiểm tra config/chains.json.");
+  }
   // Fetch market params
   const params = await state.publicClient.readContract({
     address: MORPHO_BLUE,

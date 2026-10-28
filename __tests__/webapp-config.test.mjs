@@ -121,17 +121,18 @@ describe("webapp.html hygiene (M2)", () => {
     }
   });
 
-  it("dùng CFG.rpcUrls do server inject, với fallback keyless", () => {
+  it("dùng CFG.rpcUrls do server inject, không hardcode fallback Ethereum", () => {
     // P5: RPC_URLS nay ở webapp-state.mjs (lớp lá) ⇒ kiểm trên toàn webapp.
-    expect(webapp).toMatch(/const RPC_URLS = \(Array\.isArray\(CFG\.rpcUrls\)/);
-    expect(webapp).toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
+    // Multi-chain: chain khác phải nhận RPC của chính nó; fallback ETH hardcode
+    // sẽ khiến webapp Base đọc nhầm chain hoặc lộ danh sách không liên quan.
+    expect(webapp).toMatch(/const RPC_URLS = Array\.isArray\(CFG\.rpcUrls\)/);
+    expect(webapp).not.toMatch(/https:\/\/ethereum-rpc\.publicnode\.com/);
+    expect(webapp).not.toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
+    expect(webapp).not.toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
     // Round-4 phụ lục (2026-09-25): ankr key-less ĐÃ CHẾT — trả -32000
     // "Unauthorized: You must authenticate with an API key". Giữ nó trong
     // fallback là lỗi cấu hình, phải pin KHÔNG CÒN.
     expect(webapp).not.toMatch(/rpc\.ankr\.com\/eth/);
-    // 2 endpoint thay thế đã probe thật (CORS mở, chainId=0x1).
-    expect(webapp).toMatch(/https:\/\/eth-mainnet\.public\.blastapi\.io/);
-    expect(webapp).toMatch(/https:\/\/gateway\.tenderly\.co\/public\/mainnet/);
     // Audit 2026-09-27: nodies.app TRẢ ACAO cho POST nhưng im lặng với OPTIONS
     // preflight ⇒ browser chặn POST. Endpoint vô dụng cho browser — pin KHÔNG CÒN.
     expect(webapp).not.toMatch(/nodies\.app/);
@@ -251,8 +252,9 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
     expect(webapp).not.toMatch(/await assertProxyNetwork\(\)/);
   });
 
-  it("nút Thêm Mạng Proxy: message thành công như main + giữ hướng dẫn khi ví chặn method", () => {
-    expect(app).toContain('✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>Ethereum Proxy Sign</b>.');
+  it("nút Thêm Mạng Proxy: message động theo chain + giữ hướng dẫn khi ví chặn method", () => {
+    expect(app).toMatch(/Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>\$\{esc\(CHAIN_NAME/);
+    expect(app).toMatch(/Proxy Sign<\/b>/);
     // UX-only: chỉ hướng dẫn thủ công, không chặn gì.
     expect(app).toMatch(/msg\.includes\("corresponding handler"\)/);
     expect(app).toMatch(/nút webapp không thể thêm mạng hộ bạn/);

@@ -1,6 +1,14 @@
-import { formatUnits, recoverMessageAddress } from "viem";
+import { formatUnits, getAddress, isAddress, recoverMessageAddress } from "viem";
 import dns from "node:dns";
 import net from "node:net";
+import {
+  BUILTIN_ETH_CHAIN,
+  CHAIN_CONFIG_INVALID,
+  CHAIN_CONFIG_MISSING,
+  MORPHO_ADDRESS_MISMATCH,
+  loadChainConfig,
+  resolveChain,
+} from "./chain-config.mjs";
 
 // Docker/VPS thường không có route IPv6. ntfy.sh có AAAA; Node 22 Happy Eyeballs
 // đua IPv6 rồi ném `fetch failed` / ETIMEDOUT (~250ms) thay vì fallback IPv4.
@@ -29,28 +37,120 @@ export const envNum = (key, fallback) => {
   return isNaN(n) ? fallback : n;
 };
 
+/**
+ * Read a comma-separated env list. An explicitly empty value counts as
+ * "not set" so a clone can leave RPC_URLS= blank and use chains.json.
+ */
+export const envList = (key, fallback) => {
+  const raw = process.env[key];
+  const value = raw === undefined || raw.trim() === "" ? fallback : raw;
+  return (Array.isArray(value) ? value : String(value ?? "").split(","))
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+};
+
+// ---- Chain ----
+// Một deployment một chain. Metadata công khai nằm trong config/chains.json;
+// CHAIN_ID chọn entry. Env chỉ override endpoint/địa chỉ khi cần.
+// Không dùng envNum ở đây: một CHAIN_ID gõ sai mà fallback im lặng về 1 sẽ
+// khiến clone Base chạy Ethereum (RPC/market/địa chỉ đều mặc định ETH).
+const rawChainId = process.env.CHAIN_ID;
+export const CHAIN_ID = rawChainId === undefined || rawChainId.trim() === ""
+  ? 1
+  : Number(rawChainId);
+if (!Number.isSafeInteger(CHAIN_ID) || CHAIN_ID <= 0) {
+  throw Object.assign(
+    new Error(`❌ CHAIN_ID không hợp lệ: ${rawChainId}. Phải là số nguyên dương (1, 8453, 143…).`),
+    { code: CHAIN_CONFIG_INVALID }
+  );
+}
+
+let chainConfig;
+try {
+  chainConfig = loadChainConfig(env("CHAIN_CONFIG_FILE", "./config/chains.json"));
+} catch (err) {
+  // Deployment ETH cũ có thể chưa có file này trên host (bind mount ./config).
+  // Chỉ fallback cho chain 1; chain khác phải có config để tránh chạy sai chain.
+  if (err?.code === CHAIN_CONFIG_MISSING && Number(CHAIN_ID) === 1) {
+    console.warn(`[config] ${err.message}\n   → Tạm dùng metadata ETH built-in; hãy copy config/chains.json lên host.`);
+    chainConfig = { version: 1, chains: [BUILTIN_ETH_CHAIN] };
+  } else {
+    throw err;
+  }
+}
+
+export const CHAIN = resolveChain(chainConfig, CHAIN_ID);
+export const CHAIN_NAME = env("CHAIN_NAME", "") || CHAIN.name;
+// Explorer URL đi vào href của webapp công khai ⇒ chỉ chấp nhận http(s).
+// Env override không được phép biến link tx thành javascript:/data:.
+const configuredExplorerUrl = env("EXPLORER_URL", "").trim();
+if (configuredExplorerUrl) {
+  let parsed;
+  try {
+    parsed = new URL(configuredExplorerUrl);
+  } catch {
+    throw Object.assign(
+      new Error(`❌ EXPLORER_URL không phải URL hợp lệ: ${configuredExplorerUrl}`),
+      { code: CHAIN_CONFIG_INVALID }
+    );
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw Object.assign(
+      new Error(`❌ EXPLORER_URL phải là http(s): ${configuredExplorerUrl}`),
+      { code: CHAIN_CONFIG_INVALID }
+    );
+  }
+}
+export const EXPLORER_URL = configuredExplorerUrl || CHAIN.explorerUrl;
+export const EXPLORER_NAME = env("EXPLORER_NAME", "") || CHAIN.explorerName;
+export const NATIVE_CURRENCY = CHAIN.nativeCurrency;
+
 // ---- Morpho Blue ----
-// Multi-market configuration is intentionally file-backed and there is no
-// environment-variable fallback: a deployment must explicitly opt into every
-// market it wants to monitor (see market-config.mjs → preflightMarketsFile).
+// Multi-market configuration is intentionally file-backed: a deployment must
+// explicitly opt into every market it wants to monitor (see market-config.mjs).
 export const MARKETS_FILE = env("MARKETS_FILE", "./config/markets.json");
 export const LENDER_ADDRESS = env("LENDER_ADDRESS",
   "0x0000000000000000000000000000000000000000");
-export const MORPHO_BLUE_ADDRESS = env("MORPHO_BLUE_ADDRESS",
-  "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb");
+
+const configuredMorpho = env("MORPHO_BLUE_ADDRESS", "").trim();
+if (configuredMorpho && !isAddress(configuredMorpho)) {
+  throw Object.assign(new Error(`MORPHO_BLUE_ADDRESS không hợp lệ: ${configuredMorpho}`), {
+    code: MORPHO_ADDRESS_MISMATCH,
+  });
+}
+if (configuredMorpho && configuredMorpho.toLowerCase() !== CHAIN.morphoBlueAddress.toLowerCase()) {
+  const allowed = /^(1|true|yes)$/i.test(env("ALLOW_CUSTOM_MORPHO", ""));
+  if (!allowed) {
+    throw Object.assign(
+      new Error(
+        `❌ MORPHO_BLUE_ADDRESS=${configuredMorpho} không khớp chain ${CHAIN_NAME} (${CHAIN_ID}): ${CHAIN.morphoBlueAddress}\n` +
+          "   → Bỏ trống để lấy từ config/chains.json, hoặc set ALLOW_CUSTOM_MORPHO=1 nếu đây là fork."
+      ),
+      { code: MORPHO_ADDRESS_MISMATCH }
+    );
+  }
+}
+export const MORPHO_BLUE_ADDRESS = configuredMorpho
+  ? getAddress(configuredMorpho)
+  : CHAIN.morphoBlueAddress;
 
 // ---- RPC ----
-export const RPC_URLS = env("RPC_URLS",
-  "https://ethereum-rpc.publicnode.com"
-).split(",").map(u => u.trim()).filter(Boolean);
+// Ưu tiên env (endpoint riêng có key) > public RPC mặc định của chain.
+export const RPC_URLS = envList("RPC_URLS", CHAIN.publicRpcUrls);
+if (RPC_URLS.length === 0) {
+  throw Object.assign(
+    new Error("RPC_URLS đang trống và chain config không có publicRpcUrls."),
+    { code: "MISSING_RPC_URLS" }
+  );
+}
 
 // ---- RPC công khai cho browser (webapp) ----
 // Round-4 audit (quota, 2026-09-25): RPC_URLS toàn endpoint kèm API key, mà
 // webapp public (docker publish :3000) inject config này vào window.MORPHO_CONFIG
 // ⇒ mỗi visitor bóc lịch được toàn bộ key. Browser KHÔNG BAO GIỜ nhận RPC_URLS:
-// mặc định là 8 endpoint key-less đã PROBE THẬT (chainId=0x1, CORS mở, đủ
-// eth_call/eth_getLogs/receipt; probe gần nhất 2026-09-27: docs/plans/
-// 2026-09-27-public-rpc-list-update.md).
+// mặc định là publicRpcUrls của chain đang chạy. Riêng Ethereum là 8 endpoint
+// key-less đã PROBE THẬT (chainId=0x1, CORS mở, đủ eth_call/eth_getLogs/receipt;
+// probe gần nhất 2026-09-27: docs/plans/2026-09-27-public-rpc-list-update.md).
 // Đã LOẠI kèm bằng chứng probe (đừng thêm lại):
 //   • rpc.ankr.com/eth key-less — chết: -32000 "Unauthorized ... API key" (2026-09-25)
 //   • eth.meowrpc.com — 429 thất thường (tái hiện: 200 → 429 → 200 trong 3 request
@@ -62,18 +162,7 @@ export const RPC_URLS = env("RPC_URLS",
 // Lớp hybrid (2026-09-27): webapp-server còn tự fetch catalog chainlist + probe,
 // kết quả ghi cache và ƯU TIÊN TRÊN danh sách tĩnh này (xem public-rpc-health.mjs);
 // operator vẫn override bằng PUBLIC_RPC_URLS (thắng cả lớp động).
-export const PUBLIC_RPC_URLS = env("PUBLIC_RPC_URLS",
-  [
-    "https://ethereum-rpc.publicnode.com",
-    "https://eth.drpc.org",
-    "https://eth-mainnet.public.blastapi.io",
-    "https://gateway.tenderly.co/public/mainnet",
-    "https://1rpc.io/eth",
-    "https://eth.blockrazor.xyz",
-    "https://rpc-eth.blockmachine.io",
-    "https://rpc.mevblocker.io",
-  ].join(",")
-).split(",").map(u => u.trim()).filter(Boolean);
+export const PUBLIC_RPC_URLS = envList("PUBLIC_RPC_URLS", CHAIN.publicRpcUrls);
 
 // ---- Lớp hybrid RPC công khai (public-rpc-health.mjs) ----
 // Danh sách tĩnh trên chỉ là FALLBACK: định kỳ server fetch catalog chainlist
@@ -92,11 +181,13 @@ export const PUBLIC_RPC_PROBE_TIMEOUT_MS = envNum("PUBLIC_RPC_PROBE_TIMEOUT_MS",
 
 // ---- WebSocket RPC (real-time event trigger, tùy chọn) ----
 // WSS endpoints để nhận events real-time từ Morpho Blue.
-// Để trống để chạy HTTP-only mode. Phân cách bằng dấu phẩy.
+// KHÔNG set ⇒ dùng wsRpcUrls của chain; set rỗng (`WSS_URLS=`) ⇒ HTTP-only.
+// Phân cách bằng dấu phẩy.
 // VD: wss://ethereum-rpc.publicnode.com,wss://eth-mainnet.g.alchemy.com/v2/KEY
-export const WSS_URLS = env("WSS_URLS",
-  "wss://ethereum-rpc.publicnode.com"
-).split(",").map(u => u.trim()).filter(Boolean);
+const rawWssUrls = process.env.WSS_URLS;
+export const WSS_URLS = rawWssUrls === undefined
+  ? [...(CHAIN.wsRpcUrls ?? [])]
+  : rawWssUrls.split(",").map((url) => url.trim()).filter(Boolean);
 
 // Debounce window cho WebSocket events (ms) — gộp nhiều events trong cùng block
 // thành 1 lần check duy nhất để tránh gọi fetchMarket() quá nhiều.
@@ -169,7 +260,8 @@ export const PROXY_RPC_URL = (() => {
 export const MAX_BODY_BYTES = envNum("MAX_BODY_BYTES", 1_048_576); // 1 MiB
 
 // ---- Misc ----
-export const ETHERSCAN_BASE_URL = "https://etherscan.io";
+// Deprecated alias: code mới dùng EXPLORER_URL. Giữ để test/caller cũ không gãy.
+export const ETHERSCAN_BASE_URL = EXPLORER_URL;
 
 // ============================================================
 // HELPERS

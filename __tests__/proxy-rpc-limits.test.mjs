@@ -37,6 +37,7 @@ function makeHandler(options = {}) {
     markets: MARKETS,
     lenderAddress: LENDER,
     morphoBlueAddress: MORPHO,
+    chainId: 1,
     client: fakeClient,
     capturedTxs: [],
     logger: { log: () => {}, warn: () => {}, error: () => {} },
