@@ -126,15 +126,19 @@ export async function verifyWithdrawCalldata(signedTx, expected) {
   }
 
   // Chain-binding của chữ ký: bundle ký cho Base/Monad không được broadcast qua
-  // RPC Ethereum và ngược lại. Nếu caller không truyền chain (CLI verify bundle
-  // cũ), bỏ qua kiểm này; production luôn truyền chainId từ config.
-  if (expected.chainId != null && Number(expected.chainId) > 0 &&
-      tx.chainId != null && Number(tx.chainId) !== Number(expected.chainId)) {
-    return {
-      ok: false,
-      code: VERIFY_BUNDLE_INVALID,
-      error: `chainId ${tx.chainId} !== ${expected.chainId}`,
-    };
+  // RPC Ethereum và ngược lại. Fail closed cả trường hợp tx không khai chainId
+  // (legacy pre-EIP-155): tx đó có thể replay sang chain khác, không được coi là
+  // hợp lệ khi deployment đã biết chain. Caller không truyền chainId (test/CLI
+  // cũ) vẫn giữ hành vi cũ.
+  if (expected.chainId != null && Number(expected.chainId) > 0) {
+    const txChainId = tx.chainId == null ? null : Number(tx.chainId);
+    if (txChainId !== Number(expected.chainId)) {
+      return {
+        ok: false,
+        code: VERIFY_BUNDLE_INVALID,
+        error: `chainId ${txChainId ?? "missing"} !== ${expected.chainId}`,
+      };
+    }
   }
 
   if (expected.nonce != null && expected.nonce !== "" && Number(tx.nonce) !== Number(expected.nonce)) {

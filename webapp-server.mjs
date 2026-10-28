@@ -25,6 +25,7 @@ import {
   PUBLIC_RPC_CACHE_MAX_AGE_HOURS,
   CHAIN_ID,
   MORPHO_BLUE_ADDRESS,
+  envList,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
@@ -74,7 +75,9 @@ try {
     proxyRpcUrl: PROXY_RPC_URL,
     chainId: CHAIN_ID,
     morphoBlueAddress: MORPHO_BLUE_ADDRESS,
-    operatorOverrodePublicRpcs: process.env.PUBLIC_RPC_URLS !== undefined,
+    // `PUBLIC_RPC_URLS=` (rỗng) nghĩa là "dùng config", không phải override.
+    // envList cũng bỏ khoảng trắng/phần tử rỗng, khớp .env.example.
+    operatorOverrodePublicRpcs: envList("PUBLIC_RPC_URLS", []).length > 0,
     refreshEnabled: PUBLIC_RPC_REFRESH_HOURS > 0,
     refreshHoursMs: refreshHoursToMs(PUBLIC_RPC_REFRESH_HOURS),
     cachePath: path.join(__dirname, PUBLIC_RPC_HEALTH_PATH),

@@ -176,4 +176,20 @@ describe("durable lifecycle alert outbox", () => {
     await drain(filePath, send);
     expect(send).toHaveBeenCalledOnce();
   });
+
+  it("drain gắn chain hiện tại vào message, kể cả alert đã nằm trong outbox từ trước", async () => {
+    const filePath = fixture({ a: pending(3) });
+    await run(filePath, { getTransactionCount: async () => 4 });
+    const sent = [];
+    await drainLifecycleAlerts({
+      filePath,
+      updateRegistry,
+      send: async (alert) => { sent.push(alert); },
+      now: () => BASE,
+      logger: silent,
+      chain: { id: 8453, name: "Base" },
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].message).toContain("Chain: Base (8453)");
+  });
 });

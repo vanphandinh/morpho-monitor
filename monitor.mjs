@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { CHAIN, CHAIN_ID, CHAIN_NAME, LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, PRESIGN_EXPIRED_RETENTION_MINUTES, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
 import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "./monitor-rules.mjs";
-import { createRobustPublicClient, addGlobalErrorHandlers, assertClientChain } from "./rpc-client.mjs";
+import { createChainBoundPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
 import { createMarketReader } from "./market-reader.mjs";
 import { updateRegistry } from "./presigned-store.mjs";
@@ -286,8 +286,8 @@ async function main() {
   // Audit vòng 2: 2s sticky để các lần đọc liên tiếp trong cùng chu kỳ nhìn CÙNG một
   // node — đặc biệt cặp bằng chứng receipt → nonce khi nhả claim (xoay sang node khác
   // sẽ trộn hai góc nhìn lệch nhau). Chỉ bật ở monitor để giữ blast radius nhỏ.
-  const publicClient = createRobustPublicClient(RPC_URLS, { chain: CHAIN.chain, stickyMs: 2_000 });
-  await assertClientChain(publicClient, CHAIN_ID);
+  let publicClient;
+  let activeRpcCount = 0;
   const topic = NTFY_TOPIC || `morpho-monitor-${crypto.randomBytes(4).toString("hex")}`;
 
   // R1: claim bị tx khác thay thế / cần đối soát tay / xung đột nonce là những ca
@@ -300,10 +300,18 @@ async function main() {
   // O3: RPC có thể chưa sẵn sàng lúc container vừa lên — thử lại có giới hạn (~30s). Lỗi
   // config (MARKET_PARAMS_ZERO) KHÔNG bị thử lại: `retryStartup` ném ngay. `loadMarkets` ở
   // trên cũng nằm ngoài retry nên thiếu/sai MARKETS_FILE vẫn chết ngay như trước.
-  const reader = await retryStartup(
-    () => createMarketReader({ chainId: CHAIN_ID, client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets })
-  );
-  console.log(`[monitor] ${CHAIN_NAME} (${CHAIN_ID}) — ${markets.length} market(s), ${RPC_URLS.length} HTTP RPC endpoint(s), ${WSS_URLS.length} WSS, topic=${topic}`);
+  const reader = await retryStartup(async () => {
+    // RPC có thể chưa sẵn sàng lúc container vừa lên; chain check cũng phải
+    // nằm trong retry (lỗi lệch chain là fatal, lỗi mạng thì thử lại).
+    const bound = await createChainBoundPublicClient(RPC_URLS, {
+      chain: CHAIN.chain,
+      stickyMs: 2_000,
+    });
+    publicClient = bound.client;
+    activeRpcCount = bound.urls.length;
+    return createMarketReader({ chainId: CHAIN_ID, client: publicClient, lenderAddress: LENDER_ADDRESS, morphoBlueAddress: MORPHO_BLUE_ADDRESS, markets });
+  });
+  console.log(`[monitor] ${CHAIN_NAME} (${CHAIN_ID}) — ${markets.length} market(s), ${activeRpcCount}/${RPC_URLS.length} HTTP RPC endpoint(s), ${WSS_URLS.length} WSS, topic=${topic}`);
 
   const sendNtfyNotification = async (snapshot, scenario) => {
     const { market, position, loanToken, collateralToken, id } = snapshot;
@@ -325,6 +333,7 @@ async function main() {
     drainAlerts: () => drainLifecycleAlerts({
       filePath: PRESIGNED_FILE, updateRegistry,
       send: (alert) => postNtfy({ server: NTFY_SERVER, topic, alert }),
+      chain: CHAIN,
     }),
     sendNotification: createLiquidityNotificationSender({
       sendNtfy: sendNtfyNotification,

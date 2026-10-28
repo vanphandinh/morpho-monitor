@@ -13,14 +13,12 @@
  * (probe chỉ đọc: eth_chainId, eth_blockNumber, eth_call — không tốn phí)
  */
 import { setTimeout as sleep } from "node:timers/promises";
+import { CHAIN_ID, CHAIN_NAME, MORPHO_BLUE_ADDRESS, RPC_URLS } from "../shared.mjs";
 
-const RPC_URLS = (process.env.RPC_URLS ?? "https://ethereum-rpc.publicnode.com")
-  .split(",")
-  .map((u) => u.trim())
-  .filter(Boolean);
-
-const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
-const SELECTOR_DECIMALS = "0x313ce567"; // decimals()
+// idToMarketParams(bytes32) với marketId 0 — view, không revert trên Morpho Blue
+// của bất kỳ chain nào; không còn phụ thuộc USDC/Ethereum.
+const SELECTOR_ID_TO_MARKET_PARAMS = "0x2c3c9157";
+const ZERO_MARKET_ID = "0".repeat(64);
 
 function redactUrl(raw) {
   try {
@@ -88,6 +86,7 @@ async function probeEndpoint(url) {
   const row = {
     endpoint: redactUrl(url),
     chainId: null,
+    chainMismatch: false,
     blockNumber: null,
     ethCall: null,
     ethCallNoTo: null, // dạng deployless-sim KHÔNG có `to` (lớp lỗi "→ ?" trong log)
@@ -95,7 +94,13 @@ async function probeEndpoint(url) {
   };
 
   const chain = await rpc(url, "eth_chainId", []);
-  row.chainId = chain.ok ? chain.result : `FAIL: ${chain.error}`;
+  if (chain.ok) {
+    const actual = Number(chain.result);
+    row.chainId = actual;
+    row.chainMismatch = actual !== CHAIN_ID;
+  } else {
+    row.chainId = `FAIL: ${chain.error}`;
+  }
 
   const blk = await rpc(url, "eth_blockNumber", []);
   row.blockNumber = blk.ok
@@ -104,7 +109,10 @@ async function probeEndpoint(url) {
 
   await sleep(150); // nhẹ nhàng, tránh tự tạo burst
 
-  const call = await rpc(url, "eth_call", [{ to: USDC, data: SELECTOR_DECIMALS }, "latest"]);
+  const call = await rpc(url, "eth_call", [
+    { to: MORPHO_BLUE_ADDRESS, data: SELECTOR_ID_TO_MARKET_PARAMS + ZERO_MARKET_ID },
+    "latest",
+  ]);
   row.ethCall = call.ok
     ? `OK (${call.latencyMs}ms, ${call.result?.slice(0, 10)}...)`
     : `FAIL${call.status ? ` [HTTP ${call.status}]` : ""}: ${call.error}`;
@@ -123,24 +131,39 @@ async function probeEndpoint(url) {
 
 const rows = await Promise.all(RPC_URLS.map(probeEndpoint));
 
-console.log("=== [DEBUG-pr1] RPC endpoint probe —", new Date().toISOString(), "===");
+console.log(`=== [DEBUG-pr1] RPC endpoint probe — ${CHAIN_NAME} (${CHAIN_ID}) — ${new Date().toISOString()} ===`);
 for (const r of rows) {
   console.log(`\n▸ ${r.endpoint}`);
-  console.log(`  chainId      : ${r.chainId}`);
+  console.log(`  chainId      : ${r.chainId}${r.chainMismatch ? " ← SAI CHAIN" : ""}`);
   console.log(`  blockNumber  : ${r.blockNumber}`);
-  console.log(`  eth_call(USDC decimals): ${r.ethCall}`);
+  console.log(`  eth_call(Morpho idToMarketParams(0)): ${r.ethCall}`);
   console.log(`  eth_call(không 'to')   : ${r.ethCallNoTo}`);
 }
 
 const ethCallFails = rows.filter((r) => r.ethCall?.startsWith("FAIL"));
+const chainMismatches = rows.filter((r) => r.chainMismatch);
+const chainProbeFails = rows.filter((r) => typeof r.chainId === "string");
 const rateLimited = rows.filter((r) => r.rateLimited);
 
 console.log("\n=== TÓM TẮT ===");
 console.log(`Endpoints probe: ${rows.length}`);
 console.log(`eth_call thất bại: ${ethCallFails.length}/${rows.length}`);
+if (chainMismatches.length) {
+  console.log(`Sai chain (expected ${CHAIN_ID}): ${chainMismatches.map((r) => r.endpoint).join(", ")}`);
+}
+if (chainProbeFails.length) {
+  console.log(`Không đọc được chain: ${chainProbeFails.map((r) => r.endpoint).join(", ")}`);
+}
 if (rateLimited.length) {
   console.log(`Rate-limited: ${rateLimited.map((r) => r.endpoint).join(", ")}`);
 }
 
-// RED khi tái hiện triệu chứng: upstream eth_call hỏng ở ≥1 endpoint.
-process.exit(ethCallFails.length > 0 ? 1 : 0);
+if (rows.length === 0) {
+  console.error("❌ Không có RPC endpoint nào để probe — kiểm tra RPC_URLS/config/chains.json.");
+  process.exit(1);
+}
+
+// RED khi có eth_call hỏng, endpoint sai chain, hoặc không đọc được chain.
+process.exit(
+  ethCallFails.length > 0 || chainMismatches.length > 0 || chainProbeFails.length > 0 ? 1 : 0
+);

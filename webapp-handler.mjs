@@ -517,7 +517,9 @@ export function createRequestHandler({
         }
         const incoming = sanitizePendingBundle(parsed);
         incoming.marketId = marketId; // v3: bundle tự mang marketId của nó
-        incoming.chainId = CHAIN_ID; // server sở hữu chain — không tin client
+        // Verify TRƯỚC khi stamp chain: bundle khai chain khác bị từ chối với
+        // lỗi chainId rõ ràng (không bị overwrite rồi báo nhầm là bundle hỏng).
+        // Chữ ký vẫn được kiểm chainId thật ở verifyWithdrawCalldata.
         const verified = await verifyPresignedBundle(incoming, {
           chainId: CHAIN_ID,
           morphoBlueAddress: MORPHO_BLUE_ADDRESS,
@@ -527,6 +529,8 @@ export function createRequestHandler({
         if (!verified.ok) {
           throw Object.assign(new Error(`Calldata verify failed: ${verified.error}`), { code: MARKET_INPUT_INVALID });
         }
+        // Server sở hữu chain trong registry — không lưu chainId do client gửi.
+        incoming.chainId = CHAIN_ID;
 
         let outcome;
         await updateRegistry(presignedPath, async (registry) => {

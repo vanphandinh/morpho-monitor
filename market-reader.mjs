@@ -1,6 +1,6 @@
 import { blueAbi } from "@morpho-org/blue-sdk-viem";
 import { AccrualPosition, Market, Position } from "@morpho-org/blue-sdk";
-import { decodeAbiParameters, erc20Abi, parseUnits } from "viem";
+import { decodeAbiParameters, erc20Abi, hexToString, parseUnits } from "viem";
 import { CHAIN_ID, MORPHO_BLUE_ADDRESS } from "./shared.mjs";
 
 /**
@@ -11,6 +11,16 @@ import { CHAIN_ID, MORPHO_BLUE_ADDRESS } from "./shared.mjs";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 /** Error code: configured market id does not exist on-chain (all-zero params). */
 export const MARKET_PARAMS_ZERO = "MARKET_PARAMS_ZERO";
+
+/**
+ * Chain không khai báo Multicall3 (custom chain chưa có entry trong
+ * `viem/chains`) ⇒ viem ném `ChainDoesNotSupportContract` trước khi gửi RPC.
+ * Market reader phải có fallback readContract, nếu không monitor không boot
+ * được trên chain đó.
+ */
+function lacksMulticall(err) {
+  return err?.name === "ChainDoesNotSupportContract";
+}
 
 /**
  * Read Morpho market params directly from the configured Morpho contract.
@@ -43,13 +53,29 @@ async function defaultFetchParams(id, client, { morphoBlueAddress }) {
  * bytes32 on a few legacy tokens; fall back to a raw call and decode bytes32.
  */
 async function defaultFetchToken(address, client) {
-  const [decimalsResult, symbolResult] = await client.multicall({
-    contracts: [
-      { address, abi: erc20Abi, functionName: "decimals" },
-      { address, abi: erc20Abi, functionName: "symbol" },
-    ],
-    allowFailure: true,
-  });
+  const contracts = [
+    { address, abi: erc20Abi, functionName: "decimals" },
+    { address, abi: erc20Abi, functionName: "symbol" },
+  ];
+  let decimalsResult;
+  let symbolResult;
+  try {
+    [decimalsResult, symbolResult] = await client.multicall({
+      contracts,
+      allowFailure: true,
+    });
+  } catch (err) {
+    if (!lacksMulticall(err)) throw err;
+    // Custom chain chưa khai báo Multicall3 — đọc từng field bằng readContract.
+    const read = async (contract) => {
+      try {
+        return { status: "success", result: await client.readContract(contract) };
+      } catch (error) {
+        return { status: "failure", error };
+      }
+    };
+    [decimalsResult, symbolResult] = await Promise.all(contracts.map(read));
+  }
 
   if (decimalsResult.status !== "success") {
     throw new Error(`Cannot read decimals() for token ${address}`);
@@ -60,8 +86,9 @@ async function defaultFetchToken(address, client) {
     try {
       const raw = await client.call({ to: address, data: "0x95d89b41" });
       if (raw?.data && raw.data !== "0x") {
+        // Một số token cũ (MKR/SAI…) trả bytes32 thay vì string.
         const [decoded] = decodeAbiParameters([{ type: "bytes32" }], raw.data);
-        symbol = String(decoded).replace(/\0.*$/, "").trim();
+        symbol = hexToString(decoded).replace(/\0.*$/, "").trim();
       }
     } catch {
       // Symbol is display-only; a token without it still works.
@@ -149,12 +176,29 @@ export async function createMarketReader({
       { address: morphoBlueAddress, abi: blueAbi, functionName: "market", args: [runtime.id] },
       { address: morphoBlueAddress, abi: blueAbi, functionName: "position", args: [runtime.id, lenderAddress] },
     ]);
-    const results = await client.multicall({
-      contracts,
-      blockNumber,
-      allowFailure: true,
-      batchSize: 4096,
-    });
+    let results;
+    try {
+      results = await client.multicall({
+        contracts,
+        blockNumber,
+        allowFailure: true,
+        batchSize: 4096,
+      });
+    } catch (err) {
+      if (!lacksMulticall(err)) throw err;
+      // Fallback per-call khi chain không có Multicall3. Pin cùng blockNumber
+      // để mọi market vẫn đọc ở một góc nhìn thống nhất.
+      results = await Promise.all(contracts.map(async (contract) => {
+        try {
+          return {
+            status: "success",
+            result: await client.readContract({ ...contract, blockNumber }),
+          };
+        } catch (error) {
+          return { status: "failure", error };
+        }
+      }));
+    }
     const snapshots = new Map();
     const failures = new Map();
     for (let i = 0; i < requested.length; i++) {

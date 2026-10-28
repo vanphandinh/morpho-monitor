@@ -107,6 +107,17 @@ export function createWssWatcher({ urls, connect, eventNames, marketIds, onMarke
   async function start(generationAtStart, remainingUrls) {
     if (stopped || generationAtStart !== generation) return false;
     const pool = remainingUrls ?? urls;
+    // `WSS_URLS=` (rỗng) là HTTP-only hợp lệ, không phải "toàn bộ endpoint vừa
+    // chết": không hẹn retry 30s mãi mãi. Retry chỉ dành cho pool rỗng SAU KHI
+    // đã có endpoint (tất cả đều fail), khi đó `urls` không rỗng.
+    if (pool.length === 0) {
+      if (urls.length === 0) {
+        logger.log?.("[WSS] không có endpoint — chạy HTTP-only (polling)");
+        return false;
+      }
+      scheduleRetry(generationAtStart);
+      return false;
+    }
     for (const url of pool) {
       if (stopped || generationAtStart !== generation) return false;
       try {

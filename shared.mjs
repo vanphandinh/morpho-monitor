@@ -3,6 +3,7 @@ import dns from "node:dns";
 import net from "node:net";
 import {
   BUILTIN_ETH_CHAIN,
+  CHAIN_CONFIG_INVALID,
   CHAIN_CONFIG_MISSING,
   MORPHO_ADDRESS_MISMATCH,
   loadChainConfig,
@@ -51,7 +52,18 @@ export const envList = (key, fallback) => {
 // ---- Chain ----
 // Một deployment một chain. Metadata công khai nằm trong config/chains.json;
 // CHAIN_ID chọn entry. Env chỉ override endpoint/địa chỉ khi cần.
-export const CHAIN_ID = envNum("CHAIN_ID", 1);
+// Không dùng envNum ở đây: một CHAIN_ID gõ sai mà fallback im lặng về 1 sẽ
+// khiến clone Base chạy Ethereum (RPC/market/địa chỉ đều mặc định ETH).
+const rawChainId = process.env.CHAIN_ID;
+export const CHAIN_ID = rawChainId === undefined || rawChainId.trim() === ""
+  ? 1
+  : Number(rawChainId);
+if (!Number.isSafeInteger(CHAIN_ID) || CHAIN_ID <= 0) {
+  throw Object.assign(
+    new Error(`❌ CHAIN_ID không hợp lệ: ${rawChainId}. Phải là số nguyên dương (1, 8453, 143…).`),
+    { code: CHAIN_CONFIG_INVALID }
+  );
+}
 
 let chainConfig;
 try {
@@ -69,7 +81,27 @@ try {
 
 export const CHAIN = resolveChain(chainConfig, CHAIN_ID);
 export const CHAIN_NAME = env("CHAIN_NAME", "") || CHAIN.name;
-export const EXPLORER_URL = env("EXPLORER_URL", "") || CHAIN.explorerUrl;
+// Explorer URL đi vào href của webapp công khai ⇒ chỉ chấp nhận http(s).
+// Env override không được phép biến link tx thành javascript:/data:.
+const configuredExplorerUrl = env("EXPLORER_URL", "").trim();
+if (configuredExplorerUrl) {
+  let parsed;
+  try {
+    parsed = new URL(configuredExplorerUrl);
+  } catch {
+    throw Object.assign(
+      new Error(`❌ EXPLORER_URL không phải URL hợp lệ: ${configuredExplorerUrl}`),
+      { code: CHAIN_CONFIG_INVALID }
+    );
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw Object.assign(
+      new Error(`❌ EXPLORER_URL phải là http(s): ${configuredExplorerUrl}`),
+      { code: CHAIN_CONFIG_INVALID }
+    );
+  }
+}
+export const EXPLORER_URL = configuredExplorerUrl || CHAIN.explorerUrl;
 export const EXPLORER_NAME = env("EXPLORER_NAME", "") || CHAIN.explorerName;
 export const NATIVE_CURRENCY = CHAIN.nativeCurrency;
 
@@ -116,9 +148,9 @@ if (RPC_URLS.length === 0) {
 // Round-4 audit (quota, 2026-09-25): RPC_URLS toàn endpoint kèm API key, mà
 // webapp public (docker publish :3000) inject config này vào window.MORPHO_CONFIG
 // ⇒ mỗi visitor bóc lịch được toàn bộ key. Browser KHÔNG BAO GIỜ nhận RPC_URLS:
-// mặc định là 8 endpoint key-less đã PROBE THẬT (chainId=0x1, CORS mở, đủ
-// eth_call/eth_getLogs/receipt; probe gần nhất 2026-09-27: docs/plans/
-// 2026-09-27-public-rpc-list-update.md).
+// mặc định là publicRpcUrls của chain đang chạy. Riêng Ethereum là 8 endpoint
+// key-less đã PROBE THẬT (chainId=0x1, CORS mở, đủ eth_call/eth_getLogs/receipt;
+// probe gần nhất 2026-09-27: docs/plans/2026-09-27-public-rpc-list-update.md).
 // Đã LOẠI kèm bằng chứng probe (đừng thêm lại):
 //   • rpc.ankr.com/eth key-less — chết: -32000 "Unauthorized ... API key" (2026-09-25)
 //   • eth.meowrpc.com — 429 thất thường (tái hiện: 200 → 429 → 200 trong 3 request
@@ -149,9 +181,13 @@ export const PUBLIC_RPC_PROBE_TIMEOUT_MS = envNum("PUBLIC_RPC_PROBE_TIMEOUT_MS",
 
 // ---- WebSocket RPC (real-time event trigger, tùy chọn) ----
 // WSS endpoints để nhận events real-time từ Morpho Blue.
-// Để trống để chạy HTTP-only mode. Phân cách bằng dấu phẩy.
+// KHÔNG set ⇒ dùng wsRpcUrls của chain; set rỗng (`WSS_URLS=`) ⇒ HTTP-only.
+// Phân cách bằng dấu phẩy.
 // VD: wss://ethereum-rpc.publicnode.com,wss://eth-mainnet.g.alchemy.com/v2/KEY
-export const WSS_URLS = envList("WSS_URLS", CHAIN.wsRpcUrls ?? []);
+const rawWssUrls = process.env.WSS_URLS;
+export const WSS_URLS = rawWssUrls === undefined
+  ? [...(CHAIN.wsRpcUrls ?? [])]
+  : rawWssUrls.split(",").map((url) => url.trim()).filter(Boolean);
 
 // Debounce window cho WebSocket events (ms) — gộp nhiều events trong cùng block
 // thành 1 lần check duy nhất để tránh gọi fetchMarket() quá nhiều.

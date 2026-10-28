@@ -190,13 +190,14 @@ async function doWithdraw(assets, shares) {
     const hash = await state.walletClient.writeContract(request);
 
     const txUrl = EXPLORER_URL ? `${EXPLORER_URL.replace(/\/+$/, "")}/tx/${hash}` : null;
-    const txHashHtml = txUrl
-      ? `<a href="${txUrl}" target="_blank">${shortenAddr(hash)}</a>`
+    const safeTxUrl = txUrl ? esc(txUrl) : null;
+    const txHashHtml = safeTxUrl
+      ? `<a href="${safeTxUrl}" target="_blank">${shortenAddr(hash)}</a>`
       : shortenAddr(hash);
     showTxResult("success",
       `✅ Giao dịch đã gửi thành công!<br><br>` +
       `<strong>Tx Hash:</strong> ${txHashHtml}<br>` +
-      (txUrl ? `<a href="${txUrl}" target="_blank">📊 Xem trên ${EXPLORER_NAME} →</a>` : "") +
+      (safeTxUrl ? `<a href="${safeTxUrl}" target="_blank">📊 Xem trên ${esc(EXPLORER_NAME)} →</a>` : "") +
       `<div id="tx-verify-note" class="tx-verify-note">⏳ Đang xác minh giao dịch trên RPC công khai…</div>`
     );
 
@@ -215,7 +216,7 @@ async function doWithdraw(assets, shares) {
         `⚠️ Không thấy giao dịch này trên RPC công khai sau ~${Math.round((TX_VERIFY_ATTEMPTS * TX_VERIFY_DELAY_MS) / 1000)}s. ` +
         `Nếu ví của bạn đang trỏ RPC về proxy (<code>${esc(getProxyUrl())}</code>), giao dịch chỉ được ` +
         `<strong>ghi lại (capture)</strong> để ký sẵn — chưa lên chain. ` +
-        `Hãy thêm mạng thật trong ví rồi đối chiếu link ${EXPLORER_NAME} ở trên.`;
+        `Hãy thêm mạng thật trong ví rồi đối chiếu link ${esc(EXPLORER_NAME)} ở trên.`;
     }).catch(() => {
       // Xác minh là best-effort: lỗi ở đây không được làm hỏng UI.
     });

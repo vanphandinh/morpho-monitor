@@ -318,10 +318,17 @@ function cacheToJSON(verifiedAt, rows, { catalogEtag = null, candidateUrls = [],
  * Đọc thô cache để lấy etag + candidate từ lần verify trước (cho If-None-Match).
  * Trả null khi thiếu/hỏng — 304 không có gì để revalidate thì bỏ qua.
  */
-function readCachedCatalogState(cachePath) {
+function readCachedCatalogState(cachePath, { chainId = null } = {}) {
   try {
     const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8"));
     if (parsed?.version === 1 && typeof parsed.catalogEtag === "string" && Array.isArray(parsed.candidateUrls) && parsed.candidateUrls.length > 0) {
+      // Cache v1 cũ không có chainId ⇒ ETH. Cache của chain khác không được
+      // dùng để revalidate 304: candidate của Base sẽ bị probe nhầm như ETH
+      // (và ngược lại) khi operator share cache path giữa các clone.
+      if (chainId != null) {
+        const cachedChain = parsed.chainId == null ? DEFAULT_CHAIN_ID : Number(parsed.chainId);
+        if (cachedChain !== Number(chainId)) return null;
+      }
       return { etag: parsed.catalogEtag, candidates: parsed.candidateUrls };
     }
   } catch {
@@ -355,7 +362,7 @@ export async function verifyPublicRpcs({
   let candidates = [];
   let etagToStore = null;
   try {
-    const prev = readCachedCatalogState(cachePath);
+    const prev = readCachedCatalogState(cachePath, { chainId });
     const res = await fetchImpl(catalogUrl, {
       headers: { accept: "application/json", ...(prev ? { "if-none-match": prev.etag } : {}) },
     });
@@ -413,11 +420,23 @@ export async function verifyPublicRpcs({
 }
 
 /**
- * Đọc cache đã kiểm chứng. Trả { urls, verifiedAt } khi cache HỢP LỆ và CÒN TƯƠI
- * (dưới maxAgeHours kể từ verifiedAt), ngược lại null — caller rơi về danh sách tĩnh.
- * Cache hỏng/không đọc được được đổi tên thành *.corrupt để không đọc lại mãi mãi.
+ * Đọc cache đã kiểm chứng. Trả { urls, verifiedAt } khi cache HỢP LỆ, CÒN TƯƠI
+ * (dưới maxAgeHours kể từ verifiedAt) VÀ đạt ngưỡng tối thiểu endpoint; ngược lại
+ * null — caller rơi về danh sách tĩnh.
+ *
+ * Cache dưới ngưỡng KHÔNG bị đổi tên `.corrupt`: nó vẫn là bằng chứng hợp lệ của
+ * một lần probe yếu, chỉ không đủ an toàn để phục vụ browser. Cache hỏng shape
+ * (JSON lỗi, thiếu verifiedAt, urls không phải mảng) mới bị đổi tên.
+ *
+ * @param {string} cachePath
+ * @param {{ maxAgeHours?: number, now?: () => number, chainId?: number|null, minEndpoints?: number }} [opts]
  */
-export function readVerifiedCache(cachePath, { maxAgeHours = 48, now = Date.now, chainId = null } = {}) {
+export function readVerifiedCache(cachePath, {
+  maxAgeHours = 48,
+  now = Date.now,
+  chainId = null,
+  minEndpoints = PUBLIC_RPC_MIN_ENDPOINTS,
+} = {}) {
   let raw;
   try {
     raw = fs.readFileSync(cachePath, "utf8");
@@ -449,5 +468,12 @@ export function readVerifiedCache(cachePath, { maxAgeHours = 48, now = Date.now,
   }
   const ageHours = (now() - verifiedMs) / 3_600_000;
   if (ageHours > maxAgeHours) return null; // cũ — không xoá (làm bằng chứng), chỉ bỏ qua
-  return { urls: parsed.urls.filter((u) => typeof u === "string" && u.startsWith("https://")), verifiedAt: parsed.verifiedAt, chainId: parsed.chainId ?? DEFAULT_CHAIN_ID };
+
+  const urls = parsed.urls.filter((u) => typeof u === "string" && u.startsWith("https://"));
+  // Lọc URL trước rồi mới so ngưỡng: cache toàn URL không phải https cũng không
+  // được coi là đủ endpoint chỉ vì mảng gốc dài.
+  const minimum = Math.max(1, Number(minEndpoints) || 1);
+  if (urls.length < minimum) return null; // hợp lệ nhưng cụt — giữ file, fallback tĩnh
+
+  return { urls, verifiedAt: parsed.verifiedAt, chainId: parsed.chainId ?? DEFAULT_CHAIN_ID };
 }

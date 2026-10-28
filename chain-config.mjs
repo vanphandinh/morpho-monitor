@@ -58,6 +58,9 @@ function assertHttpUrl(value, field, index) {
 }
 
 function assertWsUrl(value, field, index) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw configError(CHAIN_CONFIG_INVALID, `chains[${index}].${field} must be a non-empty URL`);
+  }
   let url;
   try {
     url = new URL(value);

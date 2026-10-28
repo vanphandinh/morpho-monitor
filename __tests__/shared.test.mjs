@@ -3,6 +3,7 @@ import http from "node:http";
 import {
   env,
   envNum,
+  envList,
   wadToPercent,
   formatTokenAmount,
   formatApy,
@@ -66,6 +67,28 @@ describe("envNum()", () => {
     process.env.TEST_NUM = "";
     expect(envNum("TEST_NUM", 99)).toBe(99);
     delete process.env.TEST_NUM;
+  });
+});
+
+// ============================================================
+// envList()
+// ============================================================
+describe("envList()", () => {
+  it("blank/whitespace được coi là 'not set' ⇒ fallback", () => {
+    process.env.TEST_LIST = "   ";
+    expect(envList("TEST_LIST", ["fallback"])).toEqual(["fallback"]);
+    delete process.env.TEST_LIST;
+  });
+
+  it("chuỗi phân cách bằng dấu phẩy được trim và bỏ phần tử rỗng", () => {
+    process.env.TEST_LIST = " https://a.example , , https://b.example ";
+    expect(envList("TEST_LIST", [])).toEqual(["https://a.example", "https://b.example"]);
+    delete process.env.TEST_LIST;
+  });
+
+  it("undefined ⇒ fallback", () => {
+    delete process.env.TEST_LIST;
+    expect(envList("TEST_LIST", ["fallback"])).toEqual(["fallback"]);
   });
 });
 

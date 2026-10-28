@@ -259,7 +259,7 @@ export async function fetchExistingBundle() {
     const overdueRungs = ladder.filter((r) => isClaimOverdue(r, Date.now(), CLAIM_RECOVERY_MS));
     if (overdueRungs.length > 0) {
       document.getElementById("presign-existing-info").innerHTML +=
-        `<div class="banner error" style="margin-top:8px">⚠️ Bundle nonce ${overdueRungs.map((r) => r.nonce).join(", ")} đang <b>broadcasting quá ${Math.round(CLAIM_RECOVERY_MS / 60000)} phút</b> — có thể giao dịch đã bị ví thay thế hoặc kẹt (fee thấp). Kiểm tra nonce trên ${EXPLORER_NAME}: nếu nonce đó đã bị tx khác dùng, monitor sẽ tự nhả sang <b>superseded</b> rồi rung kế tiếp được broadcast; nếu chưa, đối soát txHash trước khi sửa registry.</div>`;
+        `<div class="banner error" style="margin-top:8px">⚠️ Bundle nonce ${overdueRungs.map((r) => r.nonce).join(", ")} đang <b>broadcasting quá ${Math.round(CLAIM_RECOVERY_MS / 60000)} phút</b> — có thể giao dịch đã bị ví thay thế hoặc kẹt (fee thấp). Kiểm tra nonce trên ${esc(EXPLORER_NAME)}: nếu nonce đó đã bị tx khác dùng, monitor sẽ tự nhả sang <b>superseded</b> rồi rung kế tiếp được broadcast; nếu chưa, đối soát txHash trước khi sửa registry.</div>`;
     }
     if (ladder.some((r) => r.status === "submitted" || r.status === "failed" || r.status === "superseded")) {
       document.getElementById("presign-existing-info").innerHTML +=

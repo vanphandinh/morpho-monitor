@@ -79,3 +79,27 @@ describe("chuyển đổi đơn vị theo decimals từng market", () => {
     expect(parseUnits("1.5", 18)).toBe(1_500_000_000_000_000_000n);
   });
 });
+
+describe("chọn RPC theo chain trong browser", () => {
+  it("chỉ giữ URL trả đúng chain, loại URL sai chain và URL lỗi", () => {
+    expect(overview.selectChainRpcUrls([
+      { url: "https://base-good.example", chainId: 8453 },
+      { url: "https://eth-wrong.example", chainId: 1 },
+      { url: "https://down.example", chainId: null },
+    ], 8453)).toEqual(["https://base-good.example"]);
+  });
+
+  it("không có URL đúng chain ⇒ mảng rỗng (caller fail-fast, không dùng chain khác)", () => {
+    expect(overview.selectChainRpcUrls([
+      { url: "https://eth.example", chainId: 1 },
+      { url: "https://down.example", chainId: null },
+    ], 8453)).toEqual([]);
+  });
+
+  it("CHAIN_ID không có ⇒ giữ hành vi cũ: dùng toàn bộ URL hợp lệ", () => {
+    expect(overview.selectChainRpcUrls([
+      { url: "https://a.example", chainId: 1 },
+      { url: "https://b.example", chainId: null },
+    ], null)).toEqual(["https://a.example", "https://b.example"]);
+  });
+});

@@ -53,6 +53,7 @@ export function isRetryableStartupError(err) {
  * @param {(err: any) => boolean} [opts.isRetryable]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {{ error: Function }} [opts.log]
+ * @param {string} [opts.label] - tiền tố log (monitor/proxy/webapp)
  */
 export async function retryStartup(fn, {
   attempts = STARTUP_RETRY.attempts,
@@ -60,6 +61,7 @@ export async function retryStartup(fn, {
   isRetryable = isRetryableStartupError,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   log = console,
+  label = "monitor",
 } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -72,7 +74,7 @@ export async function retryStartup(fn, {
       if (attempt === attempts) break;
       const delay = delaysMs[Math.min(attempt - 1, delaysMs.length - 1)] ?? 0;
       log.error(
-        `[monitor] khởi động lần ${attempt}/${attempts} thất bại: ${err?.message || err} — thử lại sau ${Math.round(delay / 1000)}s`
+        `[${label}] khởi động lần ${attempt}/${attempts} thất bại: ${err?.message || err} — thử lại sau ${Math.round(delay / 1000)}s`
       );
       await sleep(delay);
     }

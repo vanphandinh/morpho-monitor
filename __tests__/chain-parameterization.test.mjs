@@ -7,6 +7,7 @@
  * config/chains.json.
  */
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 import { encodeFunctionData, keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
@@ -241,6 +242,20 @@ describe("presign verify — bundle bị ràng buộc chain", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.code).toBe(VERIFY_CONFIG_MISMATCH);
+  });
+});
+
+describe("proxy — hướng dẫn MetaMask theo chain, không hardcode Ethereum", () => {
+  const src = fs.readFileSync(new URL("../proxy-rpc.mjs", import.meta.url), "utf8");
+
+  it("in CHAIN_ID và native symbol của chain đang chạy", () => {
+    expect(src).toContain("Chain ID: ${CHAIN_ID}");
+    expect(src).toContain("Symbol: ${CHAIN.chain.nativeCurrency.symbol}");
+  });
+
+  it("không còn dòng hardcode Chain ID: 1 / Symbol: ETH", () => {
+    expect(src).not.toContain("Chain ID: 1");
+    expect(src).not.toContain("Symbol: ETH");
   });
 });
 

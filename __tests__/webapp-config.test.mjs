@@ -253,7 +253,7 @@ describe("webapp.html sign flow (H5 reverted 2026-09-24)", () => {
   });
 
   it("nút Thêm Mạng Proxy: message động theo chain + giữ hướng dẫn khi ví chặn method", () => {
-    expect(app).toMatch(/Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>\$\{CHAIN_NAME/);
+    expect(app).toMatch(/Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>\$\{esc\(CHAIN_NAME/);
     expect(app).toMatch(/Proxy Sign<\/b>/);
     // UX-only: chỉ hướng dẫn thủ công, không chặn gì.
     expect(app).toMatch(/msg\.includes\("corresponding handler"\)/);

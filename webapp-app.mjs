@@ -18,7 +18,8 @@
 
 import { createWalletClient, custom } from "viem";
 import { getWalletProviderName } from "./webapp-wallet.mjs";
-import { CHAIN, CHAIN_HEX, CHAIN_ID, CHAIN_NAME, EXPLORER_URL, NATIVE_CURRENCY, RPC_URLS, SERVER_LENDER_ADDRESS, SERVER_MARKETS, state } from "./webapp-state.mjs";
+import { esc } from "./webapp-render.mjs";
+import { CHAIN, CHAIN_HEX, CHAIN_ID, CHAIN_NAME, EXPLORER_URL, MORPHO_BLUE, NATIVE_CURRENCY, RPC_URLS, SERVER_LENDER_ADDRESS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 import { clearSession, getProxyUrl, hideError, renderRpcVerifiedNote, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
 import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
@@ -201,7 +202,7 @@ async function connectWallet() {
             renderPosition();
           }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
         } else {
-          showTxResult("warn", `⚠️ Vui lòng chuyển về ${CHAIN_NAME || `chain ${CHAIN_ID}`} để sử dụng.`);
+          showTxResult("warn", `⚠️ Vui lòng chuyển về ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} để sử dụng.`);
           document.getElementById("btn-withdraw").disabled = true;
           document.getElementById("btn-withdraw-all").disabled = true;
         }
@@ -277,6 +278,10 @@ async function addProxyNetwork() {
     showPresignError("Không tìm thấy ví.");
     return;
   }
+  if (!CHAIN_HEX) {
+    showPresignError("Thiếu cấu hình chain trong webapp — kiểm tra config/chains.json.");
+    return;
+  }
 
   const wallet = getWalletProviderName();
   const PROXY_RPC = getProxyUrl();
@@ -292,7 +297,7 @@ async function addProxyNetwork() {
         ...(EXPLORER_URL ? { blockExplorerUrls: [EXPLORER_URL] } : {}),
       }],
     });
-    showPresignSuccess(`✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>${CHAIN_NAME || `Chain ${CHAIN_ID}`} Proxy Sign</b>.`);
+    showPresignSuccess(`✅ Đã thêm mạng Proxy! Hãy chuyển sang mạng <b>${esc(CHAIN_NAME || `Chain ${CHAIN_ID}`)} Proxy Sign</b>.`);
     document.getElementById("btn-add-proxy-network").textContent = "✅ Đã Thêm";
     document.getElementById("btn-add-proxy-network").disabled = true;
   } catch (err) {
@@ -304,8 +309,8 @@ async function addProxyNetwork() {
       // MetaMask) — nút webapp không thể thêm mạng hộ user.
       showPresignError(
         `Ví ${wallet === "ambire" ? "Ambire" : "này"} chặn <code>wallet_addEthereumChain</code> ngay trong app ("doesn't has corresponding handler") — nút webapp không thể thêm mạng hộ bạn.<br><br>` +
-        `<b>Cách thủ công:</b> mở app ví → Settings/Networks → chọn ${CHAIN_NAME || `chain ${CHAIN_ID}`} → thay RPC URL bằng:<br>` +
-        `<code>${PROXY_RPC}</code><br>` +
+        `<b>Cách thủ công:</b> mở app ví → Settings/Networks → chọn ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} → thay RPC URL bằng:<br>` +
+        `<code>${esc(PROXY_RPC)}</code><br>` +
         `<small>(ký xong nhớ đổi lại RPC cũ)</small>`
       );
     } else if (msg.includes("chain ID") || msg.includes("already") || msg.includes("exist")) {
@@ -313,8 +318,8 @@ async function addProxyNetwork() {
       showPresignError(
         `${wallet === "rabby" ? "Rabby" : "Ví"} không cho thêm chainId=${CHAIN_ID} trùng lặp.<br><br>` +
         `<b>Cách thủ công:</b><br>` +
-        `Vào Settings → Networks → ${CHAIN_NAME || `chain ${CHAIN_ID}`} → đổi RPC thành:<br>` +
-        `<code>${PROXY_RPC}</code><br>` +
+        `Vào Settings → Networks → ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} → đổi RPC thành:<br>` +
+        `<code>${esc(PROXY_RPC)}</code><br>` +
         `<small>(ký xong nhớ đổi lại RPC cũ)</small>`
       );
     } else {
@@ -341,8 +346,10 @@ function setLoadingText(text) {
   if (p) p.textContent = text;
 }
 
-/** Manual add-network instructions: RPC + chain metadata, independent of RPC health. */
+/** Chain metadata shown without waiting for RPC health: add-network instructions + security banner. */
 function renderProxyConfigMeta() {
+  const morphoEl = document.getElementById("morpho-blue-address");
+  if (morphoEl) morphoEl.textContent = MORPHO_BLUE || "—";
   const proxyUrlEl = document.getElementById("presign-proxy-url-display");
   if (proxyUrlEl) proxyUrlEl.textContent = getProxyUrl();
   const proxyChainIdEl = document.getElementById("presign-proxy-chain-id");
@@ -386,6 +393,9 @@ async function init() {
         break;
       } catch (err) {
         bootError = err;
+        // Lệch chain là lỗi cấu hình, retry không thể sửa — dừng ngay thay vì
+        // đợi thêm 2 lần × 1.2s rồi vẫn báo cùng lỗi.
+        if (err?.code === "CHAIN_ID_MISMATCH") break;
         if (attempt < BOOT_ATTEMPTS) {
           setLoadingText(`⏳ RPC không phản hồi, đang thử RPC khác (lần ${attempt + 1}/${BOOT_ATTEMPTS})...`);
           await new Promise((resolve) => setTimeout(resolve, BOOT_RETRY_DELAY_MS));

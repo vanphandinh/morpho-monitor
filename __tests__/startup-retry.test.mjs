@@ -81,9 +81,9 @@ describe("startup-retry — hành vi thử lại", () => {
 describe("startup-retry — monitor dùng đúng chỗ", () => {
   const monitorSrc = fs.readFileSync(new URL("../monitor.mjs", import.meta.url), "utf8");
 
-  it("createMarketReader được gọi qua retryStartup", () => {
+  it("createMarketReader + chain-bound client được gọi qua retryStartup", () => {
     expect(monitorSrc).toContain("retryStartup(");
-    expect(monitorSrc).toMatch(/retryStartup\(\s*\(\)\s*=>\s*createMarketReader\(/);
+    expect(monitorSrc).toMatch(/retryStartup\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*?createChainBoundPublicClient\([\s\S]*?createMarketReader\(/);
   });
 
   it("loadMarkets chạy TRƯỚC retryStartup ⇒ thiếu/sai MARKETS_FILE không bị retry", () => {
@@ -92,5 +92,13 @@ describe("startup-retry — monitor dùng đúng chỗ", () => {
     expect(loadMarketsAt).toBeGreaterThan(-1);
     expect(retryAt).toBeGreaterThan(-1);
     expect(loadMarketsAt).toBeLessThan(retryAt);
+  });
+});
+
+describe("startup-retry — proxy dùng đúng chỗ", () => {
+  const proxySrc = fs.readFileSync(new URL("../proxy-rpc.mjs", import.meta.url), "utf8");
+
+  it("createChainBoundPublicClient chạy trong retryStartup ⇒ RPC chưa sẵn sàng không giết proxy ngay", () => {
+    expect(proxySrc).toMatch(/retryStartup\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*?createChainBoundPublicClient\(/);
   });
 });

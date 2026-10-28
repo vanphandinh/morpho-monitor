@@ -16,7 +16,8 @@ code cho từng chain.
 - `publicRpcUrls` / `wsRpcUrls` (key-less, dùng cho browser và fallback server)
 
 `CHAIN_ID` chọn entry. `RPC_URLS`, `WSS_URLS`, `PUBLIC_RPC_URLS`,
-`MORPHO_BLUE_ADDRESS` trong `.env` chỉ là override; bỏ trống để lấy từ config.
+`MORPHO_BLUE_ADDRESS` trong `.env` chỉ là override; không set để lấy từ config.
+Riêng `WSS_URLS=` (set rỗng) tắt hẳn WebSocket để chạy HTTP-only.
 Sai địa chỉ Morpho so với chain đang chọn sẽ fail-fast (trừ khi cố ý chạy fork
 với `ALLOW_CUSTOM_MORPHO=1`).
 
@@ -42,7 +43,7 @@ cp .env.example .env
 #    PROXY_RPC_URL=https://base.example.com:8546
 #    PRESIGNED_FILE=./data/presigned-base.json
 #    RPC_URLS=            (bỏ trống = publicRpcUrls của Base)
-#    WSS_URLS=            (bỏ trống = wsRpcUrls của Base)
+#    WSS_URLS=            (không set = wsRpcUrls của Base; set rỗng để tắt)
 #    MORPHO_BLUE_ADDRESS= (bỏ trống = Base Morpho trong chains.json)
 #    LENDER_ADDRESS=...   (ví lender; có thể khác chain)
 
@@ -83,9 +84,18 @@ của chain đó. Proxy trả `eth_chainId`/`net_version`/`morpho_proxyInfo` the
   cả hai để mặc định `morpho`.
 - **Bundle bị ràng buộc chain.** Chữ ký EIP-155 mang `chainId`; webapp,
   proxy, monitor và CLI verify đều kiểm `chainId` trước khi lưu/broadcast.
-  Bundle của chain khác bị từ chối là `CONFIG_MISMATCH`, không bị đánh hỏng.
+  Bundle của chain khác bị từ chối trước khi lưu/broadcast: webapp/proxy trả
+  lỗi 400 nêu rõ `chainId`, monitor phân loại là `CONFIG_MISMATCH` và giữ
+  nguyên bundle (không sửa nội dung, không đánh dấu là bundle hỏng).
 - **WSS kiểm chain.** `createWssConnect` probe `eth_chainId` trước khi subscribe;
   endpoint trả sai chain bị đóng và loại, không subscribe im lặng.
+- **HTTP RPC kiểm chain từng endpoint.** `createChainBoundPublicClient` probe
+  `eth_chainId` của MỌI URL trước khi tạo client; endpoint sai chain bị loại và
+  không bao giờ nhận `eth_call`/`eth_getLogs`/nonce. Một URL sai không làm chết
+  service nếu còn URL đúng; tất cả sai mới fail-fast `CHAIN_ID_MISMATCH`.
+- **Cache verified phải đủ ngưỡng.** `readVerifiedCache` trả `null` khi danh sách
+  https hợp lệ dưới `PUBLIC_RPC_MIN_ENDPOINTS`; script refresh tay cũng không ghi
+  cache dưới ngưỡng, nên browser không bao giờ nhận danh sách RPC bị cụt.
 - **Explorer/alert theo chain.** Link tx, cảnh báo vòng đời và TTS đều lấy tên
   chain/explorer từ config, không hardcode Etherscan.
 - **Quota alert độc lập.** Mỗi clone có `MAX_NOTIFICATIONS_PER_DAY` và

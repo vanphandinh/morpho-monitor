@@ -42,22 +42,60 @@ function fallbackTransport(urls, opts = {}) {
   };
 }
 
+/**
+ * Chọn URL từ kết quả probe. Pure để test được không cần browser/RPC.
+ * expectedChainId null/không hợp lệ ⇒ giữ hành vi cũ: dùng toàn bộ URL.
+ * @param {Array<{url: string, chainId: number|null}>} probes
+ * @param {number|null} expectedChainId
+ * @returns {string[]}
+ */
+export function selectChainRpcUrls(probes, expectedChainId) {
+  const expected = Number(expectedChainId);
+  if (!Number.isSafeInteger(expected) || expected <= 0) {
+    return probes.map((p) => p?.url).filter((url) => typeof url === "string" && url.trim());
+  }
+  return probes.filter((p) => Number(p?.chainId) === expected).map((p) => p.url);
+}
+
+/** Probe eth_chainId của một URL bằng một client riêng, timeout ngắn. */
+async function probeBrowserChainId(url) {
+  const probe = createPublicClient({
+    transport: http(url, { timeout: 2_000, retryCount: 0 }),
+  });
+  return Number(await probe.getChainId());
+}
+
 export async function createRpcClient() {
   if (RPC_URLS.length === 0) {
     throw new Error("Thiếu danh sách RPC cho browser (PUBLIC_RPC_URLS/config/chains.json) — không thể đọc dữ liệu on-chain.");
   }
-  const client = createPublicClient({
-    chain: CHAIN || undefined,
-    transport: fallbackTransport(RPC_URLS, { timeout: 15000 }),
-  });
-  // Startup health check — chỉ fail nếu TẤT CẢ URL đều down. Đồng thời chặn
-  // cấu hình sai chain: RPC trả chain khác CHAIN_ID là dữ liệu của chain khác,
-  // không được hiển thị/làm nền cho giao dịch.
-  const actualChainId = await client.getChainId();
-  if (CHAIN_ID && actualChainId !== CHAIN_ID) {
-    throw new Error(`RPC đang trả chain ${actualChainId}, nhưng cấu hình là ${CHAIN_NAME || CHAIN_ID} (${CHAIN_ID}). Kiểm tra PUBLIC_RPC_URLS / CHAIN_ID.`);
+
+  // Không chỉ kiểm một URL: probe TẤT CẢ song song rồi chỉ dùng URL đúng chain.
+  // Một endpoint sai chain không được phép trả eth_call/eth_getLogs/nonce.
+  let usableUrls = RPC_URLS;
+  if (CHAIN_ID) {
+    const settled = await Promise.allSettled(
+      RPC_URLS.map(async (url) => ({ url, chainId: await probeBrowserChainId(url) }))
+    );
+    const probes = settled.map((result, index) => result.status === "fulfilled"
+      ? result.value
+      : { url: RPC_URLS[index], chainId: null });
+    usableUrls = selectChainRpcUrls(probes, CHAIN_ID);
+    if (usableUrls.length === 0) {
+      const sawWrongChain = probes.some((p) => Number.isSafeInteger(p.chainId));
+      const err = new Error(
+        `❌ Không có RPC endpoint nào trả đúng chain ${CHAIN_ID}${CHAIN_NAME ? ` (${CHAIN_NAME})` : ""}.\n` +
+          "   → Kiểm tra PUBLIC_RPC_URLS / CHAIN_ID; không đọc dữ liệu của chain khác."
+      );
+      err.code = sawWrongChain ? "CHAIN_ID_MISMATCH" : "RPC_CHAIN_PROBE_FAILED";
+      throw err;
+    }
   }
-  return client;
+
+  return createPublicClient({
+    chain: CHAIN || undefined,
+    transport: fallbackTransport(usableUrls, { timeout: 15000 }),
+  });
 }
 
 // ============================================================

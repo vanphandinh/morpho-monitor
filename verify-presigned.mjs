@@ -20,7 +20,7 @@ import {
   computeMarketId,
   MORPHO_WITHDRAW_ABI,
 } from "./presign-verify.mjs";
-import { formatTokenAmount } from "./shared.mjs";
+import { CHAIN_ID, formatTokenAmount } from "./shared.mjs";
 
 // Re-export for callers that import from CLI path
 export { verifyPresignedBundle, verifyWithdrawCalldata, computeMarketId, MORPHO_WITHDRAW_ABI };
@@ -145,7 +145,7 @@ async function verifyBundle(bundle, { label, marketId, filePath }) {
     console.log(`   gas:               ${tx.gas?.toString() || "N/A"}`);
 
     const result = await verifyWithdrawCalldata(w.signedTx, {
-      chainId: bundle.chainId,
+      chainId: CHAIN_ID,
       morphoBlueAddress: bundle.morphoBlueAddress,
       lenderAddress: bundle.lenderAddress,
       marketId: marketId ?? bundle.marketId,
@@ -178,7 +178,10 @@ async function verifyBundle(bundle, { label, marketId, filePath }) {
     }
   }
 
-  const bundleResult = await verifyPresignedBundle(bundle, marketId ? { marketId } : {});
+  const bundleResult = await verifyPresignedBundle(bundle, {
+    chainId: CHAIN_ID,
+    ...(marketId ? { marketId } : {}),
+  });
   console.log("");
   console.log(`   Kết quả bundle: ${matched} khớp, ${mismatched} mismatch / ${bundle.withdrawals.length} tiers`);
   if (!bundleResult.ok) console.log(`   Bundle check: ${bundleResult.error}`);

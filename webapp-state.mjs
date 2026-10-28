@@ -137,8 +137,10 @@ export const state = {
   marketParams: null,
   marketData: null,
   positionData: null,
-  loanToken: { decimals: 6, symbol: "USDC" },
-  collateralToken: { decimals: 18, symbol: "dCOMP" },
+  // Chưa có metadata on-chain ⇒ không giả định token của chain nào.
+  // Nhãn trung tính để Base/Monad không bao giờ hiện USDC/dCOMP trước khi fetch xong.
+  loanToken: { decimals: 6, symbol: "—" },
+  collateralToken: { decimals: 18, symbol: "—" },
   presignedNonce: null,
   // Stepper nonce (2026-09-25): sàn = nonce on-chain lần fetch gần nhất.
   // Chỉnh nonce (±) chỉ được phép sau khi đã có sàn này.

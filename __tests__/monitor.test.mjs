@@ -211,7 +211,7 @@ describe("monitor.mjs — chọn endpoint RPC (D6)", () => {
   const src = fs.readFileSync(new URL("../monitor.mjs", import.meta.url), "utf8");
 
   it("client của monitor bật stickyMs để chuỗi đọc liên tiếp nhìn cùng một node", () => {
-    expect(src).toMatch(/createRobustPublicClient\(RPC_URLS, \{ chain: CHAIN\.chain, stickyMs: 2_000 \}\)/);
+    expect(src).toMatch(/createChainBoundPublicClient\(RPC_URLS,\s*\{\s*chain: CHAIN\.chain,\s*stickyMs: 2_000,?\s*\}\s*\)/);
   });
 
   it("proxy/CLI KHÔNG bật sticky (giữ blast radius nhỏ — quyết định có chủ ý)", () => {

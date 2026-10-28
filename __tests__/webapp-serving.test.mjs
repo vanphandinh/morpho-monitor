@@ -203,3 +203,12 @@ describe("refreshHoursToMs", () => {
     expect(refreshHoursToMs(0.000001)).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("webapp-server — PUBLIC_RPC_URLS rỗng", () => {
+  const src = fs.readFileSync(new URL("../webapp-server.mjs", import.meta.url), "utf8");
+
+  it("dùng envList (blank = không override), không dùng !== undefined", () => {
+    expect(src).toContain('envList("PUBLIC_RPC_URLS", []).length > 0');
+    expect(src).not.toContain("process.env.PUBLIC_RPC_URLS !== undefined");
+  });
+});

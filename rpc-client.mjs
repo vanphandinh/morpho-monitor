@@ -329,6 +329,10 @@ export function createRoundRobinTransport(urls, opts = {}) {
  * Create a viem public client with round-robin across all RPC URLs,
  * circuit breaker per URL, and retry with exponential backoff.
  *
+ * Hàm này KHÔNG kiểm chain của từng URL — nó dùng nguyên danh sách được truyền.
+ * Với danh sách thô từ `RPC_URLS`/`PUBLIC_RPC_URLS`, dùng
+ * `createChainBoundPublicClient()` để loại endpoint sai chain trước khi đọc dữ liệu.
+ *
  * @param {string[]} urls - Array of RPC endpoint URLs
  * @param {{ chain?: import("viem").Chain, stickyMs?: number }} [opts] - `chain` mặc định
  *   là chain của deployment (`CHAIN`); `stickyMs` giữ các request liên tiếp trên
@@ -353,26 +357,160 @@ export function createRobustPublicClient(urls, opts = {}) {
 }
 
 /**
- * Assert that an RPC client actually points at the configured chain. A wrong
- * CHAIN_ID + RPC_URLS pair must fail before signing, never after.
- * @param {import("viem").PublicClient} client
- * @param {number} [expectedChainId]
+ * Tên endpoint an toàn để log — không bao giờ in path/query vì RPC_URLS có thể
+ * chứa API key trong path hoặc query.
+ * @param {string} url
+ * @returns {string}
+ */
+function endpointLabel(url) {
+  try {
+    return new URL(url).hostname || "<invalid-url>";
+  } catch {
+    return "<invalid-url>";
+  }
+}
+
+/**
+ * Probe `eth_chainId` của MỘT endpoint. Tách riêng để test inject được và để
+ * lỗi mạng không làm hỏng cả danh sách.
+ *
+ * @param {string} url
+ * @param {{ timeoutMs?: number }} [opts]
  * @returns {Promise<number>}
  */
-export async function assertClientChain(client, expectedChainId = CHAIN_ID) {
-  const actual = Number(await client.getChainId());
+export async function probeUrlChainId(url, { timeoutMs = 5_000 } = {}) {
+  const client = createPublicClient({
+    transport: http(url, { timeout: timeoutMs, retryCount: 0 }),
+  });
+  return Number(await client.getChainId());
+}
+
+/**
+ * Probe chainId của TẤT CẢ URL song song và phân loại. Đây là lớp sửa lỗi
+ * "chỉ kiểm một endpoint": một URL sai chain không còn có thể lọt vào client
+ * chỉ vì lần `getChainId()` đầu tiên rơi đúng URL tốt.
+ *
+ * @param {string[]} urls
+ * @param {{ expectedChainId?: number, timeoutMs?: number, probe?: typeof probeUrlChainId }} [opts]
+ * @returns {Promise<{ expected: number, matching: string[], mismatched: Array<{url: string, chainId: number}>, unreachable: Array<{url: string, error: unknown}> }>}
+ */
+export async function probeChainIds(urls, {
+  expectedChainId = CHAIN_ID,
+  timeoutMs = 5_000,
+  probe = probeUrlChainId,
+} = {}) {
   const expected = Number(expectedChainId);
-  if (actual !== expected) {
-    const err = new Error(
-      `❌ RPC trả chainId ${actual}, nhưng cấu hình là ${expected}.\n` +
-        "   → Kiểm tra RPC_URLS và CHAIN_ID trong .env; không ký/rút khi lệch chain."
-    );
-    err.code = "CHAIN_ID_MISMATCH";
-    err.expected = expected;
-    err.actual = actual;
+  if (!Number.isSafeInteger(expected) || expected <= 0) {
+    const err = new Error(`❌ expectedChainId không hợp lệ: ${expectedChainId}`);
+    err.code = "CHAIN_CONFIG_INVALID";
     throw err;
   }
-  return actual;
+
+  const results = await Promise.all(Array.from(urls ?? []).map(async (url) => {
+    try {
+      const chainId = Number(await probe(url, { timeoutMs }));
+      if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+        throw new Error(`eth_chainId trả giá trị không hợp lệ: ${chainId}`);
+      }
+      return { url, chainId };
+    } catch (error) {
+      return { url, error };
+    }
+  }));
+
+  return {
+    expected,
+    matching: results.filter((r) => r.chainId === expected).map((r) => r.url),
+    mismatched: results
+      .filter((r) => Number.isSafeInteger(r.chainId) && r.chainId !== expected)
+      .map((r) => ({ url: r.url, chainId: r.chainId })),
+    unreachable: results
+      .filter((r) => !Number.isSafeInteger(r.chainId))
+      .map((r) => ({ url: r.url, error: r.error })),
+  };
+}
+
+/**
+ * Assert rằng còn ít nhất một endpoint đúng chain và trả report để caller tự
+ * quyết định dùng danh sách `matching`. Không bao giờ trả một danh sách rỗng.
+ *
+ * Mã lỗi:
+ *   - MISSING_RPC_URLS (fatal) — không có URL nào để probe;
+ *   - CHAIN_ID_MISMATCH (fatal) — có endpoint trả lời nhưng tất cả đều sai chain;
+ *   - RPC_CHAIN_PROBE_FAILED (retryable) — tất cả đều không phản hồi.
+ *
+ * @param {string[]} urls
+ * @param {number} [expectedChainId]
+ * @param {{ timeoutMs?: number, probe?: typeof probeUrlChainId, log?: { warn?: Function } }} [opts]
+ * @returns {Promise<{ expected: number, matching: string[], mismatched: Array<{url: string, chainId: number}>, unreachable: Array<{url: string, error: unknown}> }>}
+ */
+export async function assertUrlsOnChain(urls, expectedChainId = CHAIN_ID, opts = {}) {
+  if (!Array.isArray(urls) || urls.length === 0) {
+    const err = new Error(
+      "❌ Không có RPC endpoint nào để kiểm chain.\n" +
+        "   → Kiểm tra RPC_URLS / PUBLIC_RPC_URLS và CHAIN_ID trong .env."
+    );
+    err.code = "MISSING_RPC_URLS";
+    throw err;
+  }
+
+  const { log = console, ...probeOpts } = opts;
+  const report = await probeChainIds(urls, { expectedChainId, ...probeOpts });
+
+  const mismatchDetail = report.mismatched
+    .map((r) => `${endpointLabel(r.url)} (chainId ${r.chainId})`)
+    .join(", ");
+  const unreachableDetail = report.unreachable
+    .map((r) => endpointLabel(r.url))
+    .join(", ");
+  const details = {
+    expected: report.expected,
+    mismatched: report.mismatched.map((r) => ({ endpoint: endpointLabel(r.url), chainId: r.chainId })),
+    unreachable: report.unreachable.map((r) => ({ endpoint: endpointLabel(r.url) })),
+  };
+
+  if (report.matching.length === 0) {
+    const code = report.mismatched.length > 0 ? "CHAIN_ID_MISMATCH" : "RPC_CHAIN_PROBE_FAILED";
+    const err = new Error(
+      `❌ Không có RPC endpoint nào trả đúng chain ${report.expected}.\n` +
+        (mismatchDetail ? `   → Endpoint sai chain: ${mismatchDetail}\n` : "") +
+        (unreachableDetail ? `   → Endpoint không phản hồi: ${unreachableDetail}\n` : "") +
+        "   → Kiểm tra CHAIN_ID và RPC_URLS/PUBLIC_RPC_URLS trong .env."
+    );
+    err.code = code;
+    err.expected = report.expected;
+    err.details = details;
+    throw err;
+  }
+
+  if (report.mismatched.length > 0 || report.unreachable.length > 0) {
+    log.warn?.(
+      `[rpc] chain ${report.expected}: dùng ${report.matching.length}/${urls.length} endpoint` +
+        (mismatchDetail ? `; loại sai chain: ${mismatchDetail}` : "") +
+        (unreachableDetail ? `; không phản hồi: ${unreachableDetail}` : "")
+    );
+  }
+
+  return report;
+}
+
+/**
+ * Tạo public client chỉ từ các URL đã xác nhận đúng chain.
+ *
+ * @param {string[]} urls
+ * @param {{ chain?: import("viem").Chain, stickyMs?: number, expectedChainId?: number,
+ *   timeoutMs?: number, probe?: typeof probeUrlChainId, log?: { warn?: Function } }} [opts]
+ * @returns {Promise<{ client: import("viem").PublicClient, urls: string[], report: object }>}
+ */
+export async function createChainBoundPublicClient(urls, opts = {}) {
+  const { expectedChainId, probe, timeoutMs, log, ...clientOpts } = opts;
+  const expected = Number(expectedChainId ?? clientOpts.chain?.id ?? CHAIN_ID);
+  const report = await assertUrlsOnChain(urls, expected, { probe, timeoutMs, log });
+  return {
+    client: createRobustPublicClient(report.matching, clientOpts),
+    urls: report.matching,
+    report,
+  };
 }
 
 /**

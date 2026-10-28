@@ -19,7 +19,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PUBLIC_RPC_HEALTH_PATH, PUBLIC_RPC_MAX_ENDPOINTS, PUBLIC_RPC_URLS, CHAIN_ID, MORPHO_BLUE_ADDRESS } from "../shared.mjs";
+import { PUBLIC_RPC_HEALTH_PATH, PUBLIC_RPC_MIN_ENDPOINTS, PUBLIC_RPC_MAX_ENDPOINTS, PUBLIC_RPC_URLS, CHAIN_ID, MORPHO_BLUE_ADDRESS } from "../shared.mjs";
 import { extractCandidates, probeCandidates, CHAINLIST_CATALOG_URL } from "../public-rpc-health.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,12 +65,19 @@ console.log(`\nTổng: ${passing.length}/${results.length} đạt.`);
 
 if (outArg) {
   const { writeFileSync, mkdirSync } = await import("node:fs");
-  mkdirSync(path.dirname(outPath), { recursive: true });
   // Script tay chỉ GHI khi có --out (mặc định ghi đúng cache server đọc như
   // verifyPublicRpcs làm — nhưng chỉ khi đạt ngưỡng tối thiểu để không cụt hóa).
   // Cắt theo PUBLIC_RPC_MAX_ENDPOINTS Y NHƯ server-side: không nhất quán thì
   // cache tay có thể nhét endpoint chậm (stakely 1961ms trên VPS) vượt cap 8.
   const chosen = passing.slice(0, PUBLIC_RPC_MAX_ENDPOINTS);
+  if (chosen.length < PUBLIC_RPC_MIN_ENDPOINTS) {
+    console.error(
+      `[probe-tay] ❌ chỉ ${chosen.length}/${results.length} endpoint đạt ` +
+        `(< ngưỡng tối thiểu ${PUBLIC_RPC_MIN_ENDPOINTS}) — KHÔNG ghi cache, giữ nguyên file cũ.`
+    );
+    process.exit(1);
+  }
+  mkdirSync(path.dirname(outPath), { recursive: true });
   const payload = {
     version: 1,
     chainId: CHAIN_ID,
