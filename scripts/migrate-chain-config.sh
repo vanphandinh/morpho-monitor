@@ -90,7 +90,8 @@ usage() {
 Usage: bash scripts/migrate-chain-config.sh [options]
 
 Script nâng deployment Ethereum đang ở commit da1c3f4 lên bản chain-config
-hiện tại trên main. Chạy trong thư mục compose (nơi có .env và docker-compose.yml).
+hiện tại trên main. Chạy trong thư mục compose (nơi có .env và docker-compose.yml);
+thư mục clone mặc định của repo là morpho-monitor, không phải morpho/app.
 
 Options:
   -y, --yes              Không hỏi xác nhận
@@ -102,13 +103,13 @@ Options:
   -h, --help             In hướng dẫn này
 
 Ví dụ:
-  cd /srv/morpho/app
-  bash /srv/morpho/migrate-chain-config.sh --yes
+  cd /srv/morpho-monitor
+  bash /srv/migrate-chain-config.sh --yes
 
 Lưu ý:
   - Không chạy script từ bản sao nằm trong repo nếu origin/main cũng chứa
     chính file này; git merge có thể từ chối vì file untracked. Copy script
-    ra ngoài repo (ví dụ /srv/morpho/) rồi chạy.
+    ra ngoài repo (ví dụ /srv/) rồi chạy.
   - Script không chạy `docker compose down -v` và không xoá volume.
   - Backup chứa .env và registry đã ký; giữ ngoài repo, không commit.
 EOF

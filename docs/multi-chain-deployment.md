@@ -121,9 +121,9 @@ của chain đó. Proxy trả `eth_chainId`/`net_version`/`morpho_proxyInfo` the
 Checklist đầy đủ (backup, chọn đúng volume, cập nhật `.env`, probe RPC, verify
 sau start và rollback) nằm ở
 [migration-chain-config.md](./migration-chain-config.md). Có thể chạy tự động
-bằng script, nhưng copy nó ra ngoài repo trước (ví dụ
-`bash /srv/morpho/migrate-chain-config.sh --yes`) để tránh xung đột file
-untracked khi merge; xem hướng dẫn trong tài liệu đó.
+bằng script, nhưng copy nó ra ngoài repo trước — với repo clone ở
+`/srv/morpho-monitor`, chạy `bash /srv/migrate-chain-config.sh --yes` — để tránh
+xung đột file untracked khi merge; xem hướng dẫn trong tài liệu đó.
 
 Tóm tắt tối thiểu cho deployment ETH:
 

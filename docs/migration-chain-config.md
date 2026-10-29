@@ -26,7 +26,11 @@ Repo không có tag release; version được xác định bằng commit:
   không copy `__tests__/`.
 
 Phần còn lại của tài liệu dành cho việc nâng deployment cũ lên bản có
-chain-config (`d4d74f0` trở lên, hiện là `c46ab21`).
+chain-config (`d4d74f0` trở lên, hiện là `776c3d3`).
+
+Các ví dụ bên dưới dùng `/srv/morpho-monitor` — thư mục clone mặc định của
+repo, **không phải** `morpho/app`. Đổi theo đường dẫn thật; xác định bằng
+`git rev-parse --show-toplevel`.
 
 ## Script tự động
 
@@ -40,10 +44,10 @@ Khuyến nghị copy script ra **ngoài repo** để tránh xung đột file unt
 merge:
 
 ```bash
-scp scripts/migrate-chain-config.sh user@vps:/srv/morpho/
+scp scripts/migrate-chain-config.sh user@vps:/srv/
 ssh user@vps
-cd /srv/morpho/app
-bash /srv/morpho/migrate-chain-config.sh --yes
+cd /srv/morpho-monitor          # thư mục clone thật
+bash /srv/migrate-chain-config.sh --yes
 ```
 
 Các option:
@@ -91,7 +95,7 @@ Restart sẽ làm mất buffer capture trong RAM của proxy. Trước khi dừn
 Kiểm tra registry (đổi `CID` nếu compose project khác):
 
 ```bash
-cd /srv/morpho/app
+cd /srv/morpho-monitor
 CID=$(docker compose ps -q morpho)
 [ -n "$CID" ] || { echo "Không thấy container morpho — kiểm tra project name."; exit 1; }
 rm -f /tmp/presigned-before.json
@@ -114,7 +118,7 @@ Chạy trong thư mục compose, khi container cũ vẫn còn chạy:
 
 ```bash
 set -euo pipefail
-cd /srv/morpho/app
+cd /srv/morpho-monitor
 
 # Giữ đúng project name cũ để không tạo volume rỗng.
 # Xem tên bằng `docker compose ls`, rồi đổi giá trị dưới cho khớp.
@@ -125,7 +129,7 @@ docker compose ls
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 # Để backup ngoài repo: tránh vô tình commit .env và data.
-BACKUP="/srv/morpho/backup/migrate-$STAMP"
+BACKUP="/srv/backup/migrate-$STAMP"
 mkdir -p "$BACKUP/data"
 
 # Cấu hình và secret
@@ -177,7 +181,7 @@ fi
 ## 4. Dừng stack cũ
 
 ```bash
-cd /srv/morpho/app
+cd /srv/morpho-monitor
 docker compose down
 docker compose ps
 ```
@@ -191,7 +195,7 @@ docker volume ls | grep presigned_data
 ## 5. Cập nhật source
 
 ```bash
-cd /srv/morpho/app
+cd /srv/morpho-monitor
 git status --short
 git fetch origin
 git switch main 2>/dev/null || git switch -c main --track origin/main
@@ -277,7 +281,7 @@ xoá secret hiện có.
 Build image mới trước:
 
 ```bash
-cd /srv/morpho/app
+cd /srv/morpho-monitor
 docker compose build --pull
 # Service probe nằm trong profile "debug": `build` mặc định bỏ qua profile,
 # nên phải build riêng. Nếu không, `run probe` có thể dùng image cũ và import
@@ -391,7 +395,7 @@ Kiểm tra WSS và cache:
 Nếu bản mới fail trước khi ghi gì vào registry:
 
 ```bash
-cd /srv/morpho/app
+cd /srv/morpho-monitor
 docker compose -p morpho down
 git switch --detach da1c3f4
 docker compose -p morpho up -d --build
@@ -404,7 +408,7 @@ rồi retag image cũ về tên đó:
 
 ```bash
 IMAGE=$(docker compose -p morpho config --images | head -1)
-OLD_ID=$(cat /srv/morpho/backup/migrate-<STAMP>/image-id.txt)
+OLD_ID=$(cat /srv/backup/migrate-<STAMP>/image-id.txt)
 docker tag "$OLD_ID" "$IMAGE"
 docker compose -p morpho down
 docker compose -p morpho up -d --no-build
