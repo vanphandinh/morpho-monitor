@@ -24,6 +24,11 @@ với `ALLOW_CUSTOM_MORPHO=1`).
 Các chain có sẵn: `1` Ethereum, `8453` Base, `143` Monad. Thêm chain mới bằng
 một entry trong `config/chains.json`, không cần sửa module nào.
 
+Lớp RPC công khai cho browser có thể tinh chỉnh bằng `PUBLIC_RPC_REFRESH_HOURS`,
+`PUBLIC_RPC_MIN_ENDPOINTS`, `PUBLIC_RPC_MAX_ENDPOINTS`,
+`PUBLIC_RPC_CACHE_MAX_AGE_HOURS`, `PUBLIC_RPC_HEALTH_PATH` và
+`PUBLIC_RPC_PROBE_TIMEOUT_MS`; mặc định và giải thích nằm trong `.env.example`.
+
 ## 2. Tạo một deployment cho chain mới
 
 Ví dụ Base, chạy cạnh deployment ETH trên cùng VPS:
@@ -113,7 +118,14 @@ của chain đó. Proxy trả `eth_chainId`/`net_version`/`morpho_proxyInfo` the
 
 ## 5. Migration deployment ETH hiện tại
 
-Không cần đổi gì ngoài:
+Checklist đầy đủ (backup, chọn đúng volume, cập nhật `.env`, probe RPC, verify
+sau start và rollback) nằm ở
+[migration-chain-config.md](./migration-chain-config.md). Có thể chạy tự động
+bằng script, nhưng copy nó ra ngoài repo trước (ví dụ
+`bash /srv/morpho/migrate-chain-config.sh --yes`) để tránh xung đột file
+untracked khi merge; xem hướng dẫn trong tài liệu đó.
+
+Tóm tắt tối thiểu cho deployment ETH:
 
 ```bash
 # trong .env của deployment ETH
@@ -122,5 +134,6 @@ CHAIN_CONFIG_FILE=./config/chains.json
 MORPHO_BLUE_ADDRESS=      # bỏ trống, lấy từ chains.json
 ```
 
-Sau đó copy `config/chains.json` lên host (Docker đã mount `./config`) và
-restart. Hành vi ETH (market, RPC, explorer, webapp, ký) giữ nguyên.
+Sau đó copy `config/chains.json` lên host (Docker đã mount `./config`), rebuild
+image rồi restart. Hành vi ETH (market, RPC, explorer, webapp, ký) giữ nguyên,
+nhưng mọi endpoint trong `RPC_URLS` giờ phải trả đúng chain 1.

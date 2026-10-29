@@ -259,10 +259,6 @@ export const PROXY_RPC_URL = (() => {
 /** Max request body size for auth/bundle/presign/RPC (bytes). */
 export const MAX_BODY_BYTES = envNum("MAX_BODY_BYTES", 1_048_576); // 1 MiB
 
-// ---- Misc ----
-// Deprecated alias: code mới dùng EXPLORER_URL. Giữ để test/caller cũ không gãy.
-export const ETHERSCAN_BASE_URL = EXPLORER_URL;
-
 // ============================================================
 // HELPERS
 // ============================================================
