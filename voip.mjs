@@ -225,6 +225,9 @@ export function clearVoipTokenCache() {
  * "2,450,000" kiểu Anh rồi đọc dấu "," theo luật tiếng Việt — dấu thập phân —
  * nên nghe sai bậc. Đơn vị lớn + dấu "," thập phân + "phần trăm" là dạng đọc được.
  *
+ * Khi `market.rateAtTarget` không có (IRM không hỗ trợ hoặc đọc lỗi), blue-sdk
+ * trả `supplyApy = 0` giả tạo: bỏ hẳn câu lãi suất thay vì đọc "0 phần trăm".
+ *
  * @param {object} market - Dữ liệu market từ Morpho Blue
  * @param {object} loanToken - Token metadata (symbol, decimals)
  * @param {object} collateralToken - Token metadata (symbol, decimals)
@@ -243,17 +246,20 @@ export function buildVoipMessage(market, loanToken, collateralToken, position, s
   const liquidityStr = formatTokenAmountForTts(market.liquidity, loanDecimals);
   const supplyStr = formatTokenAmountForTts(position.supplyAssets, loanDecimals);
   const utilizationStr = formatPercentForTts(market.utilization);
-  const apyStr = formatApyForTts(market.supplyApy);
+  // `rateAtTarget` là sentinel của blue-sdk cho APY khả dụng: Market không có nó
+  // trả supplyApy = 0 giả tạo, nên câu lãi suất phải bị bỏ, không phải đọc 0%.
+  const apyStr = market.rateAtTarget == null ? null : formatApyForTts(market.supplyApy);
+  const apySentence = apyStr == null ? null : `Lãi suất năm: ${apyStr}.`;
 
   // "&" không được đảm bảo đọc thành "và" trên mọi engine.
   const marketLabel = `${collateralSymbol} và ${loanSymbol}`;
-  const sentences = isSuddenDrain
+  const sentences = (isSuddenDrain
     ? [
       `${chainPrefix}Cảnh báo! Thanh khoản trên thị trường ${marketLabel} đã giảm mạnh.`,
       `Thanh khoản hiện tại: ${liquidityStr} ${loanSymbol}.`,
       `Vị thế của bạn: ${supplyStr} ${loanSymbol}.`,
       `Tỉ lệ sử dụng: ${utilizationStr}.`,
-      `Lãi suất năm: ${apyStr}.`,
+      apySentence,
       "Hãy vào trang web để rút tiền ngay.",
     ]
     : [
@@ -261,9 +267,9 @@ export function buildVoipMessage(market, loanToken, collateralToken, position, s
       `Thanh khoản hiện tại: ${liquidityStr} ${loanSymbol}.`,
       `Vị thế của bạn: ${supplyStr} ${loanSymbol}.`,
       `Tỉ lệ sử dụng: ${utilizationStr}.`,
-      `Lãi suất năm: ${apyStr}.`,
+      apySentence,
       "Hãy vào trang web để rút tiền.",
-    ];
+    ]).filter(Boolean);
 
   return joinSentencesForTts(sentences);
 }

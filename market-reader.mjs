@@ -1,4 +1,4 @@
-import { blueAbi } from "@morpho-org/blue-sdk-viem";
+import { adaptiveCurveIrmAbi, blueAbi } from "@morpho-org/blue-sdk-viem";
 import { AccrualPosition, Market, Position } from "@morpho-org/blue-sdk";
 import { decodeAbiParameters, erc20Abi, hexToString, parseUnits } from "viem";
 import { CHAIN_ID, MORPHO_BLUE_ADDRESS } from "./shared.mjs";
@@ -175,6 +175,13 @@ export async function createMarketReader({
     const contracts = requested.flatMap((runtime) => [
       { address: morphoBlueAddress, abi: blueAbi, functionName: "market", args: [runtime.id] },
       { address: morphoBlueAddress, abi: blueAbi, functionName: "position", args: [runtime.id, lenderAddress] },
+      // AdaptiveCurveIRM.rateAtTarget(id) is the missing input for blue-sdk's
+      // APY math: without it `Market.getAccrualBorrowRates` returns a zero
+      // borrow rate, so `market.supplyApy` is structurally 0 (the VoIP call
+      // announced "Lãi suất năm: 0 phần trăm" forever). Đọc trong CÙNG multicall
+      // + cùng blockNumber để APY khớp utilization; IRM khác không có hàm này
+      // thì allowFailure cô lập, market vẫn có snapshot và VoIP bỏ câu lãi suất.
+      { address: runtime.params.irm, abi: adaptiveCurveIrmAbi, functionName: "rateAtTarget", args: [runtime.id] },
     ]);
     let results;
     try {
@@ -203,12 +210,14 @@ export async function createMarketReader({
     const failures = new Map();
     for (let i = 0; i < requested.length; i++) {
       const runtime = requested[i];
-      const marketResult = results[i * 2];
-      const positionResult = results[i * 2 + 1];
+      const marketResult = results[i * 3];
+      const positionResult = results[i * 3 + 1];
       if (marketResult.status !== "success" || positionResult.status !== "success") {
         failures.set(runtime.id, marketResult.error || positionResult.error || new Error("multicall failed"));
         continue;
       }
+      const rateResult = results[i * 3 + 2];
+      const rateAtTarget = rateResult?.status === "success" ? rateResult.result : undefined;
       const [totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares, lastUpdate, fee] = marketResult.result;
       const [supplyShares, borrowShares, collateral] = positionResult.result;
       const market = new Market({
@@ -219,6 +228,7 @@ export async function createMarketReader({
         totalBorrowShares,
         lastUpdate,
         fee,
+        rateAtTarget,
       });
       const rawPosition = new Position({ user: lenderAddress, marketId: runtime.id, supplyShares, borrowShares, collateral });
       const position = new AccrualPosition(rawPosition, market);

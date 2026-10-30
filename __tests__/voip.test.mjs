@@ -26,6 +26,7 @@ function makeMockMarket(overrides = {}) {
     liquidity: 5_000_000_000n,       // 5000 USDC (6 decimals)
     utilization: 500_000_000_000_000_000n, // 50%
     supplyApy: 0.0512,
+    rateAtTarget: 3_170_979_198n, // có thật ⇒ APY được đọc bình thường
     totalSupplyAssets: 10_000_000_000n,
     totalSupplyShares: 9_500_000_000n,
     params: {
@@ -87,6 +88,34 @@ describe("buildVoipMessage", () => {
     expect(msg).toContain("W E T H và U S D C");
     expect(msg).toContain("đã xuất hiện");
     expect(msg).toContain("Hãy vào trang web để rút tiền");
+  });
+
+  it("không có rateAtTarget ⇒ bỏ hẳn câu lãi suất, không đọc '0 phần trăm'", () => {
+    const msg = buildVoipMessage(
+      makeMockMarket({ rateAtTarget: undefined }),
+      makeMockToken(),
+      makeMockToken({ symbol: "WETH", decimals: 18 }),
+      makeMockPosition(),
+      "sudden_drain",
+      "Base",
+    );
+
+    expect(msg).not.toContain("Lãi suất năm");
+    expect(msg).not.toContain("Lãi suất năm: 0 phần trăm");
+    expect(msg).toContain("Tỉ lệ sử dụng: 50 phần trăm.");
+    expect(msg).toContain("Hãy vào trang web để rút tiền ngay.");
+  });
+
+  it("có rateAtTarget và supplyApy = 0 ⇒ vẫn đọc '0 phần trăm' (zero thật)", () => {
+    const msg = buildVoipMessage(
+      makeMockMarket({ supplyApy: 0 }),
+      makeMockToken(),
+      makeMockToken({ symbol: "WETH", decimals: 18 }),
+      makeMockPosition(),
+      "sudden_drain",
+    );
+
+    expect(msg).toContain("Lãi suất năm: 0 phần trăm.");
   });
 
   it("độ dài tin nhắn không vượt quá 500 ký tự", () => {
@@ -1005,6 +1034,33 @@ describe("sendVoipNotification (integration mock)", () => {
     const callBody = JSON.parse(fetchMock.mock.calls[1][1].body);
     expect(callBody.message.length).toBeLessThanOrEqual(500);
     expect(callBody.target).toBe("sip:test@sip.linphone.org");
+  });
+
+  it("sendVoipNotification thật: market thiếu rateAtTarget ⇒ message bỏ câu lãi suất", async () => {
+    const market = makeMockMarket({ rateAtTarget: undefined });
+    const loanToken = makeMockToken({ symbol: "USDC", decimals: 6 });
+    const collateralToken = makeMockToken({ symbol: "WETH", decimals: 18 });
+    const position = makeMockPosition();
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "tok", expires_in: 86400 }), { status: 200 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ call_id: "sn-no-apy", status: "queued" }), { status: 202 }));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ call_id: "sn-no-apy", status: "completed" }), { status: 200 }));
+
+    const result = await sendVoipNotification(market, loanToken, collateralToken, position, "sudden_drain", {
+      secretKey: "test-secret",
+      apiUrl: "http://api.example.com",
+      target: "sip:test@sip.linphone.org",
+      maxRetries: 1,
+      retryDelayMs: 0,
+    });
+
+    expect(result).toMatchObject({ sent: true, status: "completed", attempts: 1 });
+    // Message thực sự gửi lên API (call thứ 2: auth → initiate).
+    const callBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(callBody.message).not.toContain("Lãi suất năm");
+    expect(callBody.message).not.toContain("Lãi suất năm: 0 phần trăm");
+    expect(callBody.message).toContain("Tỉ lệ sử dụng: 50 phần trăm.");
+    expect(callBody.message).toContain("Hãy vào trang web để rút tiền ngay.");
   });
 
   it("sendVoipNotification thật: secretKey rỗng ⇒ tắt tính năng, 0 request", async () => {

@@ -30,14 +30,15 @@ const params = (loan = "0x" + "c".repeat(40), collateral = "0x" + "d".repeat(40)
 
 const token = (symbol, decimals) => ({ symbol, decimals });
 
-const marketResult = (totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares = 0n) => ({
+const marketResult = (totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares = 0n, lastUpdate = 1_000_000n) => ({
   status: "success",
-  result: [totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares, 1_000_000n, 0n],
+  result: [totalSupplyAssets, totalSupplyShares, totalBorrowAssets, totalBorrowShares, lastUpdate, 0n],
 });
 const positionResult = (supplyShares, borrowShares = 0n, collateral = 0n) => ({
   status: "success",
   result: [supplyShares, borrowShares, collateral],
 });
+const rateResult = (rateAtTarget) => ({ status: "success", result: rateAtTarget });
 
 function fakeClient({ results = [], blockNumber = 77n, onMulticall } = {}) {
   return {
@@ -66,15 +67,17 @@ const reader = (client, overrides = {}) =>
   });
 
 describe("market-reader — same-block multicall", () => {
-  it("2 market ⇒ 1 getBlockNumber + 1 multicall, cùng blockNumber, đủ 4 contract", async () => {
+  it("2 market ⇒ 1 getBlockNumber + 1 multicall, cùng blockNumber, đủ 6 contract", async () => {
     const calls = [];
     const client = fakeClient({
       blockNumber: 77n,
       results: [
         marketResult(1_000_000_000n, 1_000_000_000n, 200_000_000n),
         positionResult(500n),
+        rateResult(3_170_979_198n),
         marketResult(2_000_000_000n, 2_000_000_000n, 100_000_000n),
         positionResult(100n),
+        rateResult(2_500_000_000n),
       ],
       onMulticall: (args) => calls.push(args),
     });
@@ -84,8 +87,11 @@ describe("market-reader — same-block multicall", () => {
     expect(client.getBlockNumber).toHaveBeenCalledTimes(1);
     expect(client.multicall).toHaveBeenCalledTimes(1);
     expect(calls[0].blockNumber).toBe(77n);
-    expect(calls[0].contracts).toHaveLength(4);
+    expect(calls[0].contracts).toHaveLength(6);
     expect(calls[0].allowFailure).toBe(true);
+    // rateAtTarget phải đọc từ IRM của từng market, không phải địa chỉ Morpho.
+    expect(calls[0].contracts[2]).toMatchObject({ address: params().irm, functionName: "rateAtTarget", args: [MARKET_A] });
+    expect(calls[0].contracts[5]).toMatchObject({ address: params().irm, functionName: "rateAtTarget", args: [MARKET_B] });
     expect(snapshots.size).toBe(2);
     expect(failures.size).toBe(0);
     expect(blockNumber).toBe(77n);
@@ -94,6 +100,25 @@ describe("market-reader — same-block multicall", () => {
       expect(snapshot.market.liquidity).toBe(snapshot.market.totalSupplyAssets - snapshot.market.totalBorrowAssets);
       expect(snapshot.minLiquidityWei).toBe(snapshot.id === MARKET_A ? 1_000_000n : 2_000_000n);
     }
+    expect(snapshots.get(MARKET_A).market.rateAtTarget).toBe(3_170_979_198n);
+    expect(snapshots.get(MARKET_B).market.rateAtTarget).toBe(2_500_000_000n);
+  });
+
+  it("APY là số thật (không phải 0) khi IRM trả rateAtTarget", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const client = fakeClient({
+      results: [
+        marketResult(1_000_000_000_000n, 1_000_000_000_000n, 800_000_000_000n, 800_000_000_000n, BigInt(now - 3_600)),
+        positionResult(100_000_000_000n),
+        rateResult(3_170_979_198n),
+      ],
+    });
+    const r = await reader(client, { markets: [markets()[0]] });
+    const { snapshots } = await r.readSnapshots();
+    const market = snapshots.get(MARKET_A).market;
+
+    expect(market.utilization).toBe(800_000_000_000_000_000n);
+    expect(market.supplyApy).toBeGreaterThan(0.01);
   });
 
   it("allowFailure: market lỗi vào failures, market còn lại vẫn có snapshot", async () => {
@@ -101,8 +126,10 @@ describe("market-reader — same-block multicall", () => {
       results: [
         { status: "failure", error: new Error("execution reverted") },
         positionResult(1n),
+        rateResult(3_170_979_198n),
         marketResult(5_000_000n, 5_000_000n, 1_000_000n),
         positionResult(2n),
+        rateResult(3_170_979_198n),
       ],
     });
     const r = await reader(client);
@@ -112,6 +139,21 @@ describe("market-reader — same-block multicall", () => {
     expect(failures.get(MARKET_A).message).toBe("execution reverted");
     expect(snapshots.size).toBe(1);
     expect(snapshots.has(MARKET_B)).toBe(true);
+  });
+
+  it("IRM không hỗ trợ rateAtTarget ⇒ vẫn có snapshot, APY không đọc được sẽ là 0", async () => {
+    const client = fakeClient({
+      results: [
+        marketResult(1_000_000_000n, 1_000_000_000n, 200_000_000n),
+        positionResult(500n),
+        { status: "failure", error: new Error("execution reverted") },
+      ],
+    });
+    const r = await reader(client, { markets: [markets()[0]] });
+    const { snapshots, failures } = await r.readSnapshots();
+
+    expect(failures.size).toBe(0);
+    expect(snapshots.get(MARKET_A).market.rateAtTarget).toBeUndefined();
   });
 
   it("readSnapshots([]) ⇒ blockNumber null và KHÔNG gọi RPC nào", async () => {
@@ -198,11 +240,11 @@ describe("market-reader — chain không có Multicall3", () => {
   );
 
   it("readSnapshots fallback sang readContract và giữ cùng blockNumber", async () => {
-    const readContract = vi.fn(async ({ functionName }) => (
-      functionName === "market"
-        ? [1_000_000_000n, 1_000_000_000n, 200_000_000n, 0n, 1_000_000n, 0n]
-        : [500n, 0n, 0n]
-    ));
+    const readContract = vi.fn(async ({ functionName }) => {
+      if (functionName === "market") return [1_000_000_000n, 1_000_000_000n, 200_000_000n, 0n, 1_000_000n, 0n];
+      if (functionName === "rateAtTarget") return 3_170_979_198n;
+      return [500n, 0n, 0n];
+    });
     const client = {
       getBlockNumber: vi.fn(async () => 77n),
       multicall: vi.fn(async () => { throw chainWithoutMulticall(); }),
@@ -213,11 +255,12 @@ describe("market-reader — chain không có Multicall3", () => {
     const { blockNumber, snapshots, failures } = await r.readSnapshots();
 
     expect(client.multicall).toHaveBeenCalledTimes(1);
-    expect(readContract).toHaveBeenCalledTimes(4);
+    expect(readContract).toHaveBeenCalledTimes(6);
     expect(readContract.mock.calls[0][0].blockNumber).toBe(77n);
     expect(blockNumber).toBe(77n);
     expect(snapshots.size).toBe(2);
     expect(failures.size).toBe(0);
+    expect(snapshots.get(MARKET_A).market.rateAtTarget).toBe(3_170_979_198n);
   });
 
   it("defaultFetchToken fallback đọc decimals/symbol bằng readContract", async () => {
