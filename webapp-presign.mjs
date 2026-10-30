@@ -584,6 +584,29 @@ export function renderTierList() {
     state.presignedTiers.filter(t => t.amount).length;
 }
 
+/**
+ * Chốt danh tính ví TRƯỚC KHI ký presign (2026-10-30): calldata ghi `onBehalf = lender` và
+ * `receiver = currentAccount`, nên chữ ký chỉ có nghĩa khi CHÍNH ví lender ký. Ví khác:
+ *   - proxy từ chối capture (`from !== lender`) ⇒ chữ ký không bao giờ vào bundle;
+ *   - nếu lender đã authorize account đó trên Morpho, lệnh rút sẽ gửi tiền về SAI địa chỉ.
+ * Fail closed kèm chỉ dẫn thay vì để ví ký một bundle không dùng được (kiểm tra này KHÔNG khoá
+ * nút Ký — bấm sẽ nhận thông báo rõ, đúng quyết định bỏ H5 preflight gate 2026-09-24).
+ * @returns {boolean} true = đúng ví lender, được phép ký
+ */
+function ensureLenderWallet() {
+  const lender = state.lenderAddress;
+  if (!lender) {
+    showPresignError("Thiếu địa chỉ lender trong cấu hình — kiểm tra LENDER_ADDRESS trong .env rồi tải lại trang.");
+    return false;
+  }
+  if (state.currentAccount && state.currentAccount.toLowerCase() === lender.toLowerCase()) return true;
+  showPresignError(
+    `Ví đang kết nối (${state.currentAccount}) không phải địa chỉ lender (${lender}) — presign chỉ ký được ` +
+    "từ chính ví lender. Chuyển ví về đúng tài khoản lender rồi bấm ký lại; không có giao dịch nào được gửi đi."
+  );
+  return false;
+}
+
 // ============================================================
 // PRESIGN: SIGN ALL TIERS
 // ============================================================
@@ -599,6 +622,7 @@ export async function signAllTiers() {
     showPresignError("Vui lòng lấy nonce trước.");
     return;
   }
+  if (!ensureLenderWallet()) return;
   // Read gas from input fields (user có thể đã chỉnh sửa) — chỉ ĐỌC, không invalidate
   // (D12: gọi `onGasInputChange()` ở đây từng xoá chữ ký các mốc vừa ký dù gas không đổi).
   const gasError = readGasInputs();
@@ -649,10 +673,45 @@ export async function signAllTiers() {
   let signed = 0;
   // Số tier không đọc được bằng chứng nonce (proxy cũ/mạng lỗi) — dùng cho lời kết trung thực.
   let unverified = 0;
+  // Ảnh chụp tài khoản lúc bắt đầu ký (chẩn đoán 2026-10-30): MỌI mốc trong một lượt phải ký từ
+  // CÙNG một tài khoản. Ví có thể phát `accountsChanged([])` / `disconnect` ngay sau khi trả hash
+  // cho mốc trước (mất quyền tài khoản, mất RPC của ví) ⇒ `disconnectWallet()` đặt
+  // `state.currentAccount = null`. Vòng lặp cũ vẫn chạy tiếp và `encodeFunctionData` nhận
+  // `receiver = null`, ném `Address "null" is invalid` (viem) — đúng triệu chứng "Lỗi tier 2:
+  // Address null" mà KHÔNG nói gì về nguyên nhân thật.
+  const signingAccount = state.currentAccount;
 
   for (let i = 0; i < state.presignedTiers.length; i++) {
     const tier = state.presignedTiers[i];
     if (!tier.amount || parseFloat(tier.amount) <= 0) continue;
+
+    // Cổng chặn giữa hai mốc: mất ví (null) hoặc đổi tài khoản ⇒ DỪNG trước khi dựng calldata.
+    // Không có cổng này, lỗi duy nhất người dùng thấy là InvalidAddressError của viem, còn nút Ký
+    // được bật lại dù ví đã mất — mời bấm một lượt chắc chắn lỗi y hệt.
+    const walletLost = !state.walletClient || !state.currentAccount;
+    const accountSwitched = !walletLost &&
+      String(state.currentAccount).toLowerCase() !== String(signingAccount).toLowerCase();
+    if (walletLost || accountSwitched) {
+      const reason = walletLost
+        ? "Ví đã ngắt kết nối giữa lúc ký"
+        : `Tài khoản ví đã đổi sang ${state.currentAccount} giữa lúc ký`;
+      tier.status = "error";
+      tier.error = reason;
+      renderTierList();
+      progressFill.style.width = `${(signed / total) * 100}%`;
+      progressText.textContent = `❌ ${reason} — đã dừng ký (${signed}/${total} mốc đã ký)`;
+      showPresignError(
+        `${reason}. Đã dừng trước khi ký mốc ${tier.amount} ${state.loanToken.symbol} để không dựng ` +
+        "giao dịch với người nhận/người ký sai. " +
+        (walletLost
+          ? "Kết nối lại ví (đúng địa chỉ lender), xác thực lại rồi bấm “Ký Tất Cả”."
+          : `Chuyển ví về đúng địa chỉ ${state.lenderAddress} rồi bấm “Ký Tất Cả”.`) +
+        (signed > 0 ? ` ${signed} mốc đã ký vẫn giữ nguyên trạng thái ✅.` : "")
+      );
+      isSigningInProgress = false;
+      updateSignButton();
+      return;
+    }
 
     tier.status = "signing";
     renderTierList();
@@ -747,6 +806,7 @@ export async function signWithdrawAll() {
     showPresignError("Vui lòng lấy nonce trước.");
     return;
   }
+  if (!ensureLenderWallet()) return;
   const gasError = onGasInputChange();
   // `=== null` chứ KHÔNG falsy: `0n` (không tip) là giá trị hợp lệ và `0n` là falsy trong JS
   // (2026-09-26). Trần phí 0 đã bị chặn phía trên qua `gasError`.
