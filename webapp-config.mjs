@@ -15,6 +15,7 @@ import {
   WEBAPP_PASSWORD,
   PROXY_RPC_RATE_LIMIT,
   PROXY_ALLOW_PUBLIC_RPC,
+  PRESIGN_SIM_UNLOCK,
   CHAIN_ID,
   CHAIN_NAME,
   NATIVE_CURRENCY,
@@ -57,6 +58,9 @@ export function buildWebappConfig({
   explorerUrl = EXPLORER_URL,
   explorerName = EXPLORER_NAME,
   morphoBlueAddress = MORPHO_BLUE_ADDRESS,
+  // Proxy có đang "cấp thanh khoản ảo" cho mô phỏng ví không (chỉ để hiển thị
+  // cảnh báo trong tab Ký Sẵn — quyết định thật nằm ở proxy).
+  presignSimUnlock = PRESIGN_SIM_UNLOCK,
 } = {}) {
   if (!Array.isArray(markets) || markets.length === 0) {
     throw new Error("❌ Không có market nào được cấu hình — kiểm tra config/markets.json (MARKETS_FILE).");
@@ -149,6 +153,7 @@ export function buildWebappConfig({
     // Chu kỳ refresh server đang chạy (giờ) — chỉ để hiển thị.
     rpcRefreshHours: Number(refreshHours) > 0 ? Number(refreshHours) : 0,
     claimRecoveryMs: RECOVERY_THRESHOLD_MS,
+    presignSimUnlock: presignSimUnlock !== false,
   };
 }
 

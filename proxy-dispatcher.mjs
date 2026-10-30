@@ -26,6 +26,13 @@ import {
   NONCE_MISMATCH,
 } from "./presign-verify.mjs";
 import { requireConfiguredMarket } from "./market-config.mjs";
+import {
+  doubleSupplyWord,
+  findPresignTarget,
+  isInsufficientLiquidityRevert,
+  marketStorageKey,
+  mergeLiquidityOverride,
+} from "./presign-simulation.mjs";
 
 /** Bound the in-memory capture buffer (drop oldest) to cap memory/DoS surface. */
 export const MAX_CAPTURED_TXS = 50;
@@ -52,6 +59,8 @@ export function defaultBlockFallback() {
  * @param {Array} [deps.capturedTxs] - shared capture buffer (mutated in place)
  * @param {{ number: string, hash: string, baseFee: bigint }} [deps.blockFallback]
  * @param {object} [deps.logger] - console-like sink
+ * @param {boolean} [deps.presignSimUnlock] - cho ví có mô phỏng (Ambire) thấy
+ *   thanh khoản ảo khi ký sẵn (mặc định BẬT; xem presign-simulation.mjs).
  */
 export function createRpcDispatcher({
   markets,
@@ -62,6 +71,7 @@ export function createRpcDispatcher({
   capturedTxs = [],
   blockFallback = defaultBlockFallback(),
   logger = console,
+  presignSimUnlock = true,
 }) {
   if (!Number.isSafeInteger(Number(chainId)) || Number(chainId) <= 0) {
     throw new Error(`createRpcDispatcher: chainId không hợp lệ: ${chainId}`);
@@ -87,6 +97,40 @@ export function createRpcDispatcher({
       warn(
         `[proxy] ⚠️  không đọc được nonce on-chain của ${String(lenderAddress).slice(0, 10)}…: ${err.message} — ` +
         `bỏ qua kiểm nonce (fail open; registry vẫn bị D16/D17 dọn phía sau)`
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Gọi lại `eth_call` với state override "cấp thanh khoản ảo" cho market.
+   *
+   * Chạy SAU khi call gốc đã revert đúng `insufficient liquidity` và caller đã
+   * xác nhận đây là presign withdraw của lender (findPresignTarget). Mọi lỗi ở
+   * đây (không đọc được storage, RPC lỗi, params lạ) trả `null` ⇒ caller trả
+   * ĐÚNG revert gốc; không bao giờ che lỗi bằng một success giả.
+   */
+  async function retryEthCallWithLiquidity(params, target) {
+    try {
+      const [call, blockTag = "latest"] = Array.isArray(params) ? params : [];
+      if (!call || typeof call !== "object") return null;
+      const slotKey = marketStorageKey(target.marketId);
+      const current = await client.request({
+        method: "eth_getStorageAt",
+        params: [morphoBlueAddress, slotKey, blockTag],
+      });
+      if (typeof current !== "string") return null;
+      const retryParams = mergeLiquidityOverride(params, {
+        morphoBlueAddress,
+        slotKey,
+        word: doubleSupplyWord(current),
+      });
+      if (!retryParams) return null;
+      return await client.request({ method: "eth_call", params: retryParams });
+    } catch (err) {
+      warn(
+        `[proxy] ⚠️  presign sim unlock không áp được cho market ${String(target.marketId).slice(0, 10)}…: ` +
+        `${err?.message || String(err)} — trả revert gốc`
       );
       return null;
     }
@@ -209,6 +253,13 @@ export function createRpcDispatcher({
         }
 
       case "eth_call": {
+        // Nhận diện TRƯỚC khi gọi: nếu ví đang mô phỏng một presign withdraw hợp
+        // lệ của lender thì một revert `insufficient liquidity` là DỰ KIẾN của
+        // tính năng ký sẵn (giao dịch được tạo để revert bây giờ, monitor chỉ
+        // broadcast khi thanh khoản xuất hiện) — không phải lý do để ví chặn ký.
+        const presignTarget = presignSimUnlock
+          ? findPresignTarget(params?.[0], { morphoBlueAddress, lenderAddress, markets })
+          : null;
         try {
           // Forward raw JSON-RPC so `from` (Ambire spoof origin) + state overrides (params[2])
           // are preserved. viem publicClient.call() drops `from` (expects `account`) and
@@ -218,6 +269,16 @@ export function createRpcDispatcher({
           // provider (e.g. Ankr) can still succeed on another.
           return await client.request({ method: "eth_call", params });
         } catch (err) {
+          if (presignTarget && isInsufficientLiquidityRevert(err)) {
+            const unlocked = await retryEthCallWithLiquidity(params, presignTarget);
+            if (unlocked != null) {
+              log(
+                `[proxy] 🔓 presign sim unlocked: market ${String(presignTarget.marketId).slice(0, 10)}… ` +
+                `(${presignTarget.shape}) — state override CHỈ cho mô phỏng ví, không broadcast`
+              );
+              return unlocked;
+            }
+          }
           // viem RpcRequestError nén chi tiết thật vào `details`/`cause` còn
           // shortMessage luôn là "RPC Request failed." — nếu log shortMessage
           // thì sim revert bình thường (thường gặp với Ambire deployless sim)
@@ -465,6 +526,7 @@ export function createProxyRequestHandler({
   rpcRateLimit = 0,
   rpcRateLimitWindowMs = 60_000,
   rpcMethodAllowList = null,
+  presignSimUnlock = true,
   now = () => Date.now(),
 }) {
   const dispatcher = createRpcDispatcher({
@@ -476,6 +538,7 @@ export function createProxyRequestHandler({
     capturedTxs,
     blockFallback,
     logger,
+    presignSimUnlock,
   });
   const authz = (req) => requireLenderOrInternal(req, lenderAddress);
   // Mutex: only one bundle operation at a time to prevent concurrent

@@ -27,6 +27,7 @@ import {
   CHAIN,
   PROXY_RPC_RATE_LIMIT,
   PROXY_ALLOW_PUBLIC_RPC,
+  PRESIGN_SIM_UNLOCK,
 } from "./shared.mjs";
 import { createChainBoundPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
 import { loadMarkets } from "./market-config.mjs";
@@ -112,7 +113,15 @@ const handler = createProxyRequestHandler({
   // O2: mặc định 0/null ⇒ hành vi y hệt trước khi thêm hai tuỳ chọn này.
   rpcRateLimit: PROXY_RPC_RATE_LIMIT,
   rpcMethodAllowList: PROXY_ALLOW_PUBLIC_RPC ? RPC_METHOD_ALLOW_LIST : null,
+  // Mặc định BẬT: ví có mô phỏng (Ambire) chỉ ký được presign nếu mô phỏng thấy
+  // đủ thanh khoản. PRESIGN_SIM_UNLOCK=0 để tắt (proxy trả đúng revert của chain).
+  presignSimUnlock: PRESIGN_SIM_UNLOCK,
 });
+console.log(
+  PRESIGN_SIM_UNLOCK
+    ? "[proxy] 🔓 presign sim unlock: BẬT — mô phỏng presign withdraw thiếu thanh khoản sẽ được cấp thanh khoản ảo (chỉ mô phỏng, không broadcast); PRESIGN_SIM_UNLOCK=0 để tắt"
+    : "[proxy] presign sim unlock: TẮT (PRESIGN_SIM_UNLOCK=0) — ví có mô phỏng sẽ thấy đúng revert của chain"
+);
 
 // ---- SSL/TLS setup ----
 let sslOptions = null;

@@ -9,7 +9,7 @@
 import { encodeFunctionData, formatUnits, parseUnits } from "viem";
 import { retryTransient, stepNonce } from "./webapp-logic.mjs";
 import { esc } from "./webapp-render.mjs";
-import { CHAIN, CHAIN_ID, MORPHO_ABI, MORPHO_BLUE, state } from "./webapp-state.mjs";
+import { CHAIN, CHAIN_ID, MORPHO_ABI, MORPHO_BLUE, PRESIGN_SIM_UNLOCK, state } from "./webapp-state.mjs";
 import { clearSession, getAuthHeaders, getProxyUrl, isAuthenticated, showPresignError, showPresignSuccess, updateAuthUI } from "./webapp-shell.mjs";
 import { fetchExistingBundle, refreshPresignOverview, renderPresignWithdrawAllInfo } from "./webapp-presign-bundles.mjs";
 
@@ -17,7 +17,21 @@ let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
 
 let isSigningInProgress = false;
 
+/**
+ * Hiện/ẩn cảnh báo "proxy cấp thanh khoản ảo cho mô phỏng ví" (2026-10-30).
+ *
+ * Chỉ là thông tin: cờ do server inject; proxy mới là nơi quyết định. Hiện ngay
+ * cả khi chưa kết nối ví — người dùng cần biết vì sao ví báo "thành công" trong
+ * khi thanh khoản đang bằng 0.
+ */
+export function renderPresignSimNote() {
+  const el = document.getElementById("presign-sim-note");
+  if (!el) return;
+  el.style.display = PRESIGN_SIM_UNLOCK ? "block" : "none";
+}
+
 export function updatePresignWalletUI() {
+  renderPresignSimNote();
   const statusEl = document.getElementById("presign-wallet-status");
   const connectedEl = document.getElementById("presign-wallet-connected");
   if (state.currentAccount) {
@@ -469,6 +483,28 @@ function updateNonceHint() {
     `Ví không cho đặt nonce sẽ ký ở nonce riêng — webapp phát hiện ngay sau khi ký và sẽ không lưu.</div>`;
 }
 
+/**
+ * Ví từ chối ký vì mô phỏng thấy thiếu thanh khoản → lời giải thích đúng bản
+ * chất (2026-10-30). Trả `null` khi lỗi không liên quan mô phỏng.
+ *
+ * Đây KHÔNG phải lỗi cấu hình: giao dịch ký sẵn được tạo để revert bây giờ và
+ * chỉ mine khi thanh khoản xuất hiện. Không map riêng thì người dùng đọc một
+ * chuỗi tiếng Anh của ví và tưởng webapp hỏng.
+ */
+export function walletSimulationBlockMessage(err) {
+  const text = String(err?.message || err || "");
+  if (!/insufficient liquidity|simulation/i.test(text)) return null;
+  return (
+    `Ví đã <b>mô phỏng giao dịch trước khi ký</b> và thấy <b>thanh khoản chưa đủ</b> — đó là DỰ KIẾN của giao dịch ` +
+    `ký sẵn (monitor chỉ broadcast khi thanh khoản xuất hiện), không phải lỗi cấu hình. ` +
+    (PRESIGN_SIM_UNLOCK
+      ? `Proxy đang bật chế độ cấp thanh khoản ảo cho mô phỏng; nếu ví vẫn chặn, kiểm tra ví đang trỏ RPC về ` +
+        `<code>${esc(getProxyUrl())}</code> rồi thử lại.`
+      : `Server đang TẮT chế độ này (<code>PRESIGN_SIM_UNLOCK=0</code>) — bật lại (mặc định bật) để proxy cho mô ` +
+        `phỏng thấy thanh khoản, hoặc dùng ví cho phép ký khi mô phỏng lỗi.`)
+  );
+}
+
 /** Thông báo lệch nonce dùng đúng HAI SỐ (không suy đoán) + đường sửa. */
 function nonceMismatchMessage({ actual, requested, label }) {
   return (
@@ -713,7 +749,13 @@ export async function signAllTiers() {
       tier.error = err.message;
       renderTierList();
       progressFill.style.width = `${(signed / total) * 100}%`;
-      progressText.textContent = `❌ Lỗi tier ${i + 1}: ${err.message}`;
+      // Ví chặn vì mô phỏng thấy thiếu thanh khoản: giải thích đúng bản chất
+      // thay vì để chuỗi tiếng Anh của ví làm người dùng tưởng webapp hỏng.
+      const simMessage = walletSimulationBlockMessage(err);
+      progressText.textContent = simMessage
+        ? `❌ Ví chặn vì mô phỏng thấy thanh khoản chưa đủ (dự kiến của ký sẵn)`
+        : `❌ Lỗi tier ${i + 1}: ${err.message}`;
+      if (simMessage) showPresignError(simMessage);
       isSigningInProgress = false;
       document.getElementById("btn-sign-all").disabled = false;
       return;
@@ -833,7 +875,11 @@ export async function signWithdrawAll() {
   } catch (err) {
     state.presignedWithdrawAll = { status: "error", error: err.message };
     btn.textContent = "🔄 Ký Rút Toàn Bộ Shares";
-    statusEl.innerHTML = `<span style="color:var(--red)">❌ Lỗi: ${err.message}</span>`;
+    statusEl.innerHTML = `<span style="color:var(--red)">❌ Lỗi: ${esc(err.message)}</span>`;
+    // Cùng ca với `signAllTiers`: ví mô phỏng thấy `insufficient liquidity` là
+    // dự kiến của ký sẵn, không phải lỗi cấu hình — giải thích đúng đường.
+    const simMessage = walletSimulationBlockMessage(err);
+    if (simMessage) showPresignError(simMessage);
   } finally {
     isSigningInProgress = false;
     btn.disabled = false;

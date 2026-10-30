@@ -242,6 +242,15 @@ export const PROXY_HOST = env("PROXY_HOST", "127.0.0.1");
 // Mặc định 0/false = giữ nguyên hành vi cũ (không giới hạn).
 export const PROXY_RPC_RATE_LIMIT = envNum("PROXY_RPC_RATE_LIMIT", 0);
 export const PROXY_ALLOW_PUBLIC_RPC = /^(1|true|yes)$/i.test(env("PROXY_ALLOW_PUBLIC_RPC", ""));
+
+// ---- Cho ví có mô phỏng trước khi ký (Ambire) ký được giao dịch ký sẵn ----
+// Presign chỉ dùng được nếu ví chịu ký một giao dịch SẼ REVERT ngay bây giờ (rút
+// khi thanh khoản chưa có); Ambire mô phỏng trước rồi chặn ở `insufficient
+// liquidity`. Proxy là RPC ví dùng để mô phỏng, nên khi revert đó thuộc ĐÚNG một
+// presign withdraw hợp lệ của lender, proxy gọi lại kèm stateOverride cấp thanh
+// khoản ảo cho market (xem presign-simulation.mjs) — chỉ cho mô phỏng, không
+// broadcast. Mặc định BẬT (quyết định 2026-10-30); PRESIGN_SIM_UNLOCK=0 để tắt.
+export const PRESIGN_SIM_UNLOCK = !/^(0|false|no|off)$/i.test(env("PRESIGN_SIM_UNLOCK", ""));
 // Proxy URL: cùng host với webapp, port 8545
 export const PROXY_RPC_URL = (() => {
   const explicit = env("PROXY_RPC_URL", "");

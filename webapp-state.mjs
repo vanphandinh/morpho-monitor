@@ -26,6 +26,11 @@ export const SERVER_PROXY_RPC_URL = CFG.proxyRpcUrl || "http://127.0.0.1:8545";
 // broadcasting lâu hơn ngưỡng này là dấu hiệu bị thay thế/kẹt — phải hiện UI.
 export const CLAIM_RECOVERY_MS = Number(CFG.claimRecoveryMs) > 0 ? Number(CFG.claimRecoveryMs) : 180000;
 
+// Proxy có đang cấp "thanh khoản ảo" cho mô phỏng của ví không (chẩn đoán
+// 2026-10-30). Chỉ để hiển thị cảnh báo — quyết định thật nằm ở proxy; config
+// cũ không có field này thì coi như BẬT (đúng mặc định của server).
+export const PRESIGN_SIM_UNLOCK = CFG.presignSimUnlock !== false;
+
 // R4: ngân sách xác minh tx (TX_VERIFY_ATTEMPTS / TX_VERIFY_DELAY_MS) nay nằm
 // trong webapp-logic.mjs cùng với txVisibleOnChain() — xem module đó.
 

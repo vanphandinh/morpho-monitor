@@ -430,6 +430,15 @@
           <b>Name:</b> <span id="presign-proxy-name">—</span><br>
           <small id="presign-proxy-chain-note">Sau khi ký xong, đổi lại RPC về mạng thật.</small>
         </div>
+        <!-- Chẩn đoán 2026-10-30: ví có mô phỏng (Ambire) chỉ ký được presign nếu
+             mô phỏng thấy đủ thanh khoản. Proxy cấp "thanh khoản ảo" cho đúng
+             withdraw của lender — hiện cảnh báo để người dùng không tưởng là tiền
+             đã rút thật. Nội dung/hiển thị do renderPresignSimNote() quyết định. -->
+        <div id="presign-sim-note" class="banner info" style="display:none;margin-bottom:8px;font-size:0.85rem">
+          🔓 <b>Chế độ ký sẵn:</b> proxy đang cấp <b>thanh khoản ảo</b> cho mô phỏng của ví — ví sẽ thấy giao dịch rút
+          THÀNH CÔNG dù thanh khoản hiện chưa đủ. Giao dịch chỉ được <b>lưu lại</b>; monitor broadcast khi thanh khoản
+          xuất hiện. Không có tiền nào được gửi lúc ký.
+        </div>
         <div class="row">
           <span class="label">Nonce:</span>
           <button class="btn-outline btn-nonce-step" id="btn-nonce-dec" onclick="onNonceStep(-1)" disabled
