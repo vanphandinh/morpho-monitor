@@ -2,6 +2,10 @@
 
 Repo: `morpho-monitor` · Nhánh: `feat/presign-sim-unlock` · Bắt đầu từ `4f3fefd` (`main`).
 
+> **Kết quả (2026-10-30, test trên VPS):** **H2 được xác nhận** — Ambire mô phỏng bundle ở backend
+> riêng, không gửi phép mô phỏng bị chặn qua proxy. Fix ở tầng RPC vì vậy vô hiệu với Ambire;
+> PR #7 đã đóng. Bằng chứng và hệ quả: §8.
+
 ## 1. Triệu chứng (nguyên văn)
 
 > Ví Ambire có mô phỏng kết quả giao dịch trước nên việc tạo trước giao dịch presign khi thanh khoản
@@ -47,6 +51,8 @@ không phải call trực tiếp tới Morpho. `from` trong draft là placeholde
   override để spoof origin/portfolio). Vì vậy có thể gọi lại chính call đó kèm override bổ sung.
 - Tab **Rút Tiền** không bị ảnh hưởng: `doWithdraw` tự `simulateContract` qua **public RPC** trước khi
   gọi ví (`webapp-withdraw.mjs`), nên che mô phỏng phía ví không thể làm tab đó báo sai.
+
+> **Cập nhật 2026-10-30:** giả định "ví mô phỏng qua proxy" là **sai với Ambire** — xem §8.
 
 ### 2.4 Chi tiết Morpho cần ghim
 
@@ -169,17 +175,76 @@ bởi 833 test hiện có.
 
 ## 7. Rủi ro / còn mở
 
-1. **Chưa chứng minh Ambire gọi `eth_call` qua proxy** ở đúng thời điểm chặn ký (không chạy được
-   extension trong môi trường này). Sau deploy: thử ký một tier bằng Ambire; nếu proxy log có `🔓`
-   thì H1 đúng. Nếu **không** có `eth_call` nào lúc bị chặn ⇒ H2 đúng: ví mô phỏng ở backend riêng,
-   fix vô hiệu, và phương án dự phòng là bỏ presign với Ambire (monitor báo khi có thanh khoản rồi
-   rút tay).
-2. **Mặc định BẬT** (quyết định của operator, 2026-10-30). Nghĩa là mọi mô phỏng `withdraw` hợp lệ
-   của lender tới market đã cấu hình đều được "cấp thanh khoản ảo" qua proxy, không chỉ trong lúc
-   ký presign. Tab Rút Tiền vẫn an toàn vì tự simulate qua public RPC trước. `PRESIGN_SIM_UNLOCK=0`
-   khôi phục đúng hành vi của chain.
+1. **ĐÃ KẾT LUẬN — H2 (2026-10-30, test trên VPS):** Ambire **không** gửi phép mô phỏng bị chặn qua
+   proxy; nó mô phỏng bundle ở backend riêng. Fix vô hiệu với Ambire và PR #7 đã đóng. Bằng chứng
+   đầy đủ ở §8. Phương án dự phòng: bỏ presign với Ambire (monitor báo khi có thanh khoản rồi rút
+   tay) hoặc dùng ví ký raw tx (MetaMask/Rabby) với khoá EOA.
+2. **Mặc định BẬT trong nhánh** (quyết định của operator, 2026-10-30; **§8.4 kết luận không merge**
+   vì không có beneficiary đã biết). Nghĩa là mọi mô phỏng `withdraw` hợp lệ của lender tới market đã
+   cấu hình đều được "cấp thanh khoản ảo" qua proxy, không chỉ trong lúc ký presign. Tab Rút Tiền
+   vẫn an toàn vì tự simulate qua public RPC trước. `PRESIGN_SIM_UNLOCK=0` khôi phục đúng hành vi
+   của chain.
 3. **Lệch giá share do làm tròn**: với tier theo `shares`, số assets ví hiển thị trong mô phỏng lệch
    ~0,8 % so với thực (443 959 859 971 vs 447 577 029 273). Calldata ký vẫn là `shares`, nên giao
    dịch thật không đổi — chỉ con số preview của ví là xấp xỉ.
 4. Override chỉ chạm **một** market slot; không đụng vị thế, allowance hay bất kỳ state nào khác.
    Proxy vẫn không bao giờ broadcast: `eth_sendRawTransaction` chỉ capture.
+
+## 8. Kết quả kiểm chứng trên VPS (2026-10-30) — H2
+
+Thử nghiệm trên deployment thật (Ethereum mainnet, ví Ambire), sau khi build nhánh này.
+
+### 8.1 Lender là EOA uỷ quyền EIP-7702
+
+`eth_getCode(0x0a5e…66c3)` trả 23 byte:
+
+```
+0xef0100 5a7fc11397e9a8ad41bf10bf13f22b0a63f96f6d
+```
+
+⇒ EOA đang delegate cho implementation `0x5a7f…6f6d` (mô hình smart-EOA của Ambire). Ambire gói giao
+dịch thành bundle và mô phỏng bằng dịch vụ của nó; RPC của dApp chỉ là một phần trong luồng.
+
+### 8.2 Proxy có được dùng — nhưng không cho phép mô phỏng quyết định
+
+Bật log chẩn đoán tạm (`PROXY_DIAG_RPC=1`) ở đầu `handleRpc` và trong `catch` của `eth_call`:
+
+```
+14:34:02.204  eth_estimateGas from=0x0A5e1Db3 to=0xBBBBBbbB selector=0x5c2bea49 len=586 withdraw@2
+14:34:02.141  eth_call ... selector=0xc501a06a len=2250 withdraw@1610
+14:34:02.275  eth_call ... selector=0xae1473bf len=5322 withdraw@4682
+14:34:02.208  eth_call ... selector=0x1385d5a9 len=4426 withdraw@1354
+```
+
+- `eth_estimateGas` đúng là withdraw của lender tới Morpho. Proxy trả cứng `200000` cho mọi
+  `eth_estimateGas`, nên đường này luôn "thành công" — không thể là nguồn của lỗi.
+- Logger đã được kiểm chứng bằng một `eth_call` revert nhân tạo (`to=Morpho, data=0xdeadbeef`):
+  `[proxy][diag] eth_call ERROR target=none liquidity=false msg=execution reverted`.
+- Ký lại một tier: **không có dòng `eth_call ERROR` nào** trong khoảng thời gian bấm ký.
+
+⇒ Trong lúc chặn ký, **không có `eth_call` nào revert qua proxy**. Thông báo
+`Transaction cannot be sent because of a contract error. Error code: insufficient liquidity` do
+**backend mô phỏng riêng của Ambire** sinh ra, không phải từ RPC mà dApp cấu hình.
+
+### 8.3 Cơ chế unlock vẫn đúng — chỉ sai giả định tích hợp
+
+Probe trực tiếp qua proxy, dựng đúng calldata `withdraw` toàn bộ vị thế của lender:
+
+| `presignSimUnlock` | Kết quả |
+| --- | --- |
+| BẬT (mặc định) | `PASS` — trả `assets` + `shares` (64 byte), ví sẽ thấy mô phỏng thành công |
+| TẮT (`PRESIGN_SIM_UNLOCK=0`) | `execution reverted: insufficient liquidity` |
+
+Nghĩa là code hoạt động đúng khi lời gọi đi qua proxy; giả định "Ambire mô phỏng qua proxy" mới là
+thứ sai. Đây là lý do phải test bằng ví thật thay vì chỉ test đơn vị.
+
+### 8.4 Kết luận
+
+1. **H2 xác nhận.** Không có thay đổi nào ở proxy có thể ảnh hưởng tới quyết định chặn ký của
+   Ambire, vì phép mô phỏng đó không đi qua proxy.
+2. **Không merge mặc định BẬT.** Tính năng thay đổi hành vi mô phỏng của mọi `eth_call` withdraw hợp
+   lệ (GitNexus xếp `critical`) mà không có beneficiary đã biết. PR #7 đóng; nhánh giữ làm hồ sơ.
+3. **Presign chỉ khả thi với ví ký raw tx qua proxy** (MetaMask/Rabby + khoá EOA). Với Ambire: chờ
+   monitor báo thanh khoản rồi rút tay ở tab Rút Tiền.
+4. Nếu sau này muốn dùng cho ví khác: giữ code opt-in (**mặc định TẮT**) và lặp lại đúng quy trình
+   log ở §8.2 trước khi bật — đừng suy đoán từ hành vi của một ví.
