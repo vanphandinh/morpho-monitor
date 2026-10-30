@@ -4,11 +4,144 @@ import {
   VOIP_TARGET,
   VOIP_MAX_RETRIES,
   VOIP_RETRY_DELAY_MS,
-  formatTokenAmount,
-  wadToPercent,
-  formatApy,
   toTtsFriendly,
 } from "./shared.mjs";
+
+// ============================================================
+// TTS NUMBER FORMAT
+// ============================================================
+//
+// Số của `formatUnits` không đọc được bằng tiếng Việt: "2450000" bị provider
+// gom hàng nghìn kiểu Anh ("2,450,000") rồi đọc dấu "," như dấu thập phân,
+// còn "12345.678901" thành 6 chữ số lẻ rời rạc. Ba hàm dưới đây đổi sang câu
+// đọc được: đơn vị lớn (nghìn/triệu/tỷ), dấu "," thập phân, "phần trăm".
+// Bất biến: mọi cụm chữ số ≤ 3 ký tự ⇒ provider không còn gì để chèn dấu
+// phân cách hàng nghìn.
+
+/** Trần ký tự của một tin nhắn VoIP (giới hạn của API). */
+const MAX_VOIP_MESSAGE_CHARS = 500;
+
+/** Chia và làm tròn nửa lên cho BigInt — không đi qua Number. */
+function roundDiv(numerator, denominator) {
+  return (numerator + denominator / 2n) / denominator;
+}
+
+/**
+ * Đọc một số nguyên theo đơn vị lớn: 2450000 → "2 triệu 450 nghìn".
+ * Tối đa hai nhóm; nhóm dưới được làm tròn tới đơn vị của nó và có thể nâng
+ * cấp (999.999.999 → "1 tỷ") nên không bao giờ sinh ra "1000 triệu".
+ */
+function formatIntegerForTts(value) {
+  if (value < 1000n) return value.toString();
+  if (value >= 10n ** 12n) return `${formatIntegerForTts(roundDiv(value, 10n ** 9n))} tỷ`;
+
+  const levels = [
+    { scale: 10n ** 9n, word: "tỷ", lower: 10n ** 6n, lowerWord: "triệu" },
+    { scale: 10n ** 6n, word: "triệu", lower: 10n ** 3n, lowerWord: "nghìn" },
+    { scale: 10n ** 3n, word: "nghìn", lower: 1n, lowerWord: "" },
+  ];
+  for (const level of levels) {
+    if (value < level.scale) continue;
+    const rounded = roundDiv(value, level.lower) * level.lower;
+    // Làm tròn tràn lên cấp trên (vd 999.999.999 → 1.000.000.000).
+    if (rounded >= level.scale * 1000n) return formatIntegerForTts(rounded);
+    const high = rounded / level.scale;
+    const low = (rounded % level.scale) / level.lower;
+    if (low === 0n) return `${high} ${level.word}`;
+    return level.lowerWord
+      ? `${high} ${level.word} ${low} ${level.lowerWord}`
+      : `${high} ${level.word} ${low}`;
+  }
+  return value.toString();
+}
+
+/**
+ * Số token đọc được bằng tiếng Việt.
+ * - ≥ 1000: đơn vị lớn, bỏ phần lẻ (sai số tương đối < 0,1%).
+ * - < 1000: tối đa 2 số lẻ; riêng < 1 dùng 3 số lẻ để vị thế nhỏ không thành 0.
+ *
+ * @param {bigint|string|number} amount - base units
+ * @param {number} [decimals=18]
+ * @returns {string} chỉ phần số, chưa kèm symbol
+ */
+export function formatTokenAmountForTts(amount, decimals = 18) {
+  const value = amount == null ? 0n : BigInt(amount);
+  if (value <= 0n) return "0";
+
+  const base = 10n ** BigInt(decimals);
+  let whole = value / base;
+  const fraction = value % base;
+  if (whole >= 1000n) return formatIntegerForTts(whole);
+
+  if (whole > 0n) {
+    let hundredths = roundDiv(fraction * 100n, base);
+    if (hundredths === 100n) {
+      whole += 1n;
+      hundredths = 0n;
+      if (whole >= 1000n) return formatIntegerForTts(whole);
+    }
+    if (hundredths === 0n) return whole.toString();
+    return `${whole},${hundredths.toString().padStart(2, "0").replace(/0+$/, "")}`;
+  }
+
+  const thousandths = roundDiv(fraction * 1_000n, base);
+  if (thousandths >= 1_000n) return "1";
+  if (thousandths === 0n) return "nhỏ hơn 0,001";
+  return `0,${thousandths.toString().padStart(3, "0").replace(/0+$/, "")}`;
+}
+
+/**
+ * Đọc tỉ lệ WAD thành phần trăm: 0.785e18 → "78,5 phần trăm".
+ * Ký hiệu "%" không bao giờ xuất hiện trong tin nhắn TTS.
+ */
+export function formatPercentForTts(wad) {
+  if (wad == null) return "không có dữ liệu";
+  const value = BigInt(wad);
+  const tenths = roundDiv(value, 10n ** 15n); // 1e15 WAD = 0,1%
+  if (tenths === 0n) return value === 0n ? "0 phần trăm" : "dưới 0,1 phần trăm";
+  const whole = tenths / 10n;
+  const fraction = (tenths % 10n).toString().replace(/0+$/, "");
+  // > 999% (market bất thường) vẫn phải ≤ 3 chữ số: "1 nghìn phần trăm".
+  const wholeText = whole >= 1000n ? formatIntegerForTts(whole) : whole.toString();
+  return fraction ? `${wholeText},${fraction} phần trăm` : `${wholeText} phần trăm`;
+}
+
+/**
+ * Đọc APY (phân số) thành phần trăm: 0.0387 → "3,87 phần trăm".
+ * APY cực nhỏ vẫn nghe được là "dưới 0,01 phần trăm", không phải "0".
+ */
+export function formatApyForTts(apy) {
+  if (apy == null) return "không có dữ liệu";
+  const percent = apy * 100;
+  if (!Number.isFinite(percent)) return "không xác định";
+  if (percent === 0) return "0 phần trăm";
+  if (percent > 0 && percent < 0.005) return "dưới 0,01 phần trăm";
+  // Làm tròn trước rồi mới chọn nhánh: 999,999% làm tròn thành 1000% cũng phải
+  // đi qua đơn vị lớn, nếu không sẽ sinh cụm 4 chữ số "1000 phần trăm".
+  const rounded = Math.round(percent * 100) / 100;
+  // percent sát 1e308 làm phép nhân tràn Infinity; BigInt(Infinity) sẽ ném lỗi
+  // ngay trong đường gọi điện — trả câu vô hại thay vì crash.
+  if (!Number.isFinite(rounded)) return "không xác định";
+  if (rounded >= 1000) return `${formatIntegerForTts(BigInt(Math.round(rounded)))} phần trăm`;
+  const text = rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "").replace(".", ",");
+  return `${text} phần trăm`;
+}
+
+/**
+ * Ghép câu và cắt ở ranh giới câu: TTS không bao giờ đọc một số/từ bị chẻ đôi.
+ * Bỏ hẳn "..." vì engine đọc thành "chấm chấm chấm".
+ */
+function joinSentencesForTts(sentences, maxLength = MAX_VOIP_MESSAGE_CHARS) {
+  let message = "";
+  for (const sentence of sentences) {
+    const next = message ? `${message} ${sentence}` : sentence;
+    if (next.length > maxLength) break;
+    message = next;
+  }
+  // Câu đầu đã vượt trần (chain name bất thường): cắt cứng, vẫn kết thúc bằng dấu chấm.
+  if (!message) return `${sentences[0].slice(0, maxLength - 1)}.`;
+  return message;
+}
 
 // ============================================================
 // TOKEN CACHE (module-level, persists across calls)
@@ -85,7 +218,12 @@ export function clearVoipTokenCache() {
 /**
  * Tạo nội dung tin nhắn tiếng Việt cho cuộc gọi VoIP.
  * Plain text, không có markdown, tối ưu cho TTS (text-to-speech).
- * Tối đa 500 ký tự.
+ * Tối đa 500 ký tự, cắt ở ranh giới câu.
+ *
+ * Số tiền đi qua `formatTokenAmountForTts`/`formatPercentForTts`/`formatApyForTts`
+ * (KHÔNG dùng output thô của `formatUnits`): provider TTS gom chuỗi số dài thành
+ * "2,450,000" kiểu Anh rồi đọc dấu "," theo luật tiếng Việt — dấu thập phân —
+ * nên nghe sai bậc. Đơn vị lớn + dấu "," thập phân + "phần trăm" là dạng đọc được.
  *
  * @param {object} market - Dữ liệu market từ Morpho Blue
  * @param {object} loanToken - Token metadata (symbol, decimals)
@@ -102,30 +240,32 @@ export function buildVoipMessage(market, loanToken, collateralToken, position, s
   const isSuddenDrain = scenario === "sudden_drain";
   const chainPrefix = chainName ? `Trên ${chainName}. ` : "";
 
-  const liquidityStr = formatTokenAmount(market.liquidity, loanDecimals, loanSymbol);
-  const supplyStr = formatTokenAmount(position.supplyAssets, loanDecimals, loanSymbol);
-  const utilizationStr = wadToPercent(market.utilization);
-  const apyStr = formatApy(market.supplyApy);
+  const liquidityStr = formatTokenAmountForTts(market.liquidity, loanDecimals);
+  const supplyStr = formatTokenAmountForTts(position.supplyAssets, loanDecimals);
+  const utilizationStr = formatPercentForTts(market.utilization);
+  const apyStr = formatApyForTts(market.supplyApy);
 
-  if (isSuddenDrain) {
-    return (
-      `${chainPrefix}Cảnh báo! Thanh khoản trên thị trường ${collateralSymbol} & ${loanSymbol} đã giảm mạnh. ` +
-      `Thanh khoản hiện tại: ${liquidityStr}. ` +
-      `Vị thế của bạn: ${supplyStr}. ` +
-      `Tỉ lệ sử dụng: ${utilizationStr}. ` +
-      `Lãi suất năm: ${apyStr}. ` +
-      `Hãy vào trang web để rút tiền ngay.`
-    );
-  } else {
-    return (
-      `${chainPrefix}Thông báo! Thanh khoản đã xuất hiện trên thị trường ${collateralSymbol} & ${loanSymbol}. ` +
-      `Thanh khoản hiện tại: ${liquidityStr}. ` +
-      `Vị thế của bạn: ${supplyStr}. ` +
-      `Tỉ lệ sử dụng: ${utilizationStr}. ` +
-      `Lãi suất năm: ${apyStr}. ` +
-      `Hãy vào trang web để rút tiền.`
-    );
-  }
+  // "&" không được đảm bảo đọc thành "và" trên mọi engine.
+  const marketLabel = `${collateralSymbol} và ${loanSymbol}`;
+  const sentences = isSuddenDrain
+    ? [
+      `${chainPrefix}Cảnh báo! Thanh khoản trên thị trường ${marketLabel} đã giảm mạnh.`,
+      `Thanh khoản hiện tại: ${liquidityStr} ${loanSymbol}.`,
+      `Vị thế của bạn: ${supplyStr} ${loanSymbol}.`,
+      `Tỉ lệ sử dụng: ${utilizationStr}.`,
+      `Lãi suất năm: ${apyStr}.`,
+      "Hãy vào trang web để rút tiền ngay.",
+    ]
+    : [
+      `${chainPrefix}Thông báo! Thanh khoản đã xuất hiện trên thị trường ${marketLabel}.`,
+      `Thanh khoản hiện tại: ${liquidityStr} ${loanSymbol}.`,
+      `Vị thế của bạn: ${supplyStr} ${loanSymbol}.`,
+      `Tỉ lệ sử dụng: ${utilizationStr}.`,
+      `Lãi suất năm: ${apyStr}.`,
+      "Hãy vào trang web để rút tiền.",
+    ];
+
+  return joinSentencesForTts(sentences);
 }
 
 // ============================================================
@@ -389,9 +529,10 @@ export async function sendVoipNotification(
     chainName
   );
 
-  // Đảm bảo không vượt quá 500 ký tự
-  if (message.length > 500) {
-    message = message.slice(0, 497) + "...";
+  // Lưới an toàn: buildVoipMessage đã cắt ở ranh giới câu, không dùng "..." vì
+  // engine đọc thành "chấm chấm chấm".
+  if (message.length > MAX_VOIP_MESSAGE_CHARS) {
+    message = message.slice(0, MAX_VOIP_MESSAGE_CHARS - 1) + ".";
   }
 
   // Gọi API với retry

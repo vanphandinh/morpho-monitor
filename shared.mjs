@@ -292,10 +292,12 @@ export function formatApy(apy) {
 /**
  * Chuyển token symbol thành dạng thân thiện với TTS.
  * Tách từng ký tự ra để TTS đọc từng chữ cái thay vì cố phát âm.
- * "USDC" → "U S D C", "WETH" → "W E T H"
+ * "USDC" → "U S D C", "WETH" → "W E T H", "USDC.e" → "U S D C E" (không đọc "chấm").
  */
 export function toTtsFriendly(symbol) {
-  const s = symbol ?? "token";
+  // Bỏ dấu câu (vd "USDC.e") để engine không đọc thành "chấm"; rỗng → "token".
+  const cleaned = String(symbol ?? "").replace(/[^A-Za-z0-9]+/g, "");
+  const s = cleaned || "token";
   return s.split("").join(" ").toUpperCase();
 }
 

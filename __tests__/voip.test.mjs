@@ -8,6 +8,9 @@ import {
   buildVoipMessage,
   callWithRetry,
   clearVoipTokenCache,
+  formatApyForTts,
+  formatPercentForTts,
+  formatTokenAmountForTts,
   getBearerToken,
   initiateCall,
   pollCallStatus,
@@ -62,13 +65,13 @@ describe("buildVoipMessage", () => {
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "sudden_drain");
 
     expect(msg).toContain("Cảnh báo!");
-    expect(msg).toContain("W E T H & U S D C");
+    expect(msg).toContain("W E T H và U S D C");
     expect(msg).toContain("đã giảm mạnh");
-    expect(msg).toContain("5000");
-    expect(msg).toContain("1000");
-    expect(msg).toContain("50.00%");
+    expect(msg).toContain("5 nghìn");
+    expect(msg).toContain("1 nghìn");
+    expect(msg).toContain("50 phần trăm");
     expect(msg).toContain("Lãi suất năm");
-    expect(msg).toContain("5.1200%");
+    expect(msg).toContain("5,12 phần trăm");
     expect(msg).toContain("Hãy vào trang web để rút tiền ngay");
   });
 
@@ -81,7 +84,7 @@ describe("buildVoipMessage", () => {
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "liquidity_appeared");
 
     expect(msg).toContain("Thông báo!");
-    expect(msg).toContain("W E T H & U S D C");
+    expect(msg).toContain("W E T H và U S D C");
     expect(msg).toContain("đã xuất hiện");
     expect(msg).toContain("Hãy vào trang web để rút tiền");
   });
@@ -107,7 +110,7 @@ describe("buildVoipMessage", () => {
 
     const msg = buildVoipMessage(market, loanToken, collateralToken, position, "sudden_drain");
 
-    expect(msg).toContain("T O K E N & T O K E N");
+    expect(msg).toContain("T O K E N và T O K E N");
     expect(msg).not.toContain("null");
     expect(msg).not.toContain("undefined");
   });
@@ -122,6 +125,209 @@ describe("buildVoipMessage", () => {
 
     // With 18 decimals, 1 WAD = 1 token (formatUnits strips trailing zeros)
     expect(msg).toContain("1 U S D C");
+  });
+});
+
+// ============================================================
+// TTS NUMBER FORMAT
+// ============================================================
+//
+// Số thô của `formatUnits` (vd "2450000", "12345.678901") bị provider TTS gom
+// hàng nghìn kiểu Anh ("2,450,000") rồi đọc dấu "," theo luật tiếng Việt — dấu
+// thập phân — nên nghe sai bậc. Ba hàm dưới đây thay bằng đơn vị lớn
+// (nghìn/triệu/tỷ) và giới hạn số lẻ, nhờ đó mọi cụm chữ số ≤ 3 ký tự và
+// provider không còn nguyên liệu để chèn dấu phân cách.
+
+/** Độ dài từng cụm chữ số trong `text` — bất biến: phải ≤ 3. */
+function digitRunLengths(text) {
+  return (text.match(/\d+/g) ?? []).map((run) => run.length);
+}
+
+describe("formatTokenAmountForTts", () => {
+  it("đọc theo đơn vị lớn thay vì chuỗi số thô", () => {
+    const cases = [
+      [2_450_000_000_000n, 6, "2 triệu 450 nghìn"],
+      [12_345_678_901n, 6, "12 nghìn 345"],
+      [3_450_123_456n, 6, "3 nghìn 450"],
+      [999_999_999_999n, 6, "999 nghìn 999"],
+      [1_000_000_000_000n, 6, "1 triệu"],
+      [5_000_000_000n, 6, "5 nghìn"],
+      [1_000_000n, 6, "1"],
+      [1_234_000n, 0, "1 triệu 234 nghìn"],
+    ];
+    for (const [amount, decimals, expected] of cases) {
+      expect(formatTokenAmountForTts(amount, decimals), `${amount} / 1e${decimals}`).toBe(expected);
+    }
+  });
+
+  it("làm tròn nửa lên và nâng cấp khi tràn nhóm", () => {
+    expect(formatTokenAmountForTts(999_999_999n, 0)).toBe("1 tỷ");
+    expect(formatTokenAmountForTts(1_234_567n, 0)).toBe("1 triệu 235 nghìn");
+  });
+
+  it("số lẻ tối đa 2 chữ số, dùng dấu phẩy", () => {
+    expect(formatTokenAmountForTts(500_000n, 6)).toBe("0,5");
+    expect(formatTokenAmountForTts(1_250_000n, 6)).toBe("1,25");
+    expect(formatTokenAmountForTts(12_345_600n, 6)).toBe("12,35");
+    expect(formatTokenAmountForTts(999_999n, 6)).toBe("1");
+    expect(formatTokenAmountForTts(0n, 6)).toBe("0");
+  });
+
+  it("token 18 decimals không còn 18 chữ số lẻ", () => {
+    expect(formatTokenAmountForTts(1_234_567_890_123_456_789n, 18)).toBe("1,23");
+    expect(formatTokenAmountForTts(1_000_000_000_000_000n, 18)).toBe("0,001");
+    expect(formatTokenAmountForTts(1_000_000_000_000_000_001n, 18)).toBe("1");
+    expect(formatTokenAmountForTts(999_999_999_999_999_999n, 18)).toBe("1");
+  });
+
+  it("vị thế cực nhỏ không bị đọc thành 0", () => {
+    expect(formatTokenAmountForTts(1n, 6)).toBe("nhỏ hơn 0,001");
+    expect(formatTokenAmountForTts(10_000n, 6)).toBe("0,01");
+    expect(formatTokenAmountForTts(1_000n, 6)).toBe("0,001");
+  });
+
+  it("không bao giờ tạo cụm chữ số dài hơn 3 ký tự", () => {
+    const amounts = [
+      0n, 1n, 999n, 1_000n, 999_999n, 1_000_000n, 999_999_999n, 1_000_000_000n,
+      2_450_000_000_000n, 10n ** 12n, 10n ** 15n - 1n, 10n ** 18n - 1n, 123_456_789_012_345_678n,
+    ];
+    for (const amount of amounts) {
+      for (const decimals of [0, 6, 18]) {
+        const text = formatTokenAmountForTts(amount, decimals);
+        expect(Math.max(...digitRunLengths(text)), `${amount}/${decimals} → ${text}`).toBeLessThanOrEqual(3);
+      }
+    }
+  });
+
+  it("số âm (không xảy ra với Morpho) được coi là 0", () => {
+    expect(formatTokenAmountForTts(-1n, 6)).toBe("0");
+  });
+});
+
+describe("formatPercentForTts / formatApyForTts", () => {
+  it("phần trăm dùng dấu phẩy và nói 'phần trăm'", () => {
+    expect(formatPercentForTts(785_000_000_000_000_000n)).toBe("78,5 phần trăm");
+    expect(formatPercentForTts(500_000_000_000_000_000n)).toBe("50 phần trăm");
+    expect(formatPercentForTts(1_000_000_000_000_000_000n)).toBe("100 phần trăm");
+    expect(formatPercentForTts(12_000_000_000_000_000n)).toBe("1,2 phần trăm");
+    expect(formatPercentForTts(0n)).toBe("0 phần trăm");
+    expect(formatPercentForTts(null)).toBe("không có dữ liệu");
+  });
+
+  it("phần trăm dưới ngưỡng làm tròn không bị đọc thành 0", () => {
+    expect(formatPercentForTts(1n)).toBe("dưới 0,1 phần trăm");
+    expect(formatPercentForTts(1_000_000_000_000_000n)).toBe("0,1 phần trăm");
+  });
+
+  it("APY tối đa 2 chữ số lẻ", () => {
+    expect(formatApyForTts(0.0387)).toBe("3,87 phần trăm");
+    expect(formatApyForTts(0.0001)).toBe("0,01 phần trăm");
+    expect(formatApyForTts(0.123456)).toBe("12,35 phần trăm");
+    expect(formatApyForTts(0)).toBe("0 phần trăm");
+    expect(formatApyForTts(null)).toBe("không có dữ liệu");
+  });
+
+  it("APY cực nhỏ không bị đọc thành 0", () => {
+    expect(formatApyForTts(0.00001)).toBe("dưới 0,01 phần trăm");
+  });
+
+  it("giá trị cực lớn vẫn đi qua đơn vị lớn, không sinh cụm ≥ 4 chữ số", () => {
+    expect(formatPercentForTts(10n ** 19n)).toBe("1 nghìn phần trăm"); // 1000%
+    expect(formatApyForTts(10)).toBe("1 nghìn phần trăm");            // 1000%
+    expect(formatApyForTts(50)).toBe("5 nghìn phần trăm");            // 5000%
+    // 999,999% làm tròn thành 1000% — nhánh phải chọn SAU khi làm tròn.
+    expect(formatApyForTts(9.99999)).toBe("1 nghìn phần trăm");
+    // percent sát 1e308 tràn Infinity — không được ném lỗi trong đường gọi điện.
+    expect(formatApyForTts(1e306)).toBe("không xác định");
+  });
+
+  it("percent/APY không bao giờ tạo cụm chữ số dài hơn 3 ký tự", () => {
+    const wads = [0n, 1n, 10n ** 15n, 5n * 10n ** 17n, 10n ** 18n, 10n ** 19n, 10n ** 21n];
+    for (const wad of wads) {
+      expect(Math.max(0, ...digitRunLengths(formatPercentForTts(wad))), `${wad}`).toBeLessThanOrEqual(3);
+    }
+    const apys = [0, 1e-9, 0.0001, 0.0387, 0.5, 1, 10, 50, 1000];
+    for (const apy of apys) {
+      expect(Math.max(0, ...digitRunLengths(formatApyForTts(apy))), `${apy}`).toBeLessThanOrEqual(3);
+    }
+  });
+});
+
+describe("buildVoipMessage — câu hoàn chỉnh cho TTS", () => {
+  it("sudden_drain: đúng câu, không còn % hay dấu chấm thập phân", () => {
+    const msg = buildVoipMessage(
+      makeMockMarket(),
+      makeMockToken(),
+      makeMockToken({ symbol: "WETH", decimals: 18 }),
+      makeMockPosition(),
+      "sudden_drain",
+      "Base",
+    );
+
+    expect(msg).toBe(
+      "Trên Base. Cảnh báo! Thanh khoản trên thị trường W E T H và U S D C đã giảm mạnh. " +
+      "Thanh khoản hiện tại: 5 nghìn U S D C. " +
+      "Vị thế của bạn: 1 nghìn U S D C. " +
+      "Tỉ lệ sử dụng: 50 phần trăm. " +
+      "Lãi suất năm: 5,12 phần trăm. " +
+      "Hãy vào trang web để rút tiền ngay."
+    );
+    expect(msg).not.toContain("%");
+    expect(msg).not.toMatch(/\d\.\d/);
+  });
+
+  it("liquidity_appeared: cùng định dạng, không có chain prefix", () => {
+    const msg = buildVoipMessage(
+      makeMockMarket({ liquidity: 3_450_123_456n }),
+      makeMockToken(),
+      makeMockToken({ symbol: "WETH", decimals: 18 }),
+      makeMockPosition({ supplyAssets: 999_999n }),
+      "liquidity_appeared",
+    );
+
+    expect(msg).toBe(
+      "Thông báo! Thanh khoản đã xuất hiện trên thị trường W E T H và U S D C. " +
+      "Thanh khoản hiện tại: 3 nghìn 450 U S D C. " +
+      "Vị thế của bạn: 1 U S D C. " +
+      "Tỉ lệ sử dụng: 50 phần trăm. " +
+      "Lãi suất năm: 5,12 phần trăm. " +
+      "Hãy vào trang web để rút tiền."
+    );
+  });
+
+  it("mọi con số trong tin nhắn đều đọc được, bất kể decimals", () => {
+    const fixtures = [
+      [makeMockMarket(), makeMockToken(), makeMockPosition()],
+      [makeMockMarket({ liquidity: 3_450_123_456n }), makeMockToken(), makeMockPosition({ supplyAssets: 999_999n })],
+      [
+        makeMockMarket({ liquidity: 1_234_567_890_123_456_789n }),
+        makeMockToken({ decimals: 18 }),
+        makeMockPosition({ supplyAssets: 1_000_000_000_000_001n }),
+      ],
+    ];
+    for (const [market, loan, position] of fixtures) {
+      for (const scenario of ["sudden_drain", "liquidity_appeared"]) {
+        const msg = buildVoipMessage(market, loan, makeMockToken({ symbol: "WETH", decimals: 18 }), position, scenario, "Base");
+        expect(msg).not.toContain("%");
+        expect(Math.max(...digitRunLengths(msg)), msg).toBeLessThanOrEqual(3);
+      }
+    }
+  });
+
+  it("luôn ≤ 500 ký tự, kết thúc bằng dấu chấm, không có '...'", () => {
+    const longChain = "Chuỗi Rất Dài ".repeat(40);
+    const msg = buildVoipMessage(
+      makeMockMarket(),
+      makeMockToken(),
+      makeMockToken({ symbol: "WETH", decimals: 18 }),
+      makeMockPosition(),
+      "sudden_drain",
+      longChain,
+    );
+
+    expect(msg.length).toBeLessThanOrEqual(500);
+    expect(msg.endsWith(".")).toBe(true);
+    expect(msg).not.toContain("...");
   });
 });
 

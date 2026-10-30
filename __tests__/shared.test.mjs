@@ -8,6 +8,7 @@ import {
   formatTokenAmount,
   formatApy,
   shortenAddress,
+  toTtsFriendly,
   readBodyLimited,
 } from "../shared.mjs";
 import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "../monitor-rules.mjs";
@@ -165,6 +166,28 @@ describe("formatApy()", () => {
 
   it("rounds to 4 decimal places", () => {
     expect(formatApy(0.123456789)).toBe("12.3457%");
+  });
+});
+
+// ============================================================
+// toTtsFriendly()
+// ============================================================
+describe("toTtsFriendly()", () => {
+  it("tách từng ký tự để TTS đọc từng chữ cái", () => {
+    expect(toTtsFriendly("USDC")).toBe("U S D C");
+    expect(toTtsFriendly("wstETH")).toBe("W S T E T H");
+  });
+
+  it("bỏ dấu câu trong symbol — TTS không đọc thành 'chấm'", () => {
+    expect(toTtsFriendly("USDC.e")).toBe("U S D C E");
+    expect(toTtsFriendly("DAI+")).toBe("D A I");
+  });
+
+  it("fallback về token khi rỗng/null", () => {
+    expect(toTtsFriendly(null)).toBe("T O K E N");
+    expect(toTtsFriendly(undefined)).toBe("T O K E N");
+    expect(toTtsFriendly("")).toBe("T O K E N");
+    expect(toTtsFriendly("  ")).toBe("T O K E N");
   });
 });
 
