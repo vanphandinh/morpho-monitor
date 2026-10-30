@@ -112,8 +112,11 @@ export function createRpcDispatcher({
    */
   async function retryEthCallWithLiquidity(params, target) {
     try {
-      const [call, blockTag = "latest"] = Array.isArray(params) ? params : [];
+      const [call, rawBlockTag] = Array.isArray(params) ? params : [];
       if (!call || typeof call !== "object") return null;
+      // `null` không kích hoạt default destructuring, và một số ví gửi
+      // `[call, null]`; `eth_getStorageAt` sẽ từ chối `null` ⇒ mất unlock im lặng.
+      const blockTag = rawBlockTag ?? "latest";
       const slotKey = marketStorageKey(target.marketId);
       const current = await client.request({
         method: "eth_getStorageAt",

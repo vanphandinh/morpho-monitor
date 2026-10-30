@@ -37,8 +37,12 @@ import { MORPHO_WITHDRAW_ABI, computeMarketId } from "./presign-verify.mjs";
  */
 export const MORPHO_MARKET_SLOT = 3n;
 
+/** Entry `withdraw` của ABI — tìm theo TÊN, không theo vị trí mảng (ABI có thể được mở rộng). */
+const WITHDRAW_ABI_ITEM =
+  MORPHO_WITHDRAW_ABI.find((item) => item.type === "function" && item.name === "withdraw") ?? MORPHO_WITHDRAW_ABI[0];
+
 /** `withdraw(MarketParams,uint256,uint256,address,address)` — tính từ ABI, không hardcode. */
-export const MORPHO_WITHDRAW_SELECTOR = toFunctionSelector(MORPHO_WITHDRAW_ABI[0]);
+export const MORPHO_WITHDRAW_SELECTOR = toFunctionSelector(WITHDRAW_ABI_ITEM);
 
 const UINT128_MAX = (1n << 128n) - 1n;
 /** `Error(string)` — Morpho bản đang chạy revert bằng string, không phải custom error. */

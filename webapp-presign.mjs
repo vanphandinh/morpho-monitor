@@ -492,11 +492,36 @@ function updateNonceHint() {
  * chuỗi tiếng Anh của ví và tưởng webapp hỏng.
  */
 export function walletSimulationBlockMessage(err) {
-  const text = String(err?.message || err || "");
-  if (!/insufficient liquidity|simulation/i.test(text)) return null;
+  // Lỗi ví/viem bị bọc nhiều lớp: lý do thật thường nằm ở `details`/`cause`,
+  // còn `message` chỉ là câu chung ("RPC Request failed."). Chỉ đọc `message`
+  // sẽ bỏ sót đúng ca cần giải thích và rơi về chuỗi tiếng Anh thô.
+  const text = [
+    err?.message,
+    err?.shortMessage,
+    err?.details,
+    err?.cause?.message,
+    err?.cause?.details,
+    typeof err?.data === "string" ? err.data : "",
+    typeof err === "string" ? err : "",
+  ]
+    .filter((part) => typeof part === "string")
+    .join(" | ");
+
+  const liquidity = /insufficient liquidity|not enough liquidity/i.test(text);
+  if (!liquidity && !/simulation/i.test(text)) return null;
+
+  // Chỉ khi chuỗi lỗi NÓI ĐÚNG lý do mới khẳng định "thanh khoản chưa đủ";
+  // một câu "simulation failed" chung chung có thể do nonce/số dư, nên chỉ
+  // nêu khả năng đó thay vì khẳng định sai nguyên nhân.
+  const cause = liquidity
+    ? `Ví đã <b>mô phỏng giao dịch trước khi ký</b> và thấy <b>thanh khoản chưa đủ</b> — đó là DỰ KIẾN của giao dịch ` +
+      `ký sẵn (monitor chỉ broadcast khi thanh khoản xuất hiện), không phải lỗi cấu hình. `
+    : `Ví đã <b>từ chối ký vì mô phỏng không thành công</b>. Với giao dịch ký sẵn, revert ` +
+      `<code>insufficient liquidity</code> là DỰ KIẾN (monitor chỉ broadcast khi thanh khoản xuất hiện) — ` +
+      `nếu ví báo đúng lý do đó thì không phải lỗi cấu hình. `;
+
   return (
-    `Ví đã <b>mô phỏng giao dịch trước khi ký</b> và thấy <b>thanh khoản chưa đủ</b> — đó là DỰ KIẾN của giao dịch ` +
-    `ký sẵn (monitor chỉ broadcast khi thanh khoản xuất hiện), không phải lỗi cấu hình. ` +
+    cause +
     (PRESIGN_SIM_UNLOCK
       ? `Proxy đang bật chế độ cấp thanh khoản ảo cho mô phỏng; nếu ví vẫn chặn, kiểm tra ví đang trỏ RPC về ` +
         `<code>${esc(getProxyUrl())}</code> rồi thử lại.`

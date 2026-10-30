@@ -249,6 +249,17 @@ describe("proxy-dispatcher — eth_call unlock", () => {
     expect(retry.params[2][MORPHO].stateDiff[marketStorageKey(MARKET_ID)]).toBe(doubleSupplyWord(STORAGE_WORD));
   });
 
+  it("blockTag null (một số ví gửi [call, null]) ⇒ đọc storage ở latest, vẫn unlock", async () => {
+    const client = makeClient();
+    const { handleRpc } = makeDispatcher({ client });
+    const result = await handleRpc("eth_call", [{ from: LENDER, to: MORPHO, data: withdrawCalldata() }, null]);
+    expect(result).toBe(SUCCESS_RESULT);
+    const storageCall = client.requests.find((r) => r.method === "eth_getStorageAt");
+    expect(storageCall.params[2]).toBe("latest");
+    const retry = client.requests.filter((r) => r.method === "eth_call")[1];
+    expect(retry.params[1]).toBe("latest");
+  });
+
   it("mô phỏng bọc qua execute(...) cũng được unlock", async () => {
     const client = makeClient();
     const { handleRpc } = makeDispatcher({ client });

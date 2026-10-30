@@ -23,7 +23,7 @@ import { CHAIN, CHAIN_HEX, CHAIN_ID, CHAIN_NAME, EXPLORER_URL, MORPHO_BLUE, NATI
 import { clearSession, getProxyUrl, hideError, renderRpcVerifiedNote, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
 import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
-import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
+import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderPresignSimNote, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
 import { setMaxAmount, withdrawAll, withdrawAmount } from "./webapp-withdraw.mjs";
 
 // Presign state
@@ -260,6 +260,11 @@ function switchTab(tab) {
   // bundle/tier "lúc hiện lúc không"). Phần render theo RPC mới cần `marketData`.
   if (tab === "presign") {
     renderWalletCompatibility();
+    // Banner "proxy cấp thanh khoản ảo" KHÔNG phụ thuộc ví/marketData: nó giải
+    // thích vì sao ví có thể báo mô phỏng thành công khi thanh khoản bằng 0 —
+    // đúng lúc RPC công cộng lỗi thì lại càng cần. (Trước đây chỉ chạy trong
+    // `updatePresignWalletUI`, tức phải có marketData ⇒ có thể không bao giờ hiện.)
+    renderPresignSimNote();
     fetchExistingBundle();
     refreshPresignOverview();
     if (state.marketData) {
