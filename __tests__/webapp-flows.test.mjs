@@ -355,7 +355,10 @@ describe("lưới hồi quy — trace đã đóng băng", () => {
     // (2 ở `sign-all-tiers`, 1 ở `sign-withdraw-all`) + 1 preflight trước MỖI lần lưu
     // (`save-to-server-tiers`, `save-to-server-all-shares`). Đây là trao đổi có chủ đích: đổi 5
     // request đọc thêm lấy việc biết chắc chữ ký nằm ở nonce nào thay vì để bước Lưu nổ 400.
-    expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(53);
+    // 53 → 54 (2026-11-01, APY): mỗi lần `fetchAllData` đọc thêm `rateAtTarget(id)` của
+    // AdaptiveCurveIRM để tính Supply APY — đúng 1 `eth_call` khi trang mở (bước `boot`), đổi
+    // lấy một con số APY thật thay vì "N/A" trên card market.
+    expect(frozen.steps.reduce((sum, step) => sum + step.calls.length, 0)).toBe(54);
   });
 
   it("nhãn cây là đường dẫn TƯƠNG ĐỐI — fixture không ghim đường dẫn của một máy", () => {

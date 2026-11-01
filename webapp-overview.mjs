@@ -5,9 +5,9 @@
  */
 
 import { createPublicClient, http } from "viem";
-import { computeBorrowAssets, computeLiquidity, computeSupplyAssets, computeUtilization, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
+import { computeBorrowAssets, computeLiquidity, computeSupplyApy, computeSupplyAssets, computeUtilization, formatApyPercent, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
 import { esc, formatToken, row } from "./webapp-render.mjs";
-import { CHAIN, CHAIN_ID, CHAIN_NAME, ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
+import { ADAPTIVE_CURVE_IRM_ABI, CHAIN, CHAIN_ID, CHAIN_NAME, ERC20_ABI, MORPHO_ABI, MORPHO_BLUE, RPC_URLS, SERVER_MARKETS, state } from "./webapp-state.mjs";
 
 /**
  * Fallback transport — bản rút gọn của server-side round-robin transport.
@@ -121,7 +121,7 @@ export async function fetchAllData() {
   };
 
   // Fetch market state + position + token metadata in parallel
-  const [market, position, cToken, lToken] = await Promise.all([
+  const [market, position, cToken, lToken, rateAtTarget] = await Promise.all([
     state.publicClient.readContract({
       address: MORPHO_BLUE,
       abi: MORPHO_ABI,
@@ -148,6 +148,14 @@ export async function fetchAllData() {
     }).then(d => state.publicClient.readContract({
       address: state.marketParams.loanToken, abi: ERC20_ABI, functionName: "symbol",
     }).then(s => ({ decimals: d, symbol: s }))).catch(() => ({ decimals: 6, symbol: "?" })),
+    // rateAtTarget: APY thật của market. Best-effort — IRM khác AdaptiveCurve hoặc RPC chặn
+    // `eth_call` thì trả null ⇒ card hiện "N/A", còn phần market/position vẫn tải bình thường.
+    state.publicClient.readContract({
+      address: state.marketParams.irm,
+      abi: ADAPTIVE_CURVE_IRM_ABI,
+      functionName: "rateAtTarget",
+      args: [state.marketId],
+    }).catch(() => null),
   ]);
 
   state.marketData = {
@@ -178,6 +186,18 @@ export async function fetchAllData() {
   state.marketData.liquidity = computeLiquidity(state.marketData.totalSupplyAssets, state.marketData.totalBorrowAssets);
   state.marketData.supplyAssets = supplyAssets;
   state.marketData.utilization = computeUtilization(state.marketData.totalBorrowAssets, state.marketData.totalSupplyAssets);
+
+  // APY là ảnh chụp lúc tải trang (webapp không có auto-refresh định kỳ), nên mốc thời gian được
+  // chốt MỘT lần cho cả lần fetch. `computeSupplyApy` tự clamp elapsed ≥ 0 nên đồng hồ máy
+  // người dùng chậm hơn chain không làm ném giữa lúc render.
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  state.marketData.supplyApy = computeSupplyApy({
+    utilization: state.marketData.utilization,
+    fee: state.marketData.fee,
+    rateAtTarget,
+    lastUpdate: state.marketData.lastUpdate,
+    nowSeconds,
+  });
 }
 
 // ============================================================
@@ -218,6 +238,8 @@ export function renderMarketInfo() {
     row("Liquidity",
       `<span class="value ${liquidityClass}">${formatToken(liquidity, state.loanToken)}</span>`),
     row("Utilization", wadToPercent(state.marketData.utilization)),
+    // Supply APY (lãi kép) — cùng công thức blue-sdk với VoIP; thiếu rateAtTarget ⇒ "N/A".
+    row("Supply APY", formatApyPercent(state.marketData.supplyApy)),
   ].join("");
 
   document.getElementById("market-section").style.display = "block";

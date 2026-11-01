@@ -163,6 +163,105 @@ export function computeUtilization(totalBorrowAssets, totalSupplyAssets) {
   return (totalBorrowAssets * BigInt(1e18)) / totalSupplyAssets;
 }
 
+// ============================================================
+// APY (AdaptiveCurveIRM)
+// ============================================================
+// Port 1:1 `AdaptiveCurveIrmLib` + `Market#getSupplyApy` của blue-sdk — CÙNG công thức với
+// `market-reader.mjs`/VoIP: cùng trạng thái market ⇒ cùng con số (khác thời điểm đọc thì vẫn
+// khác, vì rate trôi theo thời gian — đó là bản chất, không phải lỗi).
+// Không dùng `IRM.borrowRate()`: on-chain hàm đó trả lãi suất tại lần accrual CUỐI (Blue coi
+// giá trị đó là trung bình của kỳ) và KHÔNG trôi theo `elapsed`, nên dùng làm APY sẽ ra một
+// con số đứng yên giữa hai lần accrual. Số hiển thị phải là lãi suất CUỐI kỳ (rateAtTarget đã
+// trôi tới hiện tại) nhân utilization rồi trừ fee.
+// Các phép chia dưới đây cố ý chia nguyên (BigInt) theo đúng thứ tự Solidity.
+const WAD = 10n ** 18n;
+const SECONDS_PER_YEAR = 31_536_000n;
+const CURVE_STEEPNESS = 4n * WAD;
+const TARGET_UTILIZATION = 9n * 10n ** 17n;
+const INITIAL_RATE_AT_TARGET = 4n * 10n ** 16n / SECONDS_PER_YEAR;
+const ADJUSTMENT_SPEED = 5n * 10n ** 19n / SECONDS_PER_YEAR;
+const MIN_RATE_AT_TARGET = 10n ** 15n / SECONDS_PER_YEAR;
+const MAX_RATE_AT_TARGET = 2n * WAD / SECONDS_PER_YEAR;
+
+const LN_2_INT = 693147180559945309n;
+const LN_WEI_INT = -41446531673892822312n;
+const WEXP_UPPER_BOUND = 93859467695000404319n;
+const WEXP_UPPER_VALUE = 57716089161558943949701069502944508345128422502756744429568n;
+
+const wMulDown = (a, b) => (a * b) / WAD;
+const wMulUp = (a, b) => (a * b + WAD - 1n) / WAD;
+const wDivDown = (a, b) => (a * WAD) / b;
+
+/**
+ * e^x dạng WAD (x cũng WAD) — port `MathLib.wExp` của blue-sdk, gồm cả hai ngưỡng bão hoà.
+ */
+function wExp(x) {
+  if (x < LN_WEI_INT) return 0n;
+  if (x >= WEXP_UPPER_BOUND) return WEXP_UPPER_VALUE;
+  const roundingAdjustment = x < 0n ? -(LN_2_INT / 2n) : LN_2_INT / 2n;
+  const q = (x + roundingAdjustment) / LN_2_INT;
+  const r = x - q * LN_2_INT;
+  const expR = WAD + r + (r * r) / WAD / 2n;
+  return q >= 0n ? expR << q : expR >> -q;
+}
+
+/**
+ * Lãi suất CUỐI kỳ của AdaptiveCurveIRM tại `elapsed` giây sau lần accrual cuối (WAD/giây).
+ *
+ * `elapsed = 0` không cần nhánh riêng: `wExp(0) = WAD` nên `wMulDown(start, WAD) = start`
+ * đúng bằng `rateAtTarget` — giữ code sát bản Solidity để review từng dòng được.
+ */
+function adaptiveCurveEndRate(utilization, rateAtTarget, elapsed) {
+  const norm = utilization > TARGET_UTILIZATION ? WAD - TARGET_UTILIZATION : TARGET_UTILIZATION;
+  const err = wDivDown(utilization - TARGET_UTILIZATION, norm);
+  const coeff = err < 0n ? WAD - wDivDown(WAD, CURVE_STEEPNESS) : CURVE_STEEPNESS - WAD;
+  const curve = (rate) => wMulDown(wMulDown(coeff, err) + WAD, rate);
+
+  // Market chưa accrual lần nào: IRM dùng lãi suất khởi tạo, không phải 0.
+  if (rateAtTarget === 0n) return curve(INITIAL_RATE_AT_TARGET);
+
+  const speed = wMulDown(ADJUSTMENT_SPEED, err);
+  const linearAdaptation = speed * elapsed;
+  const raw = wMulDown(rateAtTarget, wExp(linearAdaptation));
+  const clamped = raw < MIN_RATE_AT_TARGET ? MIN_RATE_AT_TARGET : raw > MAX_RATE_AT_TARGET ? MAX_RATE_AT_TARGET : raw;
+  return curve(clamped);
+}
+
+/**
+ * Supply APY (lãi kép, dạng thập phân: 0.0412 = 4.12%).
+ *
+ * Công thức blue-sdk: `rateToApy(wMulUp(wMulDown(endBorrowRate, utilization), WAD - fee))`.
+ * `rateAtTarget` null (IRM khác AdaptiveCurve, RPC chặn `eth_call`, ABI đổi) ⇒ null để nơi
+ * hiển thị nói "N/A" thay vì vẽ ra 0% — một market lành vẫn có lãi suất khác 0.
+ *
+ * `utilization` do nơi gọi truyền vào (chính con số đang hiển thị trên card) để dòng
+ * "Utilization" và "Supply APY" không bao giờ tính từ hai phép chia lệch nhau.
+ * `elapsed` được clamp ≥ 0: đồng hồ máy người dùng chậm hơn chain là chuyện thường, còn
+ * blue-sdk ném `InvalidInterestAccrual` khi elapsed âm.
+ */
+export function computeSupplyApy({ utilization, fee, rateAtTarget, lastUpdate, nowSeconds }) {
+  if (rateAtTarget == null) return null;
+  const now = typeof nowSeconds === "bigint" ? nowSeconds : BigInt(Math.floor(Number(nowSeconds)));
+  const elapsed = now > lastUpdate ? now - lastUpdate : 0n;
+  const endRate = adaptiveCurveEndRate(utilization, rateAtTarget, elapsed);
+  const supplyRate = wMulUp(wMulDown(endRate, utilization), WAD - fee);
+  return Math.expm1((Number(supplyRate) * Number(SECONDS_PER_YEAR)) / 1e18);
+}
+
+/**
+ * Format APY thập phân thành chuỗi phần trăm 2 số lẻ (đồng bộ `wadToPercent` của webapp).
+ *
+ * `null`/`NaN`/`Infinity` ⇒ "N/A": rate tối đa của IRM nhân một năm có thể làm `Math.expm1`
+ * tràn, và "Infinity%" trên card còn tệ hơn "không đọc được". APY dương nhưng làm tròn ra
+ * 0.00% thì hiện "<0.01%" để không bị đọc thành market không có lãi.
+ */
+export function formatApyPercent(apy) {
+  if (apy == null || !Number.isFinite(apy)) return "N/A";
+  const pct = apy * 100;
+  if (pct > 0 && pct < 0.01) return "<0.01%";
+  return `${pct.toFixed(2)}%`;
+}
+
 /**
  * Số rút tối đa = min(số dư có thể rút, thanh khoản của market).
  */

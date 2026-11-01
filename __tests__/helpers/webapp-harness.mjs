@@ -76,6 +76,11 @@ const MORPHO_WITHDRAW = [{
   outputs: [{ type: "uint256" }, { type: "uint256" }],
 }];
 
+const RATE_AT_TARGET = [{
+  type: "function", name: "rateAtTarget", stateMutability: "view",
+  inputs: [{ type: "bytes32" }], outputs: [{ type: "int256" }],
+}];
+
 const SELECTORS = {
   idToMarketParams: toFunctionSelector(ID_TO_MARKET_PARAMS[0]),
   market: toFunctionSelector(MARKET[0]),
@@ -83,6 +88,7 @@ const SELECTORS = {
   decimals: toFunctionSelector(ERC20[0]),
   symbol: toFunctionSelector(ERC20[1]),
   withdraw: toFunctionSelector(MORPHO_WITHDRAW[0]),
+  rateAtTarget: toFunctionSelector(RATE_AT_TARGET[0]),
 };
 
 /** Hash giả tất định: cùng chỉ số ⇒ cùng hash, khác chỉ số ⇒ khác hash. */
@@ -191,6 +197,9 @@ export function createFakeRpc(fixtures = {}) {
       lastUpdate: 1_700_000_000n, fee: 0n,
     },
     position = { supplyShares: 500_000_000n, borrowShares: 0n, collateral: 0n },
+    // `rateAtTarget` của AdaptiveCurveIRM (WAD/giây), cố định để APY trong test tất định.
+    // Cùng bậc với mainnet (mức khởi tạo ≈1.27e9) để số hiển thị trông thực tế.
+    rateAtTarget = 3_170_979_198n,
     tokens = new Map(),
     pendingNonce = "0xb",
     txVisible = true,
@@ -268,6 +277,12 @@ export function createFakeRpc(fixtures = {}) {
         abi: MORPHO_WITHDRAW, functionName: "withdraw",
         result: [decoded.args[1], decoded.args[2]],
       });
+    }
+    if (selector === SELECTORS.rateAtTarget) {
+      // `null` = IRM không phải AdaptiveCurve (hoặc RPC chặn `eth_call`): trả "0x" để viem ném
+      // y như khi gọi vào contract không có hàm này — buộc webapp đi đúng nhánh `.catch(() => null)`.
+      if (rateAtTarget == null) return "0x";
+      return encodeFunctionResult({ abi: RATE_AT_TARGET, functionName: "rateAtTarget", result: rateAtTarget });
     }
     return "0x";
   };
