@@ -445,6 +445,7 @@ describe("A.1b — hợp đồng HTML ↔ module ↔ route (một onclick sai l�
       "wadToPercent", "shortenAddr", "broadcastingAgeMinutes", "isClaimOverdue",
       "txVisibleOnChain", "computeSupplyAssets", "computeBorrowAssets", "computeLiquidity",
       "computeUtilization", "computeMaxWithdraw", "validateWithdraw", "stepNonce",
+      "computeSupplyApy", "formatApyPercent",
     ];
     // P5: kiểm trên TỪNG module browser (chỉ webapp-logic.mjs được định nghĩa chúng).
     const others = browserModuleNames().filter((name) => name !== LOGIC);

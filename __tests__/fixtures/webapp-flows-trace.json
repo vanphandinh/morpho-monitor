@@ -4,6 +4,7 @@
     {
       "name": "boot",
       "calls": [
+        "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x01977b57aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"0x5555555555555555555555555555555555555555\"},\"latest\"]}",
         "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x2c3c9157aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb\"},\"latest\"]}",
         "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x313ce567\",\"to\":\"0x2222222222222222222222222222222222222222\"},\"latest\"]}",
         "{\"kind\":\"rpc\",\"method\":\"eth_call\",\"params\":[{\"data\":\"0x313ce567\",\"to\":\"0x3333333333333333333333333333333333333333\"},\"latest\"]}",

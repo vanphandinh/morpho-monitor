@@ -6,7 +6,7 @@
  * không tồn tại nên không có vòng import.
  */
 
-import { broadcastingAgeMinutes, isClaimOverdue, retryTransient, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
+import { broadcastingAgeMinutes, formatApyPercent, isClaimOverdue, retryTransient, shortenAddr, wadToPercent } from "./webapp-logic.mjs";
 import { esc, formatToken, row } from "./webapp-render.mjs";
 import { CLAIM_RECOVERY_MS, EXPLORER_NAME, state } from "./webapp-state.mjs";
 import { clearSession, getAuthHeaders, isAuthenticated, showPresignError, showPresignSuccess, updateAuthUI } from "./webapp-shell.mjs";
@@ -88,6 +88,8 @@ export function renderPresignMarketInfo() {
     row("Loan Token", `${shortenAddr(state.marketParams.loanToken)} (${state.loanToken.symbol})`),
     row("Liquidity", `<span class="value ${liquidityClass}">${formatToken(liquidity, state.loanToken)}</span>`),
     row("Utilization", wadToPercent(state.marketData.utilization)),
+    // Cùng con số với card ở tab Tổng quan — hai card market không được nói lệch nhau.
+    row("Supply APY", formatApyPercent(state.marketData.supplyApy)),
     row("Total Supply", formatToken(state.marketData.totalSupplyAssets, state.loanToken)),
   ].join("");
   document.getElementById("presign-market-section").style.display = "block";

@@ -117,6 +117,17 @@ export const MORPHO_ABI = [
   },
 ];
 
+// AdaptiveCurveIRM: `rateAtTarget` là mốc lãi suất hiện tại của market. Không nằm trong struct
+// `market` của Morpho Blue nên phải đọc riêng; thiếu nó thì không tính được APY thật.
+export const ADAPTIVE_CURVE_IRM_ABI = [
+  {
+    type: "function", name: "rateAtTarget",
+    inputs: [{ type: "bytes32" }],
+    outputs: [{ type: "int256" }],
+    stateMutability: "view",
+  },
+];
+
 // ERC20 minimal ABI
 export const ERC20_ABI = [
   { type: "function", name: "decimals", inputs: [], outputs: [{ type: "uint8" }], stateMutability: "view" },
