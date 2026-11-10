@@ -99,6 +99,7 @@ function invalidateSignatures(message) {
   if (state.presignedWithdrawAll && state.presignedWithdrawAll.status === "signed") {
     state.presignedWithdrawAll.status = "pending";
     state.presignedWithdrawAll.txHash = null;
+    state.presignedWithdrawAll.signedNonce = null;
     withdrawAllInvalidated = true;
     invalidated = true;
   }
@@ -926,6 +927,11 @@ export async function signWithdrawAll() {
   const statusEl = document.getElementById("presign-withdraw-all-status");
   statusEl.innerHTML = '<span style="color:var(--yellow)">⏳ Đang ký giao dịch rút toàn bộ shares...</span>';
 
+  // Chốt nonce NGAY TRƯỚC khi mở popup ví — cùng luật với `signAllTiers`. Người dùng có thể
+  // bấm `+`/`−` trong lúc chờ ký; dùng nonce live sau await sẽ ghim chữ ký ở nonce khác với
+  // nonce bundle sẽ khai, và (khi proxy không có bằng chứng) đánh dấu ✅ cho một chữ ký không lưu được.
+  const withdrawAllNonce = state.presignedNonce;
+
   try {
     const calldata = encodeFunctionData({
       abi: MORPHO_ABI,
@@ -937,7 +943,7 @@ export async function signWithdrawAll() {
       to: MORPHO_BLUE,
       data: calldata,
       value: 0n,
-      nonce: state.presignedNonce,
+      nonce: withdrawAllNonce,
       gas: 200000n,
       maxFeePerGas: presignedGas.maxFeePerGas,
       maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas,
@@ -946,22 +952,28 @@ export async function signWithdrawAll() {
     });
 
     // Bằng chứng nonce — cùng luật với `signAllTiers`: ví ký sai nonce thì chữ ký này không thể
-    // lưu ở rung nonce đã chọn, nên đánh dấu lỗi NGAY và không để nút Lưu mời bấm.
+    // lưu ở rung nonce đã chọn, nên đánh dấu lỗi NGAY và không để nút Lưu mời bấm. Ngoài bằng
+    // chứng của proxy, kiểm cả nonce hiện tại: người dùng đổi nonce trong lúc popup thì chữ ký
+    // đã ký ở `withdrawAllNonce`, không phải nonce bundle sẽ khai — kể cả khi proxy chưa có bằng chứng.
     const actualNonce = capturedNonceOf(await readCapturedTxs(), txHash);
-    if (actualNonce !== null && Number(actualNonce) !== Number(state.presignedNonce)) {
+    const nonceChanged = Number(state.presignedNonce) !== Number(withdrawAllNonce);
+    const actualMismatch = actualNonce !== null && Number(actualNonce) !== Number(withdrawAllNonce);
+    if (nonceChanged || actualMismatch) {
+      const actual = actualNonce !== null ? actualNonce : withdrawAllNonce;
       state.presignedWithdrawAll = {
         status: "error",
-        error: `ví ký ở nonce ${actualNonce}, không phải ${state.presignedNonce}`,
-        nonceMismatch: { requested: Number(state.presignedNonce), actual: actualNonce },
+        error: `ví ký ở nonce ${actual}, không phải ${state.presignedNonce}`,
+        nonceMismatch: { requested: Number(state.presignedNonce), actual },
       };
       btn.textContent = "🔄 Ký Rút Toàn Bộ Shares";
       statusEl.innerHTML =
-        `<span style="color:var(--red)">❌ Ví ký ở nonce ${actualNonce}, không phải nonce ${state.presignedNonce} — chưa ký được.</span>`;
+        `<span style="color:var(--red)">❌ Ví ký ở nonce ${actual}, không phải nonce ${state.presignedNonce} — chưa ký được.</span>`;
       showPresignError(nonceMismatchMessage({
-        actual: actualNonce,
+        actual,
         requested: state.presignedNonce,
         label: "Rút toàn bộ shares",
       }));
+      document.getElementById("btn-save-server").disabled = !hasLiveSignatures();
       return;
     }
 
@@ -969,15 +981,17 @@ export async function signWithdrawAll() {
       sharesWei: shares.toString(),
       txHash: txHash,
       status: "signed",
+      signedNonce: withdrawAllNonce,
     };
 
     btn.textContent = "✅ Đã Ký";
     statusEl.innerHTML = '<span style="color:var(--green)">✅ Đã ký giao dịch rút toàn bộ shares thành công.</span>';
-    document.getElementById("btn-save-server").disabled = false;
+    document.getElementById("btn-save-server").disabled = !hasLiveSignatures();
   } catch (err) {
     state.presignedWithdrawAll = { status: "error", error: err.message };
     btn.textContent = "🔄 Ký Rút Toàn Bộ Shares";
     statusEl.innerHTML = `<span style="color:var(--red)">❌ Lỗi: ${err.message}</span>`;
+    document.getElementById("btn-save-server").disabled = !hasLiveSignatures();
   } finally {
     isSigningInProgress = false;
     btn.disabled = false;
