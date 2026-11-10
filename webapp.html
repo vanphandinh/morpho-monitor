@@ -138,6 +138,26 @@
     .banner.success { background: rgba(63, 185, 80, 0.15); border: 1px solid var(--green); color: var(--green); }
     .banner.warn { background: rgba(210, 153, 29, 0.15); border: 1px solid var(--yellow); color: var(--yellow); }
     .banner.info { background: rgba(88, 166, 255, 0.15); border: 1px solid var(--blue); color: var(--blue); }
+
+    /* Toast trạng thái thoáng qua (tự tắt ~5s): NỔI trên cùng, không chiếm chỗ trong khối
+       nút, nên mọi nút bên dưới vẫn bấm được ngay cả khi toast còn hiển thị. */
+    .toast {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 560px;
+      width: calc(100% - 32px);
+      z-index: 1000;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 0.9rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      cursor: pointer;
+    }
     .tx-verify-note { margin-top: 8px; font-size: 0.85rem; opacity: 0.9; }
 
     a { color: var(--blue); word-break: break-all; }
@@ -520,6 +540,10 @@
     </div>
 
   </div><!-- /tab-presign -->
+
+  <!-- Toast trạng thái thoáng qua: `presignToast()` trong webapp-presign.mjs ghi nội dung
+       và tự ẩn sau ~5 giây (bấm vào cũng tắt). Nổi, không chặn nút bên dưới. -->
+  <div id="presign-toast" class="toast" style="display:none"></div>
 
   <!-- Security note -->
   <div class="banner info" style="margin-top:24px">

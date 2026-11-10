@@ -17,6 +17,41 @@ let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
 
 let isSigningInProgress = false;
 
+// ============================================================
+// PRESIGN: TOAST (trạng thái thoáng qua — tự tắt)
+// ============================================================
+/**
+ * Vì sao toast thay vì banner: "đã ký xong", "bỏ qua bao nhiêu tier đã có", "đã lưu" là
+ * trạng thái THOÁNG QUA. Nằm trong banner/dòng chữ dính chỗ, chúng vừa chiếm diện tích vừa
+ * làm người dùng tưởng nút còn kẹt ở lượt trước. Toast nổi, tự tắt sau `PRESIGN_TOAST_MS`,
+ * bấm vào là tắt ngay — và KHÔNG chặn bất kỳ nút nào bên dưới.
+ */
+export const PRESIGN_TOAST_MS = 5000;
+let presignToastTimer = null;
+
+export function presignToast(message, ms = PRESIGN_TOAST_MS) {
+  const el = document.getElementById("presign-toast");
+  if (!el) return;
+  if (presignToastTimer) { clearTimeout(presignToastTimer); presignToastTimer = null; }
+  el.innerHTML = message;
+  el.style.display = "block";
+  el.onclick = () => hidePresignToast(el);
+  const timer = setTimeout(() => hidePresignToast(el), ms);
+  // Node (test harness) giữ event loop vì timer 5s — bỏ neo khi runtime hỗ trợ `unref`.
+  // Browser/fake-timer có thể không có (hoặc ném) ⇒ bỏ qua, không để lỗi ở đây chặn toast.
+  try { timer?.unref?.(); } catch { /* runtime không hỗ trợ unref */ }
+  presignToastTimer = timer;
+}
+
+/** Ẩn toast. Nhận `el` tường minh vì timer có thể chạy sau khi môi trường test đã dọn DOM. */
+function hidePresignToast(el) {
+  if (presignToastTimer) { clearTimeout(presignToastTimer); presignToastTimer = null; }
+  if (!el) return;
+  el.style.display = "none";
+  el.innerHTML = "";
+  el.onclick = null;
+}
+
 export function updatePresignWalletUI() {
   const statusEl = document.getElementById("presign-wallet-status");
   const connectedEl = document.getElementById("presign-wallet-connected");
@@ -56,20 +91,35 @@ function invalidateSignatures(message) {
       tier.status = "pending";
       tier.txHash = null;
       tier.amountWei = null;
+      tier.signedNonce = null;
       invalidated = true;
     }
   }
+  let withdrawAllInvalidated = false;
   if (state.presignedWithdrawAll && state.presignedWithdrawAll.status === "signed") {
     state.presignedWithdrawAll.status = "pending";
     state.presignedWithdrawAll.txHash = null;
+    withdrawAllInvalidated = true;
     invalidated = true;
   }
   if (invalidated) {
     document.getElementById("btn-save-server").disabled = true;
+    // Nút rút-toàn-bộ từng hiện "✅ Đã Ký" kèm dòng status "đã ký thành công" — sau khi chữ ký
+    // bị vô hiệu (đổi nonce/gas) thì hai chỗ đó NÓI DỐI (trạng thái đã về pending) và người dùng
+    // tưởng không ký lại được. Đưa về đúng nhãn mời-ký để bấm tiếp ngay, không cần tải lại trang.
+    if (withdrawAllInvalidated) resetWithdrawAllUI();
     showPresignError(message);
     renderTierList();
   }
   return invalidated;
+}
+
+/** Đưa nút + dòng trạng thái rút-toàn-bộ về nhãn mời ký (chỉ UI, không đụng `state`). */
+function resetWithdrawAllUI() {
+  const btn = document.getElementById("btn-sign-withdraw-all");
+  if (btn) btn.textContent = "🔄 Ký Rút Toàn Bộ Shares";
+  const statusEl = document.getElementById("presign-withdraw-all-status");
+  if (statusEl) statusEl.innerHTML = "";
 }
 
 /** Còn chữ ký nào dùng lại được không (tier hoặc rút-toàn-bộ đang `signed`)? */
@@ -553,6 +603,7 @@ export function updateTierAmount(index, value) {
   if (state.presignedTiers[index].status === "signed") {
     state.presignedTiers[index].txHash = null;
     state.presignedTiers[index].amountWei = null;
+    state.presignedTiers[index].signedNonce = null;
     state.presignedTiers[index].status = "pending";
     document.getElementById("btn-save-server").disabled = true;
   }
@@ -671,6 +722,8 @@ export async function signAllTiers() {
 
   const total = validTiers.length;
   let signed = 0;
+  // Tier đã có chữ ký Ở ĐÚNG nonce này ⇒ dùng lại, không mở popup ví lần nữa.
+  let skipped = 0;
   // Số tier không đọc được bằng chứng nonce (proxy cũ/mạng lỗi) — dùng cho lời kết trung thực.
   let unverified = 0;
   // Ảnh chụp tài khoản lúc bắt đầu ký (chẩn đoán 2026-10-30): MỌI mốc trong một lượt phải ký từ
@@ -685,6 +738,16 @@ export async function signAllTiers() {
     const tier = state.presignedTiers[i];
     if (!tier.amount || parseFloat(tier.amount) <= 0) continue;
 
+    // Đã ký ĐÚNG nonce hiện tại ⇒ dùng lại chữ ký, KHÔNG mở thêm popup ví. Đây là đường
+    // "ký thêm tier mới": thêm mốc vào cùng nonce rồi bấm Ký thì chỉ mốc mới phát sinh popup.
+    // Khác nonce (rung N+1) thì chữ ký cũ vô nghĩa nên vẫn phải ký lại — bản chất của nonce.
+    if (tier.status === "signed" && tier.txHash &&
+        Number(tier.signedNonce) === Number(state.presignedNonce)) {
+      skipped++;
+      renderTierList();
+      continue;
+    }
+
     // Cổng chặn giữa hai mốc: mất ví (null) hoặc đổi tài khoản ⇒ DỪNG trước khi dựng calldata.
     // Không có cổng này, lỗi duy nhất người dùng thấy là InvalidAddressError của viem, còn nút Ký
     // được bật lại dù ví đã mất — mời bấm một lượt chắc chắn lỗi y hệt.
@@ -698,7 +761,7 @@ export async function signAllTiers() {
       tier.status = "error";
       tier.error = reason;
       renderTierList();
-      progressFill.style.width = `${(signed / total) * 100}%`;
+      progressFill.style.width = `${((signed + skipped) / total) * 100}%`;
       progressText.textContent = `❌ ${reason} — đã dừng ký (${signed}/${total} mốc đã ký)`;
       showPresignError(
         `${reason}. Đã dừng trước khi ký mốc ${tier.amount} ${state.loanToken.symbol} để không dựng ` +
@@ -715,8 +778,13 @@ export async function signAllTiers() {
 
     tier.status = "signing";
     renderTierList();
-    progressText.textContent = `Đang ký ${signed + 1}/${total}: ${tier.amount} ${state.loanToken.symbol}...`;
-    progressFill.style.width = `${((signed) / total) * 100}%`;
+    progressText.textContent = `Đang ký ${signed + skipped + 1}/${total}: ${tier.amount} ${state.loanToken.symbol}...`;
+    progressFill.style.width = `${((signed + skipped) / total) * 100}%`;
+
+    // Chốt nonce NGAY TRƯỚC khi mở popup ví: người dùng có thể bấm `+`/`−` trong lúc chờ ký,
+    // và `onNonceStep` chỉ vô hiệu các tier đang `signed` (không đụng tier đang `signing`).
+    // Dùng nonce live sau khi await sẽ ghim chữ ký sai nonce và khiến lượt ký sau BỎ QUA nó.
+    const tierNonce = state.presignedNonce;
 
     try {
       const assets = parseUnits(tier.amount, state.loanToken.decimals);
@@ -732,7 +800,7 @@ export async function signAllTiers() {
         to: MORPHO_BLUE,
         data: calldata,
         value: 0n,
-        nonce: state.presignedNonce,
+        nonce: tierNonce,
         gas: 200000n,
         maxFeePerGas: presignedGas.maxFeePerGas,
         maxPriorityFeePerGas: presignedGas.maxPriorityFeePerGas,
@@ -766,12 +834,14 @@ export async function signAllTiers() {
 
       tier.amountWei = assets.toString();
       tier.status = "signed";
+      // Ghim nonce của chữ ký này: lần bấm Ký sau ở CÙNG nonce sẽ dùng lại thay vì ký lại.
+      tier.signedNonce = tierNonce;
       signed++;
     } catch (err) {
       tier.status = "error";
       tier.error = err.message;
       renderTierList();
-      progressFill.style.width = `${(signed / total) * 100}%`;
+      progressFill.style.width = `${((signed + skipped) / total) * 100}%`;
       progressText.textContent = `❌ Lỗi tier ${i + 1}: ${err.message}`;
       isSigningInProgress = false;
       document.getElementById("btn-sign-all").disabled = false;
@@ -782,12 +852,26 @@ export async function signAllTiers() {
   }
 
   progressFill.style.width = "100%";
-  progressText.textContent = `✅ Đã ký thành công ${signed}/${total} giao dịch` +
-    (unverified > 0
-      ? " (chưa xác minh được nonce — proxy sẽ kiểm khi lưu)"
-      : ` — proxy xác nhận đúng nonce ${state.presignedNonce}`);
-  document.getElementById("btn-save-server").disabled = false;
+  if (signed === 0) {
+    // Toàn bộ mốc đã có chữ ký ở đúng nonce này — không mở popup ví nào, cũng không có gì
+    // mới để lưu. Nút Lưu bám theo chữ ký còn sống (có thể lượt trước chưa lưu).
+    progressText.textContent =
+      `ℹ️ Không có mốc mới — ${skipped} mốc đã ký sẵn ở nonce ${state.presignedNonce}.`;
+  } else {
+    progressText.textContent = `✅ Đã ký thành công ${signed}/${total} giao dịch` +
+      (skipped > 0 ? ` (dùng lại ${skipped} chữ ký đã có ở nonce này — không mở popup ví)` : "") +
+      (unverified > 0
+        ? " (chưa xác minh được nonce — proxy sẽ kiểm khi lưu)"
+        : ` — proxy xác nhận đúng nonce ${state.presignedNonce}`);
+  }
+  document.getElementById("btn-save-server").disabled = !hasLiveSignatures();
   document.getElementById("btn-sign-all").disabled = false;
+  presignToast(
+    signed > 0
+      ? `✅ Đã ký ${signed} giao dịch mới ở nonce ${state.presignedNonce}` +
+        (skipped > 0 ? ` — dùng lại ${skipped} chữ ký đã có.` : ".")
+      : `ℹ️ Tất cả mốc đã ký ở nonce ${state.presignedNonce} — không có gì mới để ký.`
+  );
   isSigningInProgress = false;
 };
 
@@ -1001,7 +1085,14 @@ export async function saveToServer() {
         `Proxy đã capture signed tx + gửi bundle đến server.<br>` +
         `Monitor sẽ tự động broadcast khi có thanh khoản.`
       );
-      document.getElementById("btn-save-server").textContent = "✅ Đã Lưu";
+      // Trả nút về đúng nhãn: "✅ Đã Lưu" + disabled từng là ngõ cụt — lưu xong muốn lưu
+      // đợt kế phải F5. Giữ disabled để không POST trùng CÙNG bundle; lượt ký kế tiếp
+      // (tier mới, nonce mới, rút toàn bộ) tự mở lại nút này.
+      document.getElementById("btn-save-server").textContent = "💾 Lưu Lên Server";
+      document.getElementById("btn-save-server").disabled = true;
+      presignToast(
+        `💾 Đã lưu ${result.tiers} giao dịch lên server — thêm mốc hoặc đổi nonce rồi ký tiếp, không cần tải lại trang.`
+      );
       // Ladder trên server vừa thay đổi (merge vào rung cũ hoặc thêm rung mới)
       // — refresh cả overview lẫn rung đang hiển thị, nếu không UI giữ state cũ
       // tới lần chuyển tab tiếp theo.

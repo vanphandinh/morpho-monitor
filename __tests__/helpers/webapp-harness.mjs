@@ -528,6 +528,12 @@ export async function loadWebapp({
   selfInjectedIds = new Set(),
   html = readWebappHtml(),
   confirmResult = true,
+  /**
+   * Cặp key/value ghi vào `localStorage` TRƯỚC khi module app evaluate — mô phỏng
+   * "đã từng kết nối trong lần mở trang trước" (refresh). Mặc định `null` ⇒ storage rỗng,
+   * giữ nguyên hành vi của mọi test cũ (không có key ⇒ app không gọi provider nào).
+   */
+  storageSeed = null,
 } = {}) {
   const traffic = [];
   const record = (calls) => {
@@ -551,6 +557,11 @@ export async function loadWebapp({
     selfInjectedIds,
     confirmResult,
   });
+
+  // Seed TRƯỚC khi nạp module: `init()` chạy lúc import/DOMContentLoaded và đọc storage ngay.
+  if (storageSeed) {
+    for (const [key, value] of Object.entries(storageSeed)) env.localStorage.setItem(key, String(value));
+  }
 
   await import(pathToFileURL(entry).href);
 

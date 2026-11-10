@@ -120,6 +120,133 @@ function signOut() {
 // ============================================================
 let _listenersAttached = false; // guard against duplicate event listeners
 
+// ============================================================
+// WALLET REMEMBER (refresh không phải bấm "Kết Nối Ví" lại)
+// ============================================================
+const WALLET_ACCOUNT_KEY = "morpho-wallet-account";
+
+/** Ghi nhớ ví đã kết nối (lowercase) để lần mở trang sau tự khôi phục im lặng. */
+function rememberWalletAccount(account) {
+  try { localStorage.setItem(WALLET_ACCOUNT_KEY, String(account).toLowerCase()); } catch { /* storage bị chặn — bỏ qua */ }
+}
+
+/** Quên ví đã nhớ (người dùng bấm Ngắt Kết Nối / ví phát `accountsChanged([])`). */
+function forgetWalletAccount() {
+  try { localStorage.removeItem(WALLET_ACCOUNT_KEY); } catch { /* storage bị chặn — bỏ qua */ }
+}
+
+/** Địa chỉ đã ghi nhớ; `null` khi chưa từng kết nối hoặc storage bị chặn. */
+function rememberedWalletAccount() {
+  try { return localStorage.getItem(WALLET_ACCOUNT_KEY) || null; } catch { return null; }
+}
+
+/**
+ * Gắn listener ví đúng MỘT lần — dùng chung cho kết nối thủ công và khôi phục tự động
+ * (hai đường không được gắn trùng, nếu không `accountsChanged` sẽ chạy hai lần).
+ */
+function attachWalletListeners() {
+  if (_listenersAttached || !window.ethereum) return;
+  _listenersAttached = true;
+
+  window.ethereum.on("accountsChanged", (accts) => {
+    if (accts.length === 0) {
+      window.disconnectWallet();
+    } else {
+      state.currentAccount = accts[0];
+      rememberWalletAccount(state.currentAccount);
+      document.getElementById("wallet-address").textContent = state.currentAccount;
+      const presignAddr = document.getElementById("presign-wallet-address");
+      if (presignAddr) presignAddr.textContent = state.currentAccount;
+      updatePresignWalletUI();
+      updateAuthUI();
+    }
+  });
+
+  window.ethereum.on("chainChanged", (chainId) => {
+    if (String(chainId).toLowerCase() === CHAIN_HEX) {
+      // Returned to the configured chain — mở lại nút rút nếu ví còn kết nối. Nhánh sai
+      // chain bên dưới khoá chúng; trước đây quay lại chain đúng vẫn kẹt khoá tới khi bấm
+      // "Kết Nối Ví" lần nữa (giờ lộ ra ở đường auto-connect với ví đang ở chain khác).
+      if (state.currentAccount) {
+        document.getElementById("btn-withdraw").disabled = false;
+        document.getElementById("btn-withdraw-all").disabled = false;
+        document.getElementById("btn-max").disabled = false;
+      }
+      // refresh market data
+      fetchAllData().then(() => {
+        renderMarketInfo();
+        renderPosition();
+      }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
+    } else {
+      showTxResult("warn", `⚠️ Vui lòng chuyển về ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} để sử dụng.`);
+      document.getElementById("btn-withdraw").disabled = true;
+      document.getElementById("btn-withdraw-all").disabled = true;
+    }
+  });
+
+  window.ethereum.on("disconnect", () => {
+    window.disconnectWallet();
+    showTxResult("error", "🔌 Ví đã ngắt kết nối.");
+  });
+}
+
+/**
+ * Khôi phục ví sau khi tải lại trang bằng `eth_accounts` — IM LẶNG, không popup như
+ * `eth_requestAccounts`. Chỉ chạy khi đã từng kết nối (có key trong localStorage), nên môi
+ * trường chưa từng kết nối (kể cả test harness) không phát sinh lời gọi provider nào.
+ * Mọi lỗi đều im lặng: hỏng khôi phục không được chặn đường bấm "Kết Nối Ví" thủ công.
+ */
+async function tryAutoConnectWallet() {
+  if (state.currentAccount || !window.ethereum) return;
+  if (!CHAIN_HEX || !CHAIN) return;
+  const stored = rememberedWalletAccount();
+  if (!stored) return;
+  try {
+    const accounts = await window.ethereum.request({ method: "eth_accounts" });
+    const match = (accounts || []).find((a) => String(a).toLowerCase() === stored.toLowerCase());
+    if (!match) return; // ví đã khoá/thu hồi quyền — để người dùng bấm kết nối thủ công
+    const chainId = await window.ethereum.request({ method: "eth_chainId" });
+
+    // Người dùng có thể đã bấm "Kết Nối Ví" hoặc "Ngắt Kết Nối" trong lúc chờ ví trả lời
+    // (eth_accounts không popup nhưng vẫn là IPC bất đồng bộ). Không kiểm lại thì lượt khôi
+    // phục chậm sẽ ghi đè lựa chọn mới: kết nối lại sau khi ngắt, hoặc trả currentAccount về
+    // địa chỉ cũ trong khi ví đã chuyển sang tài khoản khác.
+    if (state.currentAccount) return;
+    if (rememberedWalletAccount()?.toLowerCase() !== stored.toLowerCase()) return;
+
+    state.currentAccount = match;
+    state.walletClient = createWalletClient({
+      account: state.currentAccount,
+      chain: CHAIN,
+      transport: custom(window.ethereum),
+    });
+
+    document.getElementById("wallet-status").style.display = "none";
+    document.getElementById("wallet-connected").style.display = "block";
+    document.getElementById("wallet-address").textContent = state.currentAccount;
+
+    // Cùng luật với listener `chainChanged`: sai chain thì KHÔNG mở nút rút — giao dịch gửi
+    // lên chain khác chắc chắn hỏng, còn nút mở mời người dùng bấm đúng lỗi đó. Đúng chain
+    // mới bật (trước đây auto-connect bật vô điều kiện, khác hẳn đường kết nối thủ công).
+    const onConfiguredChain = String(chainId).toLowerCase() === String(CHAIN_HEX).toLowerCase();
+    document.getElementById("btn-withdraw").disabled = !onConfiguredChain;
+    document.getElementById("btn-withdraw-all").disabled = !onConfiguredChain;
+    document.getElementById("btn-max").disabled = !onConfiguredChain;
+
+    attachWalletListeners();
+    updatePresignWalletUI();
+    updateAuthUI();
+    renderWalletCompatibility();
+
+    if (!onConfiguredChain) {
+      // Chỉ cảnh báo — không tự switch chain (người dùng có thể đang ở mạng proxy khác).
+      showTxResult("warn", `⚠️ Ví đã kết nối lại nhưng đang ở chain khác — chuyển về ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} để ký.`);
+    } else {
+      hideError();
+    }
+  } catch { /* im lặng — đường kết nối thủ công vẫn nguyên */ }
+}
+
 async function connectWallet() {
   try {
     if (!window.ethereum) {
@@ -133,6 +260,7 @@ async function connectWallet() {
 
     const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
     state.currentAccount = accounts[0];
+    rememberWalletAccount(state.currentAccount);
 
     // Ensure the configured chain (metadata injected by the server).
     const chainId = await window.ethereum.request({ method: "eth_chainId" });
@@ -182,37 +310,7 @@ async function connectWallet() {
     renderWalletCompatibility();
 
     // Attach wallet event listeners once (prevents duplicate firing)
-    if (!_listenersAttached) {
-      _listenersAttached = true;
-
-      window.ethereum.on("accountsChanged", (accts) => {
-        if (accts.length === 0) {
-          window.disconnectWallet();
-        } else {
-          state.currentAccount = accts[0];
-          document.getElementById("wallet-address").textContent = state.currentAccount;
-        }
-      });
-
-      window.ethereum.on("chainChanged", (chainId) => {
-        if (String(chainId).toLowerCase() === CHAIN_HEX) {
-          // Returned to the configured chain — refresh market data
-          fetchAllData().then(() => {
-            renderMarketInfo();
-            renderPosition();
-          }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
-        } else {
-          showTxResult("warn", `⚠️ Vui lòng chuyển về ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} để sử dụng.`);
-          document.getElementById("btn-withdraw").disabled = true;
-          document.getElementById("btn-withdraw-all").disabled = true;
-        }
-      });
-
-      window.ethereum.on("disconnect", () => {
-        window.disconnectWallet();
-        showTxResult("error", "🔌 Ví đã ngắt kết nối.");
-      });
-    }
+    attachWalletListeners();
 
     hideError();
   } catch (err) {
@@ -223,6 +321,7 @@ async function connectWallet() {
 function disconnectWallet() {
   state.walletClient = null;
   state.currentAccount = null;
+  forgetWalletAccount();
   _listenersAttached = false; // allow re-attach on next connect
   document.getElementById("wallet-status").style.display = "block";
   document.getElementById("wallet-connected").style.display = "none";
@@ -425,6 +524,9 @@ async function init() {
 
     document.getElementById("loading").style.display = "none";
     updateAuthUI();
+    // Khôi phục ví đã kết nối trước đó (không popup, không chặn render). Không await: phần
+    // còn lại của UI đã sẵn sàng, ví hiện lên ngay khi provider trả lời.
+    tryAutoConnectWallet();
   } catch (err) {
     document.getElementById("loading").style.display = "none";
     // Hết mọi lần thử mà RPC vẫn chết: subtitle không được kẹt ở chữ loading

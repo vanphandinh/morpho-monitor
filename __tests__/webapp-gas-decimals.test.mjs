@@ -70,6 +70,9 @@ describe("gas số nhỏ hàng thập phân (bug 4)", () => {
 
   it("dấu phẩy thập phân kiểu VN (0,00000026) được chấp nhận như dấu chấm", async () => {
     await primeSigning("50", "0,00000026");
+    // Cùng nonce + cùng mốc + cùng phí ⇒ chữ ký cũ được DÙNG LẠI (không mở popup ví lần nữa),
+    // nên phải sang nonce kế tiếp mới có giao dịch mới để kiểm phí đã parse.
+    app.window.onNonceStep(1);
     await app.window.signAllTiers();
     expect(lastSendParams().maxPriorityFeePerGas).toBe("0x104");
   });
