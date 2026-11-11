@@ -271,12 +271,24 @@ export function wadToPercent(wad) {
 }
 
 /**
+ * Chèn dấu phẩy phân cách hàng nghìn vào PHẦN NGUYÊN của một chuỗi số thập phân.
+ * "2450000.5" → "2,450,000.5"; "0.000001" và "-0.5" giữ nguyên; "-1234" → "-1,234".
+ * Làm trên chuỗi (không qua Number) để bigint lớn không mất chữ số.
+ */
+function groupThousands(value) {
+  const text = String(value);
+  const dot = text.indexOf(".");
+  const whole = dot === -1 ? text : text.slice(0, dot);
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (dot === -1 ? "" : text.slice(dot));
+}
+
+/**
  * Format a bigint token amount to a human-readable string.
  */
 export function formatTokenAmount(amount, decimals, symbol) {
   if (decimals != null) {
     const formatted = formatUnits(amount, decimals);
-    return `${formatted} ${symbol ?? "tokens"}`;
+    return `${groupThousands(formatted)} ${symbol ?? "tokens"}`;
   }
   return `${amount.toString()} (raw)`;
 }

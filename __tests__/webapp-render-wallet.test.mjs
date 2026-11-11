@@ -49,6 +49,12 @@ describe("webapp-render.mjs: row() / formatToken()", () => {
     for (const amount of samples) {
       expect(formatToken(amount, { decimals: 6, symbol: "USDC" })).toBe(formatTokenAmount(amount, 6, "USDC"));
     }
+    // Chốt dạng vừa nhóm hàng nghìn vừa giữ phần lẻ — cả bản browser và bản shared
+    // phải ra đúng chuỗi này (đi qua Number sẽ làm tròn/mất chữ số với bigint lớn).
+    expect([
+      formatToken(1_234_567_890_000n, { decimals: 6, symbol: "USDC" }),
+      formatTokenAmount(1_234_567_890_000n, 6, "USDC"),
+    ]).toEqual(["1,234,567.89 USDC", "1,234,567.89 USDC"]);
   });
 });
 

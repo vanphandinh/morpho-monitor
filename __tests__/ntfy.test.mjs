@@ -77,8 +77,8 @@ describe("ntfy payload — sự kiện thanh khoản xuất hiện", () => {
     const { body } = payload();
     expect(body).toContain("**Liquidity available**");
     expect(body).toContain("**Market:** WETH/USDC");
-    expect(body).toContain("**Liquidity:** 12500 USDC");   // 12_500_000_000 @ 6dp
-    expect(body).toContain("**Position:** 3000 USDC");     // 3_000_000_000 @ 6dp
+    expect(body).toContain("**Liquidity:** 12,500 USDC");   // 12_500_000_000 @ 6dp
+    expect(body).toContain("**Position:** 3,000 USDC");     // 3_000_000_000 @ 6dp
     expect(body).toContain("**Utilization:** 50.00%");     // 5e17 WAD
     expect(body).toContain(`[Open withdrawal page](${LINK})`);
   });
@@ -168,7 +168,7 @@ describe("ntfy payload — biên token symbol", () => {
     expect(body).not.toContain("null");
     expect(body).toContain("**Market:** ?/?");
     // formatTokenAmount rơi về "tokens" khi thiếu symbol
-    expect(body).toContain("**Liquidity:** 12500 tokens");
+    expect(body).toContain("**Liquidity:** 12,500 tokens");
   });
 
   it("liquidity/supply bằng 0 vẫn format được (không NaN)", () => {
