@@ -23,7 +23,7 @@ import { CHAIN, CHAIN_HEX, CHAIN_ID, CHAIN_NAME, EXPLORER_URL, MORPHO_BLUE, NATI
 import { clearSession, getProxyUrl, hideError, renderRpcVerifiedNote, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
 import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
-import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, syncNonceStepper, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
+import { addPresetTier, addTier, autoFillGas, fetchNonce, noteActiveAccount, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, syncNonceStepper, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
 import { setMaxAmount, withdrawAll, withdrawAmount } from "./webapp-withdraw.mjs";
 
 // Presign state
@@ -257,6 +257,9 @@ async function verifyWalletAuthorization(trigger) {
  */
 function adoptWalletAccount(account) {
   if (!account) return;
+  // Đổi tài khoản ví ⇒ nonce + sàn của tài khoản cũ vô nghĩa: xoá trước khi vẽ lại UI (chẩn đoán
+  // 2026-11-15 — nút `+` từng mở với nonce của tài khoản trước).
+  noteActiveAccount(account);
   state.currentAccount = account;
   if (window.ethereum && CHAIN) {
     state.walletClient = createWalletClient({
@@ -346,6 +349,9 @@ async function connectWallet() {
     }
 
     const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    // Cùng luật với `adoptWalletAccount()`: kết nối bằng tài khoản KHÁC tài khoản đang giữ nonce
+    // (kể cả sau khi đã ngắt) ⇒ xoá nonce/sàn cũ, buộc lấy lại nonce.
+    noteActiveAccount(accounts[0]);
     state.currentAccount = accounts[0];
     rememberWalletAccount(state.currentAccount);
 

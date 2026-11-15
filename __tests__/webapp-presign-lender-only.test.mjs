@@ -61,6 +61,10 @@ describe("ví đang kết nối không phải lender", () => {
 
   it("chuyển ví về đúng lender ⇒ ký bình thường (cổng không chặn nhầm)", async () => {
     provider.provider.emit("accountsChanged", [LENDER]);
+    // 2026-11-15: nonce đang giữ thuộc ví OTHER (đã lấy lúc còn kết nối OTHER), nên đổi ví phải
+    // xoá nonce/sàn và buộc lấy lại — nếu không nút `+` sẽ mở ở nonce của ví cũ.
+    expect(app.text("presign-nonce"), "nonce của ví cũ phải bị xoá khi đổi ví").toBe("—");
+    await app.window.fetchNonce();
     app.takeCalls();
 
     await app.window.signAllTiers();

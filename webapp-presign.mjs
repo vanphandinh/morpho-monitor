@@ -15,6 +15,16 @@ import { fetchExistingBundle, refreshPresignOverview, renderPresignWithdrawAllIn
 
 let presignedGas = { maxFeePerGas: null, maxPriorityFeePerGas: null };
 
+/**
+ * Tài khoản SỞ HỮU `state.presignedNonce`/`state.onChainPendingNonce` hiện tại (lowercase).
+ *
+ * Nonce là của MỘT tài khoản: giữ nonce của tài khoản cũ sau khi đổi ví làm nút `+` mở ở nonce sai
+ * và chữ ký mới rơi vào nonce đã chết (chẩn đoán 2026-11-15). Sống cạnh nonce — không nằm trong
+ * `state` dùng chung — để `noteActiveAccount()` phát hiện được cả trường hợp ngắt rồi kết nối lại
+ * bằng tài khoản khác (lúc đó `state.currentAccount` đã về null).
+ */
+let nonceOwnerAccount = null;
+
 let isSigningInProgress = false;
 
 // ============================================================
@@ -155,6 +165,7 @@ export async function fetchNonce() {
       address: state.currentAccount,
       blockTag: "pending",
     });
+    nonceOwnerAccount = state.currentAccount;
     document.getElementById("presign-nonce").textContent = state.presignedNonce;
     document.getElementById("btn-fetch-nonce").textContent = "✅ Đã lấy Nonce";
     // Stepper: có sàn rồi ⇒ cho chỉnh nonce bằng ± (không bao giờ xuống
@@ -229,6 +240,41 @@ export function syncNonceStepper() {
     return null;
   }
   return refreshNonceFloor();
+}
+
+/**
+ * Xoá nonce + sàn khi tài khoản ví đổi — nonce là của MỘT tài khoản, giữ lại là nút `+` mở ở
+ * nonce sai. Kèm vô hiệu chữ ký: ✅ đang hiện được ký ở nonce của tài khoản CŨ, còn bundle thì
+ * không có nonce để lưu — giữ ✅ là nói dối người dùng. Đường quay lại: "Lấy Nonce" rồi ký lại.
+ */
+export function resetPresignNonceState() {
+  state.presignedNonce = null;
+  state.onChainPendingNonce = null;
+  nonceOwnerAccount = null;
+  document.getElementById("presign-nonce").textContent = "—";
+  setNonceStepperEnabled(false);
+  updateNonceHint();
+  // Nút "Lưu" bám theo `hasLiveSignatures()`, nên `invalidateSignatures()` đã khoá nó khi có chữ ký
+  // bị bỏ — không cần khoá tay. Nhưng nó chỉ báo lỗi khi THỰC SỰ có chữ ký bị bỏ, còn nonce vừa
+  // biến mất mà không nói vì sao là chỗ dễ hiểu nhầm nhất ⇒ tự hiện banner cho ca chưa ký gì.
+  const message = "Đã đổi tài khoản ví: nonce, sàn và các chữ ký đã ký ở tài khoản trước đều bị xoá. " +
+    "Bấm “Lấy Nonce” cho tài khoản mới rồi ký lại.";
+  if (!invalidateSignatures(message)) showPresignError(message);
+  updateSignButton();
+}
+
+/**
+ * Báo tài khoản ví đang dùng — ĐỔI tài khoản thì xoá nonce/sàn của tài khoản trước.
+ *
+ * Gọi ở mọi đường "nhận tài khoản" (kết nối tay, tự khôi phục, `accountsChanged`). Cùng tài khoản
+ * (khác hoa/thường) ⇒ không làm gì, để sự kiện ví nhiễu không xoá nonce người dùng vừa lấy.
+ * @returns {boolean} true = đã xoá nonce vì tài khoản đổi
+ */
+export function noteActiveAccount(account) {
+  if (!account || !nonceOwnerAccount) return false;
+  if (String(account).toLowerCase() === nonceOwnerAccount.toLowerCase()) return false;
+  resetPresignNonceState();
+  return true;
 }
 
 export function onNonceStep(delta) {
