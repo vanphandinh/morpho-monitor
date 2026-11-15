@@ -6,9 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  DEFAULT_AUTO_MARKETS_FILE,
+  DEFAULT_MANUAL_MARKETS_FILE,
   discoverAndWriteMarkets,
   discoverMarkets,
   resolveMarkets,
+  resolveMarketsFilePath,
   writeAutoMarketsFile,
 } from "../market-discovery.mjs";
 
@@ -459,6 +462,25 @@ describe("auto file persistence", () => {
   });
 });
 
+describe("resolveMarketsFilePath", () => {
+  it("env rỗng hoặc whitespace dùng default dưới baseDir", () => {
+    expect(resolveMarketsFilePath("/app", "", DEFAULT_MANUAL_MARKETS_FILE))
+      .toBe(path.resolve("/app", DEFAULT_MANUAL_MARKETS_FILE));
+    expect(resolveMarketsFilePath("/app", "   ", DEFAULT_AUTO_MARKETS_FILE))
+      .toBe(path.resolve("/app", DEFAULT_AUTO_MARKETS_FILE));
+    expect(resolveMarketsFilePath("/app", undefined, DEFAULT_AUTO_MARKETS_FILE))
+      .toBe(path.resolve("/app", DEFAULT_AUTO_MARKETS_FILE));
+  });
+
+  it("relative path dưới baseDir; absolute path giữ nguyên", () => {
+    expect(resolveMarketsFilePath("/app", "./config/markets.json", DEFAULT_MANUAL_MARKETS_FILE))
+      .toBe(path.resolve("/app", "./config/markets.json"));
+
+    const absolute = path.join(os.tmpdir(), "morpho", "markets.auto.json");
+    expect(resolveMarketsFilePath("/app", absolute, DEFAULT_AUTO_MARKETS_FILE)).toBe(absolute);
+  });
+});
+
 describe("wiring", () => {
   it("entrypoint chạy discover-markets trước start_service", () => {
     const entry = fs.readFileSync(new URL("../docker-entrypoint.sh", import.meta.url), "utf8");
@@ -481,10 +503,11 @@ describe("wiring", () => {
     }
   });
 
-  it("webapp-server dùng path.resolve cho cả absolute và relative paths", () => {
+  it("webapp-server resolve path qua helper, default khi env rỗng", () => {
     const src = fs.readFileSync(new URL("../webapp-server.mjs", import.meta.url), "utf8");
-    expect(src).toContain("path.resolve(__dirname, MARKETS_FILE)");
-    expect(src).toContain("path.resolve(__dirname, AUTO_MARKETS_FILE)");
+    expect(src).toContain("resolveMarketsFilePath(__dirname, MARKETS_FILE, DEFAULT_MANUAL_MARKETS_FILE)");
+    expect(src).toContain("resolveMarketsFilePath(__dirname, AUTO_MARKETS_FILE, DEFAULT_AUTO_MARKETS_FILE)");
+    expect(src).not.toContain("path.resolve(__dirname, MARKETS_FILE)");
   });
 });
 

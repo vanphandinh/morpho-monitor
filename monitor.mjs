@@ -305,9 +305,9 @@ async function main() {
     chain: CHAIN,
   });
 
-  // O3: RPC có thể chưa sẵn sàng lúc container vừa lên — thử lại có giới hạn (~30s). Lỗi
-  // config (MARKET_PARAMS_ZERO) KHÔNG bị thử lại: `retryStartup` ném ngay. `loadMarkets` ở
-  // trên cũng nằm ngoài retry nên thiếu/sai MARKETS_FILE vẫn chết ngay như trước.
+  // O3: RPC có thể chưa sẵn sàng lúc container vừa lên - thử lại có giới hạn (~30s). Lỗi
+  // config (MARKET_PARAMS_ZERO) KHÔNG bị thử lại: `retryStartup` ném ngay. `resolveMarkets`
+  // ở trên cũng nằm ngoài retry nên lỗi config/auto-discovery fail-fast như trước.
   const reader = await retryStartup(async () => {
     // RPC có thể chưa sẵn sàng lúc container vừa lên; chain check cũng phải
     // nằm trong retry (lỗi lệch chain là fatal, lỗi mạng thì thử lại).

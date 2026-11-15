@@ -106,8 +106,9 @@ export const EXPLORER_NAME = env("EXPLORER_NAME", "") || CHAIN.explorerName;
 export const NATIVE_CURRENCY = CHAIN.nativeCurrency;
 
 // ---- Morpho Blue ----
-// Multi-market configuration is intentionally file-backed: a deployment must
-// explicitly opt into every market it wants to monitor (see market-config.mjs).
+// Multi-market configuration is manual-or-auto: a present config/markets.json
+// is the manual allow-list; otherwise auto-discovery writes/reads
+// data/markets.auto.json (see market-discovery.mjs).
 export const MARKETS_FILE = env("MARKETS_FILE", "./config/markets.json");
 export const LENDER_ADDRESS = env("LENDER_ADDRESS",
   "0x0000000000000000000000000000000000000000");

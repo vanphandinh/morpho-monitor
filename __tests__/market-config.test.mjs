@@ -59,7 +59,8 @@ describe("multi-market configuration", () => {
     expect(err.message).toMatch(/markets\.example\.json/); // hướng dẫn copy
     expect(err.message).toMatch(/Docker/); // hướng dẫn mount
     expect(() => preflightMarketsFile("")).toThrow(/MARKETS_FILE/);
-    // Mọi entry point (monitor/webapp/proxy/index) đều đi qua loadMarkets.
+    // Entry point dùng resolveMarkets/loadMarketsDocument; legacy loadMarkets
+    // vẫn giữ preflight và hành vi cũ cho caller trực tiếp.
     expect(() => loadMarkets(missing)).toThrow(/markets\.example\.json/);
   });
 

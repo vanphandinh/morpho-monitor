@@ -6,11 +6,13 @@ const MARKET_ID_RE = /^0x[0-9a-fA-F]{64}$/;
 export const MARKETS_FILE_MISSING = "MARKETS_FILE_MISSING";
 
 /**
- * Shared config preflight for every entry point (monitor, webapp, proxy, index).
- * A missing markets file used to fail with a bare ENOENT, which reads as a
- * crash-loop on Docker (three services restarting every ~2s — M4). This throws
- * an actionable Vietnamese message instead, and the file is intentionally
- * gitignored so it must be created or mounted explicitly.
+ * Shared config preflight for legacy `loadMarkets` callers and manual file
+ * reads. A missing markets file used to fail with a bare ENOENT, which reads
+ * as a crash-loop on Docker (three services restarting every ~2s — M4). This
+ * throws an actionable Vietnamese message instead, and the file is
+ * intentionally gitignored so a manual deployment must create or mount it
+ * explicitly. Auto-mode entry points call `resolveMarkets`, which only invokes
+ * this preflight when the manual file actually exists.
  */
 export function preflightMarketsFile(filePath) {
   if (typeof filePath !== "string" || filePath.trim() === "") {

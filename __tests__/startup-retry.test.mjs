@@ -6,7 +6,7 @@
  *   2. Lỗi config (`MARKET_PARAMS_ZERO`) ⇒ ném ngay lần đầu, KHÔNG chờ, KHÔNG log "thử lại".
  *   3. Hết lượt ⇒ ném lại lỗi cuối cùng (không nuốt lỗi, không trả undefined).
  *   4. Danh sách FATAL phải khớp `MARKET_PARAMS_ZERO` của market-reader (chống lệch hằng số).
- *   5. `monitor.mjs` gọi `loadMarkets` TRƯỚC `retryStartup` ⇒ lỗi config/thiếu file không bị retry.
+ *   5. `monitor.mjs` gọi `resolveMarkets` TRƯỚC `retryStartup` ⇒ lỗi config/auto-discovery không bị retry.
  */
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";

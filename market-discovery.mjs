@@ -7,6 +7,17 @@ export const MORPHO_API_URL_DEFAULT = "https://api.morpho.org";
 export const DEFAULT_MANUAL_MARKETS_FILE = "./config/markets.json";
 export const DEFAULT_AUTO_MARKETS_FILE = "./data/markets.auto.json";
 
+/**
+ * Resolve a configured markets path against the application directory while
+ * treating an empty/whitespace env value as "use the default". Without this,
+ * `path.resolve(__dirname, "")` returns `__dirname` itself and the caller
+ * tries to read a directory as JSON.
+ */
+export function resolveMarketsFilePath(baseDir, value, fallback) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return path.resolve(baseDir, trimmed || fallback);
+}
+
 /** Error code: LENDER_ADDRESS is missing, malformed, or the zero address. */
 export const AUTO_LENDER_INVALID = "AUTO_LENDER_INVALID";
 /** Error code: chain id / API URL / timeout input is invalid. */
@@ -43,7 +54,7 @@ function isRetryableStatus(status) {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-function validateDiscoveryInputs({ lenderAddress, chainId, apiUrl, timeoutMs }) {
+function assertLenderValid(lenderAddress) {
   if (typeof lenderAddress !== "string" || !ADDRESS_RE.test(lenderAddress)
     || lenderAddress.toLowerCase() === ZERO_ADDRESS) {
     throw discoveryError(
@@ -52,6 +63,10 @@ function validateDiscoveryInputs({ lenderAddress, chainId, apiUrl, timeoutMs }) 
       "   → Set LENDER_ADDRESS=0x... (ví lender) trong .env rồi khởi động lại.",
     );
   }
+}
+
+function validateDiscoveryInputs({ lenderAddress, chainId, apiUrl, timeoutMs }) {
+  assertLenderValid(lenderAddress);
 
   const numericChainId = Number(chainId);
   if (!Number.isSafeInteger(numericChainId) || numericChainId <= 0) {
@@ -258,14 +273,7 @@ export async function discoverMarkets({
 }
 
 function assertAutoAllowed({ lenderAddress, morphoBlueAddress, canonicalMorphoBlueAddress }) {
-  if (typeof lenderAddress !== "string" || !ADDRESS_RE.test(lenderAddress)
-    || lenderAddress.toLowerCase() === ZERO_ADDRESS) {
-    throw discoveryError(
-      AUTO_LENDER_INVALID,
-      `❌ LENDER_ADDRESS không hợp lệ hoặc là zero address: ${lenderAddress ?? "(empty)"}\n` +
-      "   → Set LENDER_ADDRESS=0x... (ví lender) trong .env rồi khởi động lại.",
-    );
-  }
+  assertLenderValid(lenderAddress);
   if (morphoBlueAddress && canonicalMorphoBlueAddress
     && morphoBlueAddress.toLowerCase() !== canonicalMorphoBlueAddress.toLowerCase()) {
     throw discoveryError(
@@ -333,11 +341,7 @@ export async function writeAutoMarketsFile({
   if (typeof filePath !== "string" || filePath.trim() === "") {
     throw discoveryError(AUTO_INPUT_INVALID, "❌ Đường dẫn AUTO_MARKETS_FILE đang trống.");
   }
-  assertAutoAllowed({
-    lenderAddress,
-    morphoBlueAddress,
-    canonicalMorphoBlueAddress: morphoBlueAddress,
-  });
+  assertLenderValid(lenderAddress);
 
   const normalized = normalizeMarkets(
     { version: 1, markets },

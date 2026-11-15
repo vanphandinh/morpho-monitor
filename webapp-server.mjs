@@ -31,7 +31,12 @@ import {
   envList,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
-import { resolveMarkets } from "./market-discovery.mjs";
+import {
+  DEFAULT_AUTO_MARKETS_FILE,
+  DEFAULT_MANUAL_MARKETS_FILE,
+  resolveMarkets,
+  resolveMarketsFilePath,
+} from "./market-discovery.mjs";
 import { createRequestHandler } from "./webapp-handler.mjs";
 import { assertWebappAuthConfig } from "./webapp-config.mjs";
 import { createHybridRpcServing, refreshHoursToMs } from "./webapp-serving.mjs";
@@ -55,8 +60,8 @@ const WEBAPP_LOGIC_FILE = path.join(__dirname, "webapp-logic.mjs");
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
 const configuredMarkets = await resolveMarkets({
-  marketsFile: path.resolve(__dirname, MARKETS_FILE),
-  autoMarketsFile: path.resolve(__dirname, AUTO_MARKETS_FILE),
+  marketsFile: resolveMarketsFilePath(__dirname, MARKETS_FILE, DEFAULT_MANUAL_MARKETS_FILE),
+  autoMarketsFile: resolveMarketsFilePath(__dirname, AUTO_MARKETS_FILE, DEFAULT_AUTO_MARKETS_FILE),
   lenderAddress: LENDER_ADDRESS,
   chainId: CHAIN_ID,
   morphoBlueAddress: MORPHO_BLUE_ADDRESS,
