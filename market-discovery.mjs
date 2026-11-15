@@ -21,6 +21,8 @@ export const AUTO_MARKETS_TOO_MANY = "AUTO_MARKETS_TOO_MANY";
 export const AUTO_MARKETS_CHAIN_MISMATCH = "AUTO_MARKETS_CHAIN_MISMATCH";
 /** Error code: auto mode is not valid for a custom/fork Morpho deployment. */
 export const AUTO_MARKETS_CUSTOM_MORPHO = "AUTO_MARKETS_CUSTOM_MORPHO";
+/** Error code: the auto file belongs to a different lender address. */
+export const AUTO_LENDER_MISMATCH = "AUTO_LENDER_MISMATCH";
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const MARKET_ID_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -30,9 +32,10 @@ const MAX_PAGES = 20;
 const PAGE_LIMIT = 100;
 const DEFAULT_RETRY_DELAYS_MS = [1_000, 2_000];
 
-function discoveryError(code, message) {
+function discoveryError(code, message, { retryable = false } = {}) {
   const err = new Error(message);
   err.code = code;
+  err.retryable = retryable;
   return err;
 }
 
@@ -94,13 +97,12 @@ async function fetchPage({ apiUrl, lenderAddress, chainId, cursor, fetchImpl, ti
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    const wrapped = discoveryError(
+    throw discoveryError(
       AUTO_DISCOVERY_FAILED,
       `❌ Không gọi được Morpho API: ${err?.message || err}\n` +
       "   → Kiểm tra mạng/DNS tới MORPHO_API_URL, hoặc tạo config/markets.json để chạy file mode.",
+      { retryable: true },
     );
-    wrapped.retryable = true;
-    throw wrapped;
   }
 
   if (!response.ok) {
@@ -110,8 +112,8 @@ async function fetchPage({ apiUrl, lenderAddress, chainId, cursor, fetchImpl, ti
       AUTO_DISCOVERY_FAILED,
       `❌ Morpho API trả HTTP ${response.status}${detail ? `: ${detail}` : ""}\n` +
       "   → Kiểm tra mạng/API, hoặc tạo config/markets.json để chạy file mode.",
+      { retryable: isRetryableStatus(response.status) },
     );
-    wrapped.retryable = isRetryableStatus(response.status);
     wrapped.status = response.status;
     throw wrapped;
   }
@@ -274,13 +276,26 @@ function assertAutoAllowed({ lenderAddress, morphoBlueAddress, canonicalMorphoBl
   }
 }
 
-function assertAutoFileMatchesDeployment({ document, chainId, morphoBlueAddress, filePath }) {
+function assertAutoFileMatchesDeployment({ document, chainId, lenderAddress, morphoBlueAddress, filePath }) {
   const fileChainId = Number(document?.chainId);
   if (!Number.isSafeInteger(fileChainId) || fileChainId !== Number(chainId)) {
     throw discoveryError(
       AUTO_MARKETS_CHAIN_MISMATCH,
       `❌ File auto ${filePath} thuộc chain ${document?.chainId ?? "(không rõ)"}, deployment đang chain ${chainId}.\n` +
       `   → Xóa ${filePath} hoặc kiểm tra CHAIN_ID rồi restart.`,
+    );
+  }
+
+  const fileLender = typeof document?.lenderAddress === "string"
+    ? document.lenderAddress.toLowerCase()
+    : "";
+  const expectedLender = typeof lenderAddress === "string" ? lenderAddress.toLowerCase() : "";
+  if (!fileLender || !expectedLender || fileLender !== expectedLender) {
+    throw discoveryError(
+      AUTO_LENDER_MISMATCH,
+      `❌ File auto ${filePath} thuộc lender ${document?.lenderAddress ?? "(không rõ)"}, ` +
+      `deployment đang dùng ${lenderAddress || "(không rõ)"}.\n` +
+      `   → Xóa ${filePath} hoặc dùng config/markets.json thủ công.`,
     );
   }
 
@@ -318,6 +333,11 @@ export async function writeAutoMarketsFile({
   if (typeof filePath !== "string" || filePath.trim() === "") {
     throw discoveryError(AUTO_INPUT_INVALID, "❌ Đường dẫn AUTO_MARKETS_FILE đang trống.");
   }
+  assertAutoAllowed({
+    lenderAddress,
+    morphoBlueAddress,
+    canonicalMorphoBlueAddress: morphoBlueAddress,
+  });
 
   const normalized = normalizeMarkets(
     { version: 1, markets },
@@ -379,17 +399,18 @@ export async function discoverAndWriteMarkets({
     return { mode: "manual", markets };
   }
 
+  assertAutoAllowed({ lenderAddress, morphoBlueAddress, canonicalMorphoBlueAddress });
+
   const current = fileExists(autoPath) ? readDocument(autoPath) : null;
   if (current) {
     assertAutoFileMatchesDeployment({
       document: current.document,
       chainId,
+      lenderAddress,
       morphoBlueAddress,
       filePath: autoPath,
     });
   }
-
-  assertAutoAllowed({ lenderAddress, morphoBlueAddress, canonicalMorphoBlueAddress });
 
   let markets;
   try {
@@ -402,7 +423,10 @@ export async function discoverAndWriteMarkets({
       timeoutMs,
     });
   } catch (err) {
-    if (err?.code !== "AUTO_DISCOVERY_FAILED" || !current) throw err;
+    // Only transport/5xx/timeout may reuse the previous file. A 4xx, invalid
+    // JSON/schema, 0/>9 result, or a programming error must stop the container
+    // instead of silently keeping a stale market set.
+    if (err?.code !== AUTO_DISCOVERY_FAILED || err.retryable !== true || !current) throw err;
     logger.warn(`[markets] discovery lỗi — dùng file auto cũ ${autoPath}: ${err.message || err}`);
     return { mode: "stale", markets: current.markets };
   }
@@ -449,10 +473,12 @@ export async function resolveMarkets({
   }
 
   if (fileExists(autoPath)) {
+    assertAutoAllowed({ lenderAddress, morphoBlueAddress, canonicalMorphoBlueAddress });
     const { markets, document } = readDocument(autoPath);
     assertAutoFileMatchesDeployment({
       document,
       chainId,
+      lenderAddress,
       morphoBlueAddress,
       filePath: autoPath,
     });

@@ -55,8 +55,8 @@ const WEBAPP_LOGIC_FILE = path.join(__dirname, "webapp-logic.mjs");
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
 const configuredMarkets = await resolveMarkets({
-  marketsFile: path.join(__dirname, MARKETS_FILE),
-  autoMarketsFile: path.join(__dirname, AUTO_MARKETS_FILE),
+  marketsFile: path.resolve(__dirname, MARKETS_FILE),
+  autoMarketsFile: path.resolve(__dirname, AUTO_MARKETS_FILE),
   lenderAddress: LENDER_ADDRESS,
   chainId: CHAIN_ID,
   morphoBlueAddress: MORPHO_BLUE_ADDRESS,

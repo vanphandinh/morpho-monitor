@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import {
   discoverAndWriteMarkets,
   discoverMarkets,
@@ -14,6 +17,7 @@ const ID_B = "0x" + "22".repeat(32);
 const LENDER = "0x" + "aa".repeat(20);
 const MORPHO = "0x" + "bb".repeat(20);
 const MARKETS = [{ id: ID_A, minLiquidity: "10000", suddenDrainMultiplier: 2 }];
+const execFileAsync = promisify(execFile);
 
 const jsonResponse = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -107,6 +111,29 @@ describe("discoverMarkets", () => {
     expect(calls).toBe(1);
   });
 
+  it("4xx và JSON hỏng không được đánh dấu retryable", async () => {
+    const badRequest = await discoverMarkets({
+      lenderAddress: LENDER,
+      chainId: 1,
+      fetchImpl: async () => jsonResponse({ error: "bad request" }, 400),
+    }).catch((err) => err);
+    expect(badRequest.code).toBe("AUTO_DISCOVERY_FAILED");
+    expect(badRequest.retryable).toBe(false);
+
+    const badJson = await discoverMarkets({
+      lenderAddress: LENDER,
+      chainId: 1,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => { throw new Error("invalid json"); },
+        text: async () => "",
+      }),
+    }).catch((err) => err);
+    expect(badJson.code).toBe("AUTO_DISCOVERY_FAILED");
+    expect(badJson.retryable).toBe(false);
+  });
+
   it("0 market active → AUTO_MARKETS_EMPTY", async () => {
     const fetchImpl = async () => jsonResponse({ data: [], cursor: null });
 
@@ -159,7 +186,7 @@ describe("auto file persistence", () => {
       markets: MARKETS,
       chainId: 1,
       morphoBlueAddress: MORPHO,
-      lenderAddress: LENDER.toUpperCase(),
+      lenderAddress: "0x" + "AA".repeat(20),
       now: () => new Date("2026-11-15T00:00:00Z"),
     });
 
@@ -192,6 +219,69 @@ describe("auto file persistence", () => {
     const document = JSON.parse(fs.readFileSync(file, "utf8"));
     expect(document.managedBy).toBe("auto");
     expect(fs.readdirSync(dir)).toEqual(["markets.auto.json"]);
+  });
+
+  it("writeAutoMarketsFile → resolveMarkets đọc lại đúng schema", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morpho-auto-roundtrip-"));
+    const autoFile = path.join(dir, "data", "markets.auto.json");
+
+    await writeAutoMarketsFile({
+      filePath: autoFile,
+      markets: MARKETS,
+      chainId: 1,
+      morphoBlueAddress: MORPHO,
+      lenderAddress: LENDER,
+    });
+
+    const markets = await resolveMarkets({
+      marketsFile: path.join(dir, "missing-manual.json"),
+      autoMarketsFile: autoFile,
+      lenderAddress: LENDER,
+      chainId: 1,
+      morphoBlueAddress: MORPHO,
+      logger: { log: vi.fn(), warn: vi.fn() },
+    });
+
+    expect(markets).toEqual(MARKETS);
+  });
+
+  it("CLI discover-markets ghi file từ API stub", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morpho-cli-"));
+    const autoFile = path.join(dir, "markets.auto.json");
+    const server = http.createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        data: [{ chain_id: 1, market_id: ID_A, supply_shares: "1" }],
+        cursor: null,
+      }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const port = server.address().port;
+      const { stdout } = await execFileAsync(process.execPath, ["discover-markets.mjs"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CHAIN_ID: "1",
+          CHAIN_CONFIG_FILE: path.join(process.cwd(), "config", "chains.json"),
+          LENDER_ADDRESS: LENDER,
+          MARKETS_FILE: path.join(dir, "missing-manual.json"),
+          AUTO_MARKETS_FILE: autoFile,
+          MORPHO_API_URL: `http://127.0.0.1:${port}`,
+          MORPHO_API_TIMEOUT_MS: "2000",
+          AUTO_MIN_LIQUIDITY: "10000",
+          AUTO_SUDDEN_DRAIN_MULTIPLIER: "2",
+          MORPHO_BLUE_ADDRESS: "",
+        },
+      });
+
+      expect(stdout).toContain("auto: 1 market");
+      const document = JSON.parse(fs.readFileSync(autoFile, "utf8"));
+      expect(document.markets).toEqual(MARKETS);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("file thủ công → không gọi discovery, không ghi", async () => {
@@ -244,7 +334,7 @@ describe("auto file persistence", () => {
       fileExists: (file) => file === "auto.json",
       readDocument: () => ({ markets: MARKETS, document: autoDocument() }),
       discovery: async () => {
-        throw Object.assign(new Error("timeout"), { code: "AUTO_DISCOVERY_FAILED" });
+        throw Object.assign(new Error("timeout"), { code: "AUTO_DISCOVERY_FAILED", retryable: true });
       },
       writeFile,
       logger: { log: vi.fn(), warn },
@@ -258,6 +348,64 @@ describe("auto file persistence", () => {
     expect(result.markets).toEqual(MARKETS);
     expect(writeFile).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("lỗi không transient + đã có file auto → reject, không ghi", async () => {
+    const writeFile = vi.fn();
+
+    await expect(discoverAndWriteMarkets({
+      marketsFile: "manual.json",
+      autoMarketsFile: "auto.json",
+      fileExists: (file) => file === "auto.json",
+      readDocument: () => ({ markets: MARKETS, document: autoDocument() }),
+      discovery: async () => {
+        throw Object.assign(new Error("400"), { code: "AUTO_DISCOVERY_FAILED", retryable: false });
+      },
+      writeFile,
+      logger: { log: vi.fn(), warn: vi.fn() },
+      lenderAddress: LENDER,
+      chainId: 1,
+      morphoBlueAddress: MORPHO,
+      canonicalMorphoBlueAddress: MORPHO,
+    })).rejects.toMatchObject({ code: "AUTO_DISCOVERY_FAILED" });
+
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it("auto file của lender khác → không ghi đè", async () => {
+    const discovery = vi.fn();
+    const writeFile = vi.fn();
+
+    await expect(discoverAndWriteMarkets({
+      marketsFile: "manual.json",
+      autoMarketsFile: "auto.json",
+      fileExists: (file) => file === "auto.json",
+      readDocument: () => ({
+        markets: MARKETS,
+        document: autoDocument({ lenderAddress: "0x" + "cc".repeat(20) }),
+      }),
+      discovery,
+      writeFile,
+      logger: { log: vi.fn(), warn: vi.fn() },
+      lenderAddress: LENDER,
+      chainId: 1,
+      morphoBlueAddress: MORPHO,
+      canonicalMorphoBlueAddress: MORPHO,
+    })).rejects.toMatchObject({ code: "AUTO_LENDER_MISMATCH" });
+
+    expect(discovery).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it("writeAutoMarketsFile từ chối lender không hợp lệ", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morpho-auto-lender-"));
+    await expect(writeAutoMarketsFile({
+      filePath: path.join(dir, "markets.auto.json"),
+      markets: MARKETS,
+      chainId: 1,
+      morphoBlueAddress: MORPHO,
+      lenderAddress: "0x0000000000000000000000000000000000000000",
+    })).rejects.toMatchObject({ code: "AUTO_LENDER_INVALID" });
   });
 
   it("0 market hoặc >9 market → không ghi đè file auto cũ", async () => {
@@ -332,6 +480,12 @@ describe("wiring", () => {
       expect(src).not.toMatch(/\bloadMarkets\s*\(/);
     }
   });
+
+  it("webapp-server dùng path.resolve cho cả absolute và relative paths", () => {
+    const src = fs.readFileSync(new URL("../webapp-server.mjs", import.meta.url), "utf8");
+    expect(src).toContain("path.resolve(__dirname, MARKETS_FILE)");
+    expect(src).toContain("path.resolve(__dirname, AUTO_MARKETS_FILE)");
+  });
 });
 
 describe("resolveMarkets", () => {
@@ -361,6 +515,7 @@ describe("resolveMarkets", () => {
       fileExists: (file) => file === "auto.json",
       readDocument: () => ({ markets: MARKETS, document: autoDocument() }),
       discovery,
+      lenderAddress: LENDER,
       chainId: 1,
       morphoBlueAddress: MORPHO,
       logger: { log: (message) => logs.push(message), warn: vi.fn() },
@@ -377,10 +532,27 @@ describe("resolveMarkets", () => {
       autoMarketsFile: "auto.json",
       fileExists: (file) => file === "auto.json",
       readDocument: () => ({ markets: MARKETS, document: autoDocument({ chainId: 8453 }) }),
+      lenderAddress: LENDER,
       chainId: 1,
       morphoBlueAddress: MORPHO,
       logger: { log: vi.fn(), warn: vi.fn() },
     })).rejects.toMatchObject({ code: "AUTO_MARKETS_CHAIN_MISMATCH" });
+  });
+
+  it("auto file của lender khác → từ chối", async () => {
+    await expect(resolveMarkets({
+      marketsFile: "manual.json",
+      autoMarketsFile: "auto.json",
+      fileExists: (file) => file === "auto.json",
+      readDocument: () => ({
+        markets: MARKETS,
+        document: autoDocument({ lenderAddress: "0x" + "cc".repeat(20) }),
+      }),
+      lenderAddress: LENDER,
+      chainId: 1,
+      morphoBlueAddress: MORPHO,
+      logger: { log: vi.fn(), warn: vi.fn() },
+    })).rejects.toMatchObject({ code: "AUTO_LENDER_MISMATCH" });
   });
 
   it("cả hai file đều thiếu → discovery RAM", async () => {
