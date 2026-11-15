@@ -380,7 +380,15 @@ export function createFakeProvider({ account = DEFAULT_LENDER, chainId = "0x1", 
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event).push(handler);
     },
-    removeListener() {},
+    /**
+     * EIP-1193: gỡ ĐÖNG handler đã gắn. Bản cũ là no-op nên không test nào đo được hành vi
+     * gỡ/gắn lại — đúng loại "xanh trong khi UI thật vẫn cộng dồn handler" (chẩn đoán 2026-11-15).
+     */
+    removeListener(event, handler) {
+      const list = listeners.get(event) ?? [];
+      const idx = list.indexOf(handler);
+      if (idx >= 0) list.splice(idx, 1);
+    },
     emit(event, payload) {
       for (const handler of listeners.get(event) ?? []) handler(payload);
     },

@@ -23,7 +23,7 @@ import { CHAIN, CHAIN_HEX, CHAIN_ID, CHAIN_NAME, EXPLORER_URL, MORPHO_BLUE, NATI
 import { clearSession, getProxyUrl, hideError, renderRpcVerifiedNote, renderWalletCompatibility, saveSession, showError, showPresignError, showPresignSuccess, showTxResult, updateAuthUI } from "./webapp-shell.mjs";
 import { createRpcClient, fetchAllData, initMarketSwitcher, renderMarketInfo, renderPosition, switchMarket } from "./webapp-overview.mjs";
 import { deleteBundle, deleteRungFromBundle, deleteTierFromBundle, fetchExistingBundle, refreshPresignOverview, renderPresignMarketInfo, renderPresignPosition } from "./webapp-presign-bundles.mjs";
-import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
+import { addPresetTier, addTier, autoFillGas, fetchNonce, onGasInputChange, onNonceStep, readGasInputs, removeTier, renderTierList, saveToServer, setNonceStepperEnabled, signAllTiers, signWithdrawAll, syncNonceStepper, updatePresignWalletUI, updateTierAmount } from "./webapp-presign.mjs";
 import { setMaxAmount, withdrawAll, withdrawAmount } from "./webapp-withdraw.mjs";
 
 // Presign state
@@ -118,7 +118,10 @@ function signOut() {
 // ============================================================
 // WALLET
 // ============================================================
-let _listenersAttached = false; // guard against duplicate event listeners
+let walletHandlers = null; // bộ handler ví đang gắn — giữ tham chiếu để GỠ trước khi gắn lại
+// Provider mà bộ handler ở trên đã gắn vào. Cần nhớ để (a) không gắn lại mỗi lần kết nối — ví không
+// hỗ trợ `removeListener` sẽ cộng dồn handler — và (b) gỡ đúng provider cũ nếu `window.ethereum` đổi.
+let walletHandlersProvider = null;
 
 // ============================================================
 // WALLET REMEMBER (refresh không phải bấm "Kết Nối Ví" lại)
@@ -130,7 +133,7 @@ function rememberWalletAccount(account) {
   try { localStorage.setItem(WALLET_ACCOUNT_KEY, String(account).toLowerCase()); } catch { /* storage bị chặn — bỏ qua */ }
 }
 
-/** Quên ví đã nhớ (người dùng bấm Ngắt Kết Nối / ví phát `accountsChanged([])`). */
+/** Quên ví đã nhớ — CHỈ khi người dùng chủ động bấm "Ngắt Kết Nối" (sự kiện ví không xoá). */
 function forgetWalletAccount() {
   try { localStorage.removeItem(WALLET_ACCOUNT_KEY); } catch { /* storage bị chặn — bỏ qua */ }
 }
@@ -141,53 +144,135 @@ function rememberedWalletAccount() {
 }
 
 /**
- * Gắn listener ví đúng MỘT lần — dùng chung cho kết nối thủ công và khôi phục tự động
- * (hai đường không được gắn trùng, nếu không `accountsChanged` sẽ chạy hai lần).
+ * Gắn bộ handler ví — IDEMPOTENT theo provider: gọi bao nhiêu lần cho cùng một `window.ethereum`
+ * cũng chỉ còn MỘT bộ (kết nối thủ công + khôi phục tự động không gắn trùng).
+ *
+ * Cờ `_listenersAttached` cũ chỉ chặn gắn trùng trong một lượt, còn `disconnectWallet()` reset cờ
+ * mà không `removeListener` ⇒ mỗi lần kết nối lại cộng thêm một bộ handler và một sự kiện ví chạy
+ * teardown nhiều lần (chẩn đoán 2026-11-15).
  */
 function attachWalletListeners() {
-  if (_listenersAttached || !window.ethereum) return;
-  _listenersAttached = true;
+  if (!window.ethereum) return;
+  if (walletHandlers && walletHandlersProvider === window.ethereum) return;
+  detachWalletListeners();
 
-  window.ethereum.on("accountsChanged", (accts) => {
-    if (accts.length === 0) {
-      window.disconnectWallet();
-    } else {
-      state.currentAccount = accts[0];
-      rememberWalletAccount(state.currentAccount);
-      document.getElementById("wallet-address").textContent = state.currentAccount;
-      const presignAddr = document.getElementById("presign-wallet-address");
-      if (presignAddr) presignAddr.textContent = state.currentAccount;
-      updatePresignWalletUI();
-      updateAuthUI();
-    }
-  });
-
-  window.ethereum.on("chainChanged", (chainId) => {
-    if (String(chainId).toLowerCase() === CHAIN_HEX) {
-      // Returned to the configured chain — mở lại nút rút nếu ví còn kết nối. Nhánh sai
-      // chain bên dưới khoá chúng; trước đây quay lại chain đúng vẫn kẹt khoá tới khi bấm
-      // "Kết Nối Ví" lần nữa (giờ lộ ra ở đường auto-connect với ví đang ở chain khác).
-      if (state.currentAccount) {
-        document.getElementById("btn-withdraw").disabled = false;
-        document.getElementById("btn-withdraw-all").disabled = false;
-        document.getElementById("btn-max").disabled = false;
+  walletHandlers = {
+    accountsChanged: (accts) => {
+      const accounts = Array.isArray(accts) ? accts : [];
+      // Mảng rỗng KHÔNG đủ tin cậy để coi là "người dùng đã ngắt kết nối": MetaMask bắn nó ngay
+      // sau khi trả hash (xem `webapp-presign.mjs`). Hỏi lại provider trước khi xoá state ví
+      if (accounts.length === 0) {
+        void verifyWalletAuthorization("accountsChanged");
+        return;
       }
-      // refresh market data
-      fetchAllData().then(() => {
-        renderMarketInfo();
-        renderPosition();
-      }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
-    } else {
-      showTxResult("warn", `⚠️ Vui lòng chuyển về ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} để sử dụng.`);
-      document.getElementById("btn-withdraw").disabled = true;
-      document.getElementById("btn-withdraw-all").disabled = true;
-    }
-  });
+      adoptWalletAccount(accounts[0]);
+    },
 
-  window.ethereum.on("disconnect", () => {
-    window.disconnectWallet();
-    showTxResult("error", "🔌 Ví đã ngắt kết nối.");
-  });
+    chainChanged: (chainId) => {
+      if (String(chainId).toLowerCase() === CHAIN_HEX) {
+        // Returned to the configured chain — mở lại nút rút nếu ví còn kết nối. Nhánh sai
+        // chain bên dưới khoá chúng; trước đây quay lại chain đúng vẫn kẹt khoá tới khi bấm
+        // "Kết Nối Ví" lần nữa (giờ lộ ra ở đường auto-connect với ví đang ở chain khác).
+        if (state.currentAccount) {
+          document.getElementById("btn-withdraw").disabled = false;
+          document.getElementById("btn-withdraw-all").disabled = false;
+          document.getElementById("btn-max").disabled = false;
+        }
+        // refresh market data
+        fetchAllData().then(() => {
+          renderMarketInfo();
+          renderPosition();
+        }).catch(err => showError("Lỗi tải lại dữ liệu: " + err.message));
+      } else {
+        showTxResult("warn", `⚠️ Vui lòng chuyển về ${esc(CHAIN_NAME || `chain ${CHAIN_ID}`)} để sử dụng.`);
+        document.getElementById("btn-withdraw").disabled = true;
+        document.getElementById("btn-withdraw-all").disabled = true;
+      }
+    },
+
+    disconnect: () => {
+      // EIP-1193: provider mất kết nối tới chain — với MetaMask điều này cũng xảy ra khi RPC của
+      // ví chớp, không chỉ khi người dùng ngắt. Cùng luật với `accountsChanged([])`.
+      void verifyWalletAuthorization("disconnect");
+    },
+  };
+
+  walletHandlersProvider = window.ethereum;
+  for (const [event, handler] of Object.entries(walletHandlers)) {
+    window.ethereum.on(event, handler);
+  }
+}
+
+/** Gỡ bộ handler ví hiện tại (nếu có) — không đụng state/phiên. */
+function detachWalletListeners() {
+  if (!walletHandlers) return;
+  const provider = walletHandlersProvider;
+  if (provider?.removeListener) {
+    for (const [event, handler] of Object.entries(walletHandlers)) {
+      provider.removeListener(event, handler);
+    }
+  }
+  walletHandlers = null;
+  walletHandlersProvider = null;
+}
+
+/**
+ * Xác minh lại quyền tài khoản sau một sự kiện ví — TRƯỚC khi phá state (chẩn đoán 2026-11-15).
+ *
+ * `accountsChanged([])` / `disconnect` không đủ tin cậy: MetaMask bắn chúng quanh lúc ký và khi
+ * RPC của ví chớp. Hỏi lại `eth_accounts` (KHÔNG popup):
+ *   - còn tài khoản ⇒ sự kiện là nhiễu, giữ nguyên ví + phiên;
+ *   - rỗng thật    ⇒ khoá ví/nonce (guard giữa lượt ký vẫn phải thấy `currentAccount = null`),
+ *                    nhưng KHÔNG xoá phiên xác thực và KHÔNG quên ví đã nhớ: phiên HMAC 24h độc
+ *                    lập với việc ví còn kết nối, còn key nhớ ví là thứ để F5 tự khôi phục.
+ * Không đọc được ⇒ giữ nguyên: thiếu bằng chứng không phải bằng chứng mất ví.
+ */
+async function verifyWalletAuthorization(trigger) {
+  if (!window.ethereum?.request) return;
+  let accounts;
+  try {
+    accounts = await window.ethereum.request({ method: "eth_accounts" });
+  } catch {
+    return; // ví khoá/không trả lời — một lần đọc hỏng không đủ để phá state
+  }
+  if (!Array.isArray(accounts)) return;
+  if (accounts.length > 0) {
+    adoptWalletAccount(accounts[0]);
+    return;
+  }
+  releaseWalletState();
+  showTxResult(
+    "error",
+    trigger === "disconnect"
+      ? "🔌 Ví đã ngắt kết nối."
+      : "🔌 Ví không còn quyền truy cập tài khoản."
+  );
+  updateAuthUI();
+}
+
+/**
+ * Nhận một tài khoản ví đã được xác nhận (kết nối mới, đổi tài khoản, hoặc khôi phục sau sự kiện
+ * nhiễu). Dựng lại `walletClient` theo đúng tài khoản — handler cũ chỉ đổi `currentAccount` mà để
+ * client cầm tài khoản trước đó.
+ */
+function adoptWalletAccount(account) {
+  if (!account) return;
+  state.currentAccount = account;
+  if (window.ethereum && CHAIN) {
+    state.walletClient = createWalletClient({
+      account,
+      chain: CHAIN,
+      transport: custom(window.ethereum),
+    });
+  }
+  rememberWalletAccount(account);
+  document.getElementById("wallet-address").textContent = account;
+  const presignAddr = document.getElementById("presign-wallet-address");
+  if (presignAddr) presignAddr.textContent = account;
+  updatePresignWalletUI();
+  updateAuthUI();
+  // Kết nối lại sau khi mất ví: bật lại stepper nonce ngay, không bắt bấm "Lấy Nonce" (lỗi 2).
+  void syncNonceStepper();
 }
 
 /**
@@ -237,6 +322,8 @@ async function tryAutoConnectWallet() {
     updatePresignWalletUI();
     updateAuthUI();
     renderWalletCompatibility();
+    // Cùng luật với `connectWallet()`: khôi phục ví xong thì stepper nonce phải dùng được ngay.
+    await syncNonceStepper();
 
     if (!onConfiguredChain) {
       // Chỉ cảnh báo — không tự switch chain (người dùng có thể đang ở mạng proxy khác).
@@ -309,8 +396,12 @@ async function connectWallet() {
     updateAuthUI();
     renderWalletCompatibility();
 
-    // Attach wallet event listeners once (prevents duplicate firing)
+    // Gắn listener TRƯỚC khi await RPC: đọc nonce có thể chậm, không được để ví bắn sự kiện trong
+    // lúc chưa có handler.
     attachWalletListeners();
+
+    // Kết nối lại: bật stepper nonce ngay (không bắt bấm "Lấy Nonce" lần nữa) — lỗi 2, 2026-11-15.
+    await syncNonceStepper();
 
     hideError();
   } catch (err) {
@@ -318,11 +409,13 @@ async function connectWallet() {
   }
 };
 
-function disconnectWallet() {
+/**
+ * Khoá mọi UI dùng ví và xoá state ví — KHÔNG đụng phiên xác thực hay ví đã nhớ (hai thứ đó chỉ
+ * người dùng chủ động mới được xoá, xem `disconnectWallet()`).
+ */
+function releaseWalletState() {
   state.walletClient = null;
   state.currentAccount = null;
-  forgetWalletAccount();
-  _listenersAttached = false; // allow re-attach on next connect
   document.getElementById("wallet-status").style.display = "block";
   document.getElementById("wallet-connected").style.display = "none";
   document.getElementById("btn-withdraw").disabled = true;
@@ -334,11 +427,23 @@ function disconnectWallet() {
   document.getElementById("btn-sign-all").disabled = true;
   document.getElementById("btn-fetch-nonce").disabled = true;
   document.getElementById("btn-auto-gas").disabled = true;
-  // Stepper: mất sàn (nonce on-chain có thể đã đổi khi vắng mặt) ⇒ khoá,
-  // bắt bấm "Lấy Nonce" lại sau khi kết nối lại.
+  // Stepper: mất sàn (nonce on-chain có thể đã đổi khi vắng mặt) ⇒ khoá. Đường kết nối lại tự đọc
+  // lại sàn im lặng qua `syncNonceStepper()`, nên người dùng không phải bấm "Lấy Nonce" lần nữa.
   state.onChainPendingNonce = null;
   setNonceStepperEnabled(false);
-  // Clear auth
+}
+
+/**
+ * Người dùng CHỦ ĐỘNG ngắt kết nối (nút "Ngắt Kết Nối").
+ *
+ * Khác đường sự kiện ví: ở đây mới quên ví đã nhớ (F5 không tự kết nối lại) và bỏ phiên xác thực.
+ */
+function disconnectWallet() {
+  releaseWalletState();
+  // Gỡ listener: người dùng đã chủ động ngắt thì một sự kiện ví nhiễu (`accountsChanged([])` rồi
+  // `eth_accounts` trả lại tài khoản) không được tự kết nối lại và đảo ngược lựa chọn của họ.
+  detachWalletListeners();
+  forgetWalletAccount();
   clearSession();
   updateAuthUI();
 };

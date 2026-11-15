@@ -61,6 +61,11 @@ export function updatePresignWalletUI() {
     document.getElementById("presign-wallet-address").textContent = state.currentAccount;
     document.getElementById("btn-fetch-nonce").disabled = false;
     document.getElementById("btn-auto-gas").disabled = false;
+    // Stepper (lỗi 2, 2026-11-15): reconnect không được để nút + chết im lặng. Sàn đã biết ⇒ mở
+    // ngay; sàn chưa biết thì `syncNonceStepper()` đọc lại on-chain im lặng (không banner/popup).
+    if (state.presignedNonce !== null && state.onChainPendingNonce !== null) {
+      setNonceStepperEnabled(true);
+    }
     if (state.presignedTiers.length > 0 && state.presignedNonce !== null && gasPairReady()) {
       document.getElementById("btn-sign-all").disabled = false;
     }
@@ -186,6 +191,44 @@ export function setNonceStepperEnabled(enabled) {
 function updateNonceStepperButtons() {
   if (state.onChainPendingNonce === null || state.presignedNonce === null) return;
   document.getElementById("btn-nonce-dec").disabled = state.presignedNonce <= state.onChainPendingNonce;
+}
+
+/**
+ * Đọc lại sàn nonce on-chain MỘT LẦN, IM LẶNG (không banner), rồi mở stepper.
+ *
+ * Vì sao cần (lỗi 2, chẩn đoán 2026-11-15): `disconnectWallet()`/mất ví xoá sàn và khoá stepper;
+ * đường kết nối lại trước đây không bật lại, nên nút + nằm `disabled` mà không nói vì sao — người
+ * dùng phải tự đoán bấm "Lấy Nonce". Đọc hỏng thì im lặng: "Lấy Nonce" vẫn là đường báo lỗi rõ.
+ * @returns {Promise<boolean>} true = đã có sàn và stepper đã mở
+ */
+async function refreshNonceFloor() {
+  if (!state.currentAccount) return false;
+  try {
+    const nonce = await state.publicClient.getTransactionCount({
+      address: state.currentAccount,
+      blockTag: "pending",
+    });
+    state.onChainPendingNonce = nonce;
+    setNonceStepperEnabled(true);
+    updateNonceHint();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bật stepper sau khi ví vừa kết nối (lại): có sàn ⇒ mở ngay; chưa có sàn nhưng đã giữ nonce ⇒
+ * đọc lại on-chain rồi mở. Chưa từng lấy nonce (trang mới) ⇒ không làm gì: vẫn phải bấm "Lấy Nonce".
+ * @returns {Promise<boolean>|null} null = không cần làm gì
+ */
+export function syncNonceStepper() {
+  if (!state.currentAccount || state.presignedNonce === null) return null;
+  if (state.onChainPendingNonce !== null) {
+    setNonceStepperEnabled(true);
+    return null;
+  }
+  return refreshNonceFloor();
 }
 
 export function onNonceStep(delta) {

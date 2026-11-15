@@ -32,8 +32,15 @@ const provider = createFakeProvider({ account: LENDER });
  * `nextEvent = null` ⇒ ví bình thường.
  */
 let nextEvent = { type: "disconnect" };
+/**
+ * Ca A mô phỏng MẤT QUYỀN THẬT: từ 2026-11-15, `accountsChanged([])` chỉ được coi là mất ví khi
+ * `eth_accounts` cũng rỗng — app hỏi lại provider trước khi phá state (sự kiện nhiễu của MetaMask
+ * không còn xoá phiên/ví). Ca B (đổi tài khoản) và ca C (cùng tài khoản) không phải mất quyền.
+ */
+let accountsRevoked = true;
 const baseRequest = provider.provider.request;
 provider.provider.request = async (args) => {
+  if (args.method === "eth_accounts" && accountsRevoked) return [];
   const result = await baseRequest(args);
   if (nextEvent && args.method === "eth_sendTransaction") {
     const event = nextEvent;
@@ -88,6 +95,7 @@ describe("ví mất kết nối giữa lượt ký nhiều tier", () => {
 describe("ví đổi tài khoản giữa lượt ký nhiều tier", () => {
   it("dừng trước khi ký mốc tiếp theo bằng tài khoản khác", async () => {
     // Kết nối lại (ca A đã ngắt) rồi chuẩn bị một lượt ký mới với 3 mốc.
+    accountsRevoked = false;
     await primeSigning();
     app.window.updateTierAmount(0, "100");
     app.window.updateTierAmount(1, "250");
