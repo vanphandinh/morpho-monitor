@@ -2,8 +2,9 @@
 
 Mỗi chain chạy **một stack đầy đủ, độc lập**: monitor + webapp + proxy, registry
 riêng, volume riêng, port/domain riêng. Code dùng **cùng một image/tag** — clone
-chỉ khác `.env`, `config/markets.json` và `CHAIN_ID`; không copy source, không sửa
-code cho từng chain.
+chỉ khác `.env`, `config/markets.json` (tùy chọn) và `CHAIN_ID`; không copy source,
+không sửa code cho từng chain. Nếu bỏ trống `config/markets.json`, mỗi clone tự dò
+market của chain mình và ghi `data/markets.auto.json` trong volume riêng.
 
 ## 1. Chain metadata
 
@@ -52,9 +53,14 @@ cp .env.example .env
 #    MORPHO_BLUE_ADDRESS= (bỏ trống = Base Morpho trong chains.json)
 #    LENDER_ADDRESS=...   (ví lender; có thể khác chain)
 
-# 3) Market allow-list riêng của chain
+# 3) Market allow-list riêng của chain (tùy chọn)
+#    CÁCH A — thủ công:
 cp config/markets.example.json config/markets.json
 #    thay id bằng market Base thật; minLiquidity/suddenDrainMultiplier theo token
+#    CÁCH B — auto: bỏ trống config/markets.json. Entrypoint dò market đang có
+#    vị thế supply của LENDER_ADDRESS trên CHAIN_ID và ghi
+#    data/markets.auto.json (volume data riêng của clone). Restart để refresh.
+#    Không dùng chung volume data giữa các clone.
 
 # 4) Compose project riêng + port riêng
 docker compose -p morpho-base --env-file .env up -d --build

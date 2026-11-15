@@ -221,11 +221,13 @@ thất bại, local `main` đang có commit riêng: đừng `reset --hard`; ki�
 
 ## 6. Cập nhật `.env`
 
-Nếu bản cũ còn ở thời **single-market** (trước multi-market), tạo
-`config/markets.json` trước khi start. Các key cũ `MARKET_ID`,
-`MIN_LIQUIDITY_THRESHOLD_USDC`, `SUDDEN_DRAIN_MULTIPLIER` không còn được đọc;
-chuyển market id và ngưỡng tương ứng vào file JSON (kiểm tra decimals của loan
-token khi đổi ngưỡng):
+Nếu bản cũ còn ở thời **single-market** (trước multi-market), có hai lựa chọn:
+tạo `config/markets.json` thủ công, hoặc để trống để auto-discovery dò market
+đang có vị thế supply của `LENDER_ADDRESS` và ghi `data/markets.auto.json`.
+Các key cũ `MARKET_ID`, `MIN_LIQUIDITY_THRESHOLD_USDC`,
+`SUDDEN_DRAIN_MULTIPLIER` không còn được đọc; nếu dùng file thủ công, chuyển
+market id và ngưỡng tương ứng vào file JSON (kiểm tra decimals của loan token
+khi đổi ngưỡng):
 
 ```json
 {
@@ -269,7 +271,7 @@ Kiểm tra tiếp các biến sau:
 - `PROXY_RPC_URL`: chỉ set nếu proxy ở host/port khác; nếu không, để trống để
   derive từ `WEBAPP_URL` + `PROXY_PORT`.
 - `WEBAPP_PASSWORD`: phải có khi bind public (webapp fail-fast nếu trống).
-- `MARKETS_FILE`: phải trỏ tới file JSON hợp lệ, 1–9 market.
+- `MARKETS_FILE`: tùy chọn. Nếu file tồn tại, đó là allow-list thủ công (1–9 market) và auto tắt. Nếu không tồn tại, entrypoint tự dò market đang có vị thế supply của `LENDER_ADDRESS` trên `CHAIN_ID` và ghi `data/markets.auto.json`; restart để refresh.
 - `CONTAINER_NAME`: giữ `morpho` nếu chỉ có một deployment; đặt tên khác nếu
   chạy nhiều chain trên cùng host.
 
