@@ -60,7 +60,8 @@ cp config/markets.example.json config/markets.json
 #    CÁCH B — auto: bỏ trống config/markets.json. Entrypoint dò market đang có
 #    vị thế supply của LENDER_ADDRESS trên CHAIN_ID và ghi
 #    data/markets.auto.json (volume data riêng của clone). Restart để refresh.
-#    Không dùng chung volume data giữa các clone.
+#    Không dùng chung volume data giữa các clone. config/ vẫn read-only;
+#    chỉ volume data/ cần writable.
 
 # 4) Compose project riêng + port riêng
 docker compose -p morpho-base --env-file .env up -d --build
