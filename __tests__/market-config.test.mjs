@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadMarkets, requireConfiguredMarket, preflightMarketsFile, MARKETS_FILE_MISSING } from "../market-config.mjs";
+import { loadMarkets, loadMarketsDocument, normalizeMarkets, requireConfiguredMarket, preflightMarketsFile, MARKETS_FILE_MISSING } from "../market-config.mjs";
 import { emptyRegistry, readRegistry, updateRegistry } from "../presigned-store.mjs";
 
 const ID_A = "0x" + "11".repeat(32);
@@ -35,6 +35,21 @@ describe("multi-market configuration", () => {
     expect(requireConfiguredMarket(markets, nine[0].id.toUpperCase())).toBe(nine[0].id);
     expect(() => requireConfiguredMarket(markets, ID_A)).toThrow("not configured");
     expect(() => loadMarkets(temporaryJson({ version: 1, markets: [...nine, { id: ID_A, minLiquidity: "1" }] }))).toThrow("between 1 and 9");
+  });
+
+  it("loadMarketsDocument giữ metadata auto", () => {
+    const file = temporaryJson({
+      version: 1, managedBy: "auto", chainId: 1,
+      markets: [{ id: ID_A, minLiquidity: "10000" }],
+    });
+    const { markets, document } = loadMarketsDocument(file);
+    expect(document.managedBy).toBe("auto");
+    expect(markets).toEqual([{ id: ID_A, minLiquidity: "10000", suddenDrainMultiplier: 2 }]);
+  });
+
+  it("normalizeMarkets dùng label trong lỗi", () => {
+    expect(() => normalizeMarkets({ version: 1, markets: [] }, { label: "Morpho API" }))
+      .toThrow("Morpho API must contain between 1 and 9 markets");
   });
 
   it("C1/M4: preflight báo lỗi hành động được khi thiếu MARKETS_FILE", () => {

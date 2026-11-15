@@ -35,25 +35,15 @@ export function preflightMarketsFile(filePath) {
 }
 
 /**
- * Load the explicit multi-market configuration. This is intentionally the
- * only configuration source: deployments must provide MARKETS_FILE.
+ * Validate and normalize a markets document. Shared by manual file loading
+ * and Morpho API discovery so both sources enforce the same 1–9 contract.
  */
-export function loadMarkets(filePath) {
-  if (!filePath) throw new Error("MARKETS_FILE is required");
-  preflightMarketsFile(filePath);
-
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch (err) {
-    throw new Error(`Cannot read MARKETS_FILE (${filePath}): ${err.message}`);
-  }
-
+export function normalizeMarkets(parsed, { label = "markets.json" } = {}) {
   if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.markets)) {
-    throw new Error("markets.json must be { version: 1, markets: [...] }");
+    throw new Error(`${label} must be { version: 1, markets: [...] }`);
   }
   if (parsed.markets.length === 0 || parsed.markets.length > 9) {
-    throw new Error("markets.json must contain between 1 and 9 markets");
+    throw new Error(`${label} must contain between 1 and 9 markets`);
   }
 
   const ids = new Set();
@@ -78,6 +68,32 @@ export function loadMarkets(filePath) {
       suddenDrainMultiplier: multiplier == null ? 2 : Number(multiplier),
     };
   });
+}
+
+/**
+ * Load a markets document and keep its top-level metadata (for example the
+ * auto-discovery marker) alongside the normalized market list.
+ */
+export function loadMarketsDocument(filePath) {
+  if (!filePath) throw new Error("MARKETS_FILE is required");
+  preflightMarketsFile(filePath);
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (err) {
+    throw new Error(`Cannot read MARKETS_FILE (${filePath}): ${err.message}`);
+  }
+
+  return { markets: normalizeMarkets(parsed), document: parsed };
+}
+
+/**
+ * Load the explicit multi-market configuration. This remains the manual
+ * allow-list; deployments may instead use the auto-discovered file.
+ */
+export function loadMarkets(filePath) {
+  return loadMarketsDocument(filePath).markets;
 }
 
 /** Error codes for HTTP mapping: 400 = malformed input, 404 = unknown configured market. */
