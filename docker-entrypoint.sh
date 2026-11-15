@@ -21,6 +21,12 @@ start_service() {
 }
 
 # ──────────────────────────────────────────────
+# Markets: manual file wins; otherwise discover and persist data/markets.auto.json
+# ──────────────────────────────────────────────
+echo "[entrypoint] Checking markets configuration..."
+node --env-file=/app/.env discover-markets.mjs
+
+# ──────────────────────────────────────────────
 # Start all three services
 # ──────────────────────────────────────────────
 start_service "MONITOR" "monitor.mjs"

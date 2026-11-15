@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { CHAIN, CHAIN_ID, CHAIN_NAME, LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, PRESIGN_EXPIRED_RETENTION_MINUTES, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
+import { AUTO_MARKETS_CONFIG, AUTO_MARKETS_FILE, CHAIN, CHAIN_ID, CHAIN_NAME, LENDER_ADDRESS, MORPHO_BLUE_ADDRESS, RPC_URLS, WSS_URLS, WSS_DEBOUNCE_MS, MONITOR_INTERVAL_MS, NOTIFICATION_COOLDOWN_MS, MAX_NOTIFICATIONS_PER_DAY, NTFY_SERVER, NTFY_TOPIC, WEBAPP_URL, PRESIGNED_FILE, PRESIGN_EXPIRED_RETENTION_MINUTES, MARKETS_FILE, VOIP_SECRET_KEY, formatTokenAmount, wadToPercent } from "./shared.mjs";
 import { shouldNotify, computeDrainThreshold, shouldBroadcastPresigned } from "./monitor-rules.mjs";
 import { createChainBoundPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
-import { loadMarkets } from "./market-config.mjs";
+import { resolveMarkets } from "./market-discovery.mjs";
 import { createMarketReader } from "./market-reader.mjs";
 import { updateRegistry } from "./presigned-store.mjs";
 import { verifyPresignedBundle } from "./presign-verify.mjs";
@@ -281,7 +281,15 @@ export function createMonitor({
 
 async function main() {
   addGlobalErrorHandlers("monitor");
-  const markets = loadMarkets(MARKETS_FILE);
+  const markets = await resolveMarkets({
+    marketsFile: MARKETS_FILE,
+    autoMarketsFile: AUTO_MARKETS_FILE,
+    lenderAddress: LENDER_ADDRESS,
+    chainId: CHAIN_ID,
+    morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+    canonicalMorphoBlueAddress: CHAIN.morphoBlueAddress,
+    ...AUTO_MARKETS_CONFIG,
+  });
   const marketIds = markets.map((market) => market.id);
   // Audit vòng 2: 2s sticky để các lần đọc liên tiếp trong cùng chu kỳ nhìn CÙNG một
   // node — đặc biệt cặp bằng chứng receipt → nonce khi nhả claim (xoay sang node khác

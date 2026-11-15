@@ -12,6 +12,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AUTO_MARKETS_CONFIG,
+  AUTO_MARKETS_FILE,
+  CHAIN,
   WEBAPP_PORT,
   PRESIGNED_FILE,
   MARKETS_FILE,
@@ -28,7 +31,7 @@ import {
   envList,
 } from "./shared.mjs";
 import { addGlobalErrorHandlers } from "./rpc-client.mjs";
-import { loadMarkets } from "./market-config.mjs";
+import { resolveMarkets } from "./market-discovery.mjs";
 import { createRequestHandler } from "./webapp-handler.mjs";
 import { assertWebappAuthConfig } from "./webapp-config.mjs";
 import { createHybridRpcServing, refreshHoursToMs } from "./webapp-serving.mjs";
@@ -51,7 +54,15 @@ const WEBAPP_LOGIC_FILE = path.join(__dirname, "webapp-logic.mjs");
 // động và fail-fast (không để lộ ra lúc người dùng bấm nút).
 const PRESIGNED_PATH = path.join(__dirname, PRESIGNED_FILE);
 
-const configuredMarkets = loadMarkets(path.join(__dirname, MARKETS_FILE));
+const configuredMarkets = await resolveMarkets({
+  marketsFile: path.join(__dirname, MARKETS_FILE),
+  autoMarketsFile: path.join(__dirname, AUTO_MARKETS_FILE),
+  lenderAddress: LENDER_ADDRESS,
+  chainId: CHAIN_ID,
+  morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+  canonicalMorphoBlueAddress: CHAIN.morphoBlueAddress,
+  ...AUTO_MARKETS_CONFIG,
+});
 
 // Read the HTML file once at startup
 let htmlContent;

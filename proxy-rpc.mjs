@@ -11,6 +11,8 @@ import https from "node:https";
 import fs from "node:fs";
 import { keccak256, toHex } from "viem";
 import {
+  AUTO_MARKETS_CONFIG,
+  AUTO_MARKETS_FILE,
   RPC_URLS,
   PROXY_PORT,
   PROXY_HOST,
@@ -29,7 +31,7 @@ import {
   PROXY_ALLOW_PUBLIC_RPC,
 } from "./shared.mjs";
 import { createChainBoundPublicClient, addGlobalErrorHandlers } from "./rpc-client.mjs";
-import { loadMarkets } from "./market-config.mjs";
+import { resolveMarkets } from "./market-discovery.mjs";
 import { retryStartup } from "./startup-retry.mjs";
 import { createProxyRequestHandler, defaultBlockFallback, RPC_METHOD_ALLOW_LIST } from "./proxy-dispatcher.mjs";
 import { assertProxyAuthConfig } from "./webapp-config.mjs";
@@ -56,7 +58,15 @@ try {
 }
 
 // Market allow-list next: config errors must fail fast with an actionable message.
-const configuredMarkets = loadMarkets(MARKETS_FILE);
+const configuredMarkets = await resolveMarkets({
+  marketsFile: MARKETS_FILE,
+  autoMarketsFile: AUTO_MARKETS_FILE,
+  lenderAddress: LENDER_ADDRESS,
+  chainId: CHAIN_ID,
+  morphoBlueAddress: MORPHO_BLUE_ADDRESS,
+  canonicalMorphoBlueAddress: CHAIN.morphoBlueAddress,
+  ...AUTO_MARKETS_CONFIG,
+});
 
 // Public client chỉ dùng các URL đã probe đúng CHAIN_ID. Mỗi URL sai chain bị
 // loại trước khi bất kỳ eth_call/eth_getLogs/nonce nào được gửi tới nó.

@@ -159,7 +159,7 @@ export async function createMarketReader({
     const err = new Error(
       `❌ ${unknownIds.length} market id không tồn tại on-chain (params toàn zero) trên chain ${chainId}:\n` +
       unknownIds.map((id) => `   • ${id}`).join("\n") +
-      `\n   → Kiểm tra lại \`id\` trong config/markets.json (MARKETS_FILE) — chain ${chainId}.`
+      `\n   → Kiểm tra lại market id (config/markets.json, data/markets.auto.json, hoặc kết quả auto-discovery) — chain ${chainId}.`
     );
     err.code = MARKET_PARAMS_ZERO;
     err.chainId = chainId;

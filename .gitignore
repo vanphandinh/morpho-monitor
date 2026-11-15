@@ -15,6 +15,11 @@ config/markets.*.json
 !config/markets.example.json
 !config/markets.*.example.json
 
+# Auto-discovered market file (generated in the data volume; never commit)
+data/markets.auto.json
+data/markets.auto.json.lock
+data/markets.auto.json.tmp-*
+
 # ============================================================
 # Build artifacts
 # ============================================================

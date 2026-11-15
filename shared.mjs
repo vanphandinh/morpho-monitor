@@ -112,6 +112,21 @@ export const MARKETS_FILE = env("MARKETS_FILE", "./config/markets.json");
 export const LENDER_ADDRESS = env("LENDER_ADDRESS",
   "0x0000000000000000000000000000000000000000");
 
+// ---- Auto market discovery ----
+// Manual config/markets.json always wins; otherwise the pre-start entrypoint
+// refreshes data/markets.auto.json from the Morpho REST API.
+export const AUTO_MARKETS_FILE = env("AUTO_MARKETS_FILE", "./data/markets.auto.json");
+export const MORPHO_API_URL = env("MORPHO_API_URL", "https://api.morpho.org");
+export const MORPHO_API_TIMEOUT_MS = envNum("MORPHO_API_TIMEOUT_MS", 10_000);
+export const AUTO_MIN_LIQUIDITY = env("AUTO_MIN_LIQUIDITY", "10000");
+export const AUTO_SUDDEN_DRAIN_MULTIPLIER = envNum("AUTO_SUDDEN_DRAIN_MULTIPLIER", 2);
+export const AUTO_MARKETS_CONFIG = Object.freeze({
+  apiUrl: MORPHO_API_URL,
+  timeoutMs: MORPHO_API_TIMEOUT_MS,
+  minLiquidity: AUTO_MIN_LIQUIDITY,
+  suddenDrainMultiplier: AUTO_SUDDEN_DRAIN_MULTIPLIER,
+});
+
 const configuredMorpho = env("MORPHO_BLUE_ADDRESS", "").trim();
 if (configuredMorpho && !isAddress(configuredMorpho)) {
   throw Object.assign(new Error(`MORPHO_BLUE_ADDRESS không hợp lệ: ${configuredMorpho}`), {

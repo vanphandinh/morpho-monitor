@@ -86,12 +86,12 @@ describe("startup-retry — monitor dùng đúng chỗ", () => {
     expect(monitorSrc).toMatch(/retryStartup\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*?createChainBoundPublicClient\([\s\S]*?createMarketReader\(/);
   });
 
-  it("loadMarkets chạy TRƯỚC retryStartup ⇒ thiếu/sai MARKETS_FILE không bị retry", () => {
-    const loadMarketsAt = monitorSrc.indexOf("loadMarkets(MARKETS_FILE)");
+  it("resolveMarkets chạy TRƯỚC retryStartup ⇒ lỗi config không bị retry", () => {
+    const resolveAt = monitorSrc.indexOf("resolveMarkets(");
     const retryAt = monitorSrc.indexOf("retryStartup(");
-    expect(loadMarketsAt).toBeGreaterThan(-1);
+    expect(resolveAt).toBeGreaterThan(-1);
     expect(retryAt).toBeGreaterThan(-1);
-    expect(loadMarketsAt).toBeLessThan(retryAt);
+    expect(resolveAt).toBeLessThan(retryAt);
   });
 });
 

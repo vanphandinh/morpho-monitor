@@ -311,6 +311,29 @@ describe("auto file persistence", () => {
   });
 });
 
+describe("wiring", () => {
+  it("entrypoint chạy discover-markets trước start_service", () => {
+    const entry = fs.readFileSync(new URL("../docker-entrypoint.sh", import.meta.url), "utf8");
+    expect(entry.indexOf("discover-markets.mjs")).toBeGreaterThan(-1);
+    expect(entry.indexOf("discover-markets.mjs")).toBeLessThan(entry.indexOf('start_service "MONITOR"'));
+  });
+
+  it("package có script discover; shared có auto path mặc định", () => {
+    const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    expect(pkg.scripts["markets:discover"]).toBe("node --env-file=.env discover-markets.mjs");
+    const shared = fs.readFileSync(new URL("../shared.mjs", import.meta.url), "utf8");
+    expect(shared).toContain('env("AUTO_MARKETS_FILE", "./data/markets.auto.json")');
+  });
+
+  it("cả 4 entry point dùng resolveMarkets, không gọi loadMarkets trực tiếp", () => {
+    for (const name of ["index.mjs", "monitor.mjs", "webapp-server.mjs", "proxy-rpc.mjs"]) {
+      const src = fs.readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
+      expect(src).toContain("resolveMarkets(");
+      expect(src).not.toMatch(/\bloadMarkets\s*\(/);
+    }
+  });
+});
+
 describe("resolveMarkets", () => {
   it("file thủ công → đọc file, không discovery", async () => {
     const discovery = vi.fn();
