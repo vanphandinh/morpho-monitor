@@ -65,6 +65,25 @@ function assertLenderValid(lenderAddress) {
   }
 }
 
+function validateDiscoveryThresholds({ minLiquidity, suddenDrainMultiplier }) {
+  if (!/^\d+(?:\.\d+)?$/.test(String(minLiquidity))) {
+    throw discoveryError(
+      AUTO_INPUT_INVALID,
+      `❌ AUTO_MIN_LIQUIDITY không hợp lệ: ${minLiquidity ?? "(empty)"}\n` +
+      "   → Dùng số thập phân không âm, ví dụ 10000.",
+    );
+  }
+
+  const multiplier = Number(suddenDrainMultiplier);
+  if (!Number.isFinite(multiplier) || multiplier < 1) {
+    throw discoveryError(
+      AUTO_INPUT_INVALID,
+      `❌ AUTO_SUDDEN_DRAIN_MULTIPLIER không hợp lệ: ${suddenDrainMultiplier ?? "(empty)"}\n` +
+      "   → Phải là số >= 1, ví dụ 2.",
+    );
+  }
+}
+
 function validateDiscoveryInputs({ lenderAddress, chainId, apiUrl, timeoutMs }) {
   assertLenderValid(lenderAddress);
 
@@ -221,6 +240,7 @@ export async function discoverMarkets({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   validateDiscoveryInputs({ lenderAddress, chainId, apiUrl, timeoutMs });
+  validateDiscoveryThresholds({ minLiquidity, suddenDrainMultiplier });
 
   const maxRetries = Number.isSafeInteger(Number(retries)) && Number(retries) >= 0
     ? Number(retries)
@@ -241,7 +261,7 @@ export async function discoverMarkets({
         throw discoveryError(
           AUTO_MARKETS_EMPTY,
           `❌ Auto mode: không tìm thấy market nào LENDER_ADDRESS đang cho vay trên chain ${chainId}.\n` +
-          "   → Kiểm tra LENDER_ADDRESS/CHAIN_ID, tạo config/markets.json, hoặc xóa data/markets.auto.json.",
+          "   → Kiểm tra LENDER_ADDRESS/CHAIN_ID hoặc tạo config/markets.json với market thủ công.",
         );
       }
       if (ids.length > MAX_MARKETS) {

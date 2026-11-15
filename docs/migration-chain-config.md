@@ -271,7 +271,7 @@ Kiểm tra tiếp các biến sau:
 - `PROXY_RPC_URL`: chỉ set nếu proxy ở host/port khác; nếu không, để trống để
   derive từ `WEBAPP_URL` + `PROXY_PORT`.
 - `WEBAPP_PASSWORD`: phải có khi bind public (webapp fail-fast nếu trống).
-- `MARKETS_FILE`: tùy chọn. Nếu file tồn tại, đó là allow-list thủ công (1–9 market) và auto tắt. Nếu không tồn tại, entrypoint tự dò market đang có vị thế supply của `LENDER_ADDRESS` trên `CHAIN_ID` và ghi `data/markets.auto.json`; restart để refresh.
+- `MARKETS_FILE`: tùy chọn. Nếu file tồn tại, đó là allow-list thủ công (1-9 market) và auto tắt. Nếu không tồn tại, entrypoint tự dò market đang có vị thế supply của `LENDER_ADDRESS` trên `CHAIN_ID` và ghi `data/markets.auto.json`; restart để refresh. Đổi `LENDER_ADDRESS` hoặc `CHAIN_ID` thì xóa `data/markets.auto.json` trước khi restart (file auto bị ràng buộc chain/Morpho/lender).
 - `CONTAINER_NAME`: giữ `morpho` nếu chỉ có một deployment; đặt tên khác nếu
   chạy nhiều chain trên cùng host.
 

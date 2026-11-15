@@ -62,6 +62,15 @@ cp config/markets.example.json config/markets.json
 #    data/markets.auto.json (volume data riêng của clone). Restart để refresh.
 #    Không dùng chung volume data giữa các clone. config/ vẫn read-only;
 #    chỉ volume data/ cần writable.
+#    Vận hành:
+#    - Discovery fail (0 market, >9, API lỗi) => container exit. Compose dùng
+#      restart: unless-stopped nên restart theo backoff; xem log [markets] rồi
+#      sửa config/API. Fail-fast, không hot refresh.
+#    - SIGKILL đúng lúc ghi có thể để lại data/markets.auto.json.lock:
+#      rm data/markets.auto.json.lock && docker compose restart (chỉ khi chắc
+#      không còn writer).
+#    - Đổi LENDER_ADDRESS: xóa data/markets.auto.json trước khi restart để
+#      tránh AUTO_LENDER_MISMATCH.
 
 # 4) Compose project riêng + port riêng
 docker compose -p morpho-base --env-file .env up -d --build

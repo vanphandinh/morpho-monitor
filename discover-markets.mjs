@@ -33,7 +33,7 @@ async function main() {
 const isDirectRun = Boolean(process.argv[1]) && pathToFileURL(process.argv[1]).href === import.meta.url;
 if (isDirectRun) {
   main().catch((err) => {
-    console.error("Fatal markets discovery error:", err.message);
+    console.error("❌ Lỗi auto-discovery:", err.message);
     process.exit(1);
   });
 }

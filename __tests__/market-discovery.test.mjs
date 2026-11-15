@@ -137,11 +137,32 @@ describe("discoverMarkets", () => {
     expect(badJson.retryable).toBe(false);
   });
 
+  it("AUTO_MIN_LIQUIDITY rỗng/không hợp lệ → AUTO_INPUT_INVALID trước khi gọi API", async () => {
+    for (const minLiquidity of ["", "abc", "-1"]) {
+      const fetchImpl = vi.fn();
+      await expect(discoverMarkets({ lenderAddress: LENDER, chainId: 1, minLiquidity, fetchImpl }))
+        .rejects.toMatchObject({ code: "AUTO_INPUT_INVALID" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
+  it("AUTO_SUDDEN_DRAIN_MULTIPLIER < 1 → AUTO_INPUT_INVALID trước khi gọi API", async () => {
+    for (const suddenDrainMultiplier of [0, 0.5, "abc"]) {
+      const fetchImpl = vi.fn();
+      await expect(discoverMarkets({ lenderAddress: LENDER, chainId: 1, suddenDrainMultiplier, fetchImpl }))
+        .rejects.toMatchObject({ code: "AUTO_INPUT_INVALID" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
   it("0 market active → AUTO_MARKETS_EMPTY", async () => {
     const fetchImpl = async () => jsonResponse({ data: [], cursor: null });
 
-    await expect(discoverMarkets({ lenderAddress: LENDER, chainId: 1, fetchImpl }))
-      .rejects.toMatchObject({ code: "AUTO_MARKETS_EMPTY" });
+    const err = await discoverMarkets({ lenderAddress: LENDER, chainId: 1, fetchImpl })
+      .catch((error) => error);
+    expect(err.code).toBe("AUTO_MARKETS_EMPTY");
+    expect(err.message).toContain("config/markets.json");
+    expect(err.message).not.toContain("xóa data/markets.auto.json");
   });
 
   it("hơn 9 market → AUTO_MARKETS_TOO_MANY", async () => {
@@ -286,6 +307,29 @@ describe("auto file persistence", () => {
       await new Promise((resolve) => server.close(resolve));
     }
   });
+
+  it("CLI in lỗi auto-discovery bằng tiếng Việt", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morpho-cli-error-"));
+    const error = await execFileAsync(process.execPath, ["discover-markets.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        CHAIN_ID: "1",
+        CHAIN_CONFIG_FILE: path.join(process.cwd(), "config", "chains.json"),
+        LENDER_ADDRESS: LENDER,
+        MARKETS_FILE: path.join(dir, "missing-manual.json"),
+        AUTO_MARKETS_FILE: path.join(dir, "markets.auto.json"),
+        MORPHO_API_URL: "http://127.0.0.1:9",
+        MORPHO_API_TIMEOUT_MS: "200",
+        AUTO_MIN_LIQUIDITY: "10000",
+        AUTO_SUDDEN_DRAIN_MULTIPLIER: "2",
+        MORPHO_BLUE_ADDRESS: "",
+      },
+    }).catch((err) => err);
+
+    expect(error.code).toBe(1);
+    expect(error.stderr).toContain("Lỗi auto-discovery");
+  }, 15_000);
 
   it("file thủ công → không gọi discovery, không ghi", async () => {
     const discovery = vi.fn();
